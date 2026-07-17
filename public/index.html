@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flow Generator — Control Panel</title>
+<style>
+  :root {
+    --bg: #0d0f12; --panel: #161a20; --panel2: #1d222a; --line: #2a313b;
+    --text: #e7ecf2; --dim: #93a1b0; --accent: #6ea8fe; --accent2: #3b82f6;
+    --good: #34d399; --bad: #f87171; --chip: #232a33; --chipOn: #2b4c86;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .wrap { display: grid; grid-template-columns: 1fr 380px; gap: 20px; padding: 20px 24px; max-width: 1200px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 14px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
+  input[type=text], input[type=number], textarea, select {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 8px 10px; font: inherit; outline: none;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent2); }
+  textarea { resize: vertical; min-height: 40px; }
+  .row { display: flex; gap: 12px; } .row > div { flex: 1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .chip { background: #171b22; border: 1px solid var(--line); color: var(--dim); padding: 6px 11px; border-radius: 20px; cursor: pointer; font-size: 13px; user-select: none; opacity: .75; }
+  .chip:hover { border-color: var(--accent); }
+  .chip.on { background: var(--accent2); border-color: var(--accent); color: #fff; font-weight: 600; opacity: 1; }
+  .chip .x { color: var(--dim); margin-left: 6px; }
+  .chip.on .x { color: rgba(255,255,255,.75); }
+  .addrow { display: flex; gap: 8px; margin-top: 10px; }
+  .addrow input { flex: 1; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 8px 14px; }
+  button.primary { background: var(--accent2); border-color: var(--accent2); color: white; font-weight: 600; }
+  button.danger { background: #3a1f22; border-color: #6b2b30; color: #ffb4b4; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+  .cmdbox { background: #0a0c0f; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #c8d3df; white-space: pre-wrap; word-break: break-all; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .console { background: #07090c; border: 1px solid var(--line); border-radius: 8px; height: 320px; overflow-y: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; color: #b9c6d3; }
+  .progress { height: 8px; background: var(--panel2); border-radius: 6px; overflow: hidden; margin: 10px 0; }
+  .progress > div { height: 100%; background: var(--accent2); width: 0%; transition: width .3s; }
+  .sticky { position: sticky; top: 20px; }
+  .flex { display: flex; align-items: center; gap: 10px; }
+  .grow { flex: 1; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--panel2); border: 1px solid var(--line); color: var(--dim); }
+  .note { font-size: 11.5px; color: var(--dim); margin-top: 6px; }
+  .qitem { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; margin-bottom: 8px; }
+  .qitem .top { display: flex; align-items: center; gap: 8px; }
+  .qitem .lbl { flex: 1; font-size: 12.5px; }
+  .qitem .rm { cursor: pointer; color: var(--dim); border: none; background: none; font-size: 14px; padding: 0 4px; }
+  .badge { font-size: 10.5px; padding: 2px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: .04em; }
+  .badge.pending { background: #2a2f38; color: var(--dim); }
+  .badge.running { background: #26406e; color: #bcd4ff; }
+  .badge.done { background: #12352a; color: var(--good); }
+  .badge.stopped, .badge.error { background: #3a1f22; color: #ffb4b4; }
+  .qbar { height: 5px; background: #0a0c0f; border-radius: 4px; overflow: hidden; margin-top: 7px; }
+  .qbar > div { height: 100%; background: var(--accent2); width: 0%; transition: width .3s; }
+  .qempty { color: var(--dim); font-size: 12px; padding: 8px 2px; }
+  .seg { display: inline-flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 20px; padding: 3px; }
+  .seg button { border: none; background: transparent; color: var(--dim); padding: 6px 16px; border-radius: 16px; font-weight: 600; cursor: pointer; }
+  .seg button.active { background: var(--accent2); color: #fff; }
+  .pack { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; margin-bottom: 9px; cursor: pointer; transition: border-color .15s, background .15s; }
+  .pack:hover { border-color: var(--accent); background: #1f2530; }
+  .pack .pt { font-weight: 600; font-size: 13.5px; }
+  .pack .pd { color: var(--dim); font-size: 11.5px; margin-top: 3px; line-height: 1.35; }
+  .pack .add { float: right; font-size: 11px; color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏋️ Flow Generator — Control Panel</h1>
+  <span id="connPill" class="pill">checking…</span>
+</header>
+
+<div class="wrap">
+  <!-- LEFT: configuration -->
+  <div>
+    <div class="card">
+      <h2>1 · Connect Chrome</h2>
+      <p class="muted">Fully quit Chrome, then run this in Terminal to launch the debug window. Log into Flow and open your project in it.</p>
+      <div class="cmdbox" id="cmd"></div>
+      <div class="flex" style="margin-top:10px">
+        <button id="copyCmd">Copy command</button>
+        <button id="testConn">Test connection</button>
+        <span id="connText" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Prebuilt packs</h2>
+      <div class="flex" style="margin-bottom:12px">
+        <div class="seg" id="genderSeg">
+          <button data-g="men" class="active">👨 Men</button>
+          <button data-g="women">👩 Women</button>
+        </div>
+        <div class="grow"></div>
+        <div style="width:130px"><label style="margin:0 0 4px">Images per pack</label><input type="number" id="packCount" value="10" min="1" /></div>
+      </div>
+      <div id="packList"></div>
+      <p class="note">Click a pack to queue it as a batch using your <b>Character name</b> below. Dark-gym packs use big-mirror American-gym aesthetics; wardrobe uses Gymshark / DFYNE / YoungLA / Ryze. You can still remove or reorder batches in the queue.</p>
+    </div>
+
+    <div class="card">
+      <h2>2 · Character</h2>
+      <label>Character name (must match the asset in Flow's picker)</label>
+      <input type="text" id="characterName" value="Untitled Character" />
+      <div class="row">
+        <div><label>Physique</label><input type="text" id="physique" value="lean muscular athletic build, well-defined muscle tone, visible abs" /></div>
+      </div>
+      <label>Sweat / condition</label>
+      <input type="text" id="sweat" list="sweatList" value="light sweat sheen on skin" />
+      <datalist id="sweatList">
+        <option value="dry, clean, no sweat"></option>
+        <option value="light sweat sheen on skin"></option>
+        <option value="visibly sweaty, post-workout glow, damp hair"></option>
+        <option value="drenched, heavy sweat, dripping"></option>
+      </datalist>
+      <label>Hair styling (how it's styled — not the hair itself)</label>
+      <input type="text" id="hair" value="natural styling, slightly tousled" />
+      <p class="note">This only restyles the character's existing hair (same color, length, hairline). It won't change their actual hair.</p>
+      <label>Skin detail</label>
+      <input type="text" id="skin" value="visible pores and natural skin grain, realistic, no smoothing" />
+      <label>Anything else about appearance (optional)</label>
+      <textarea id="appearanceExtra" placeholder="e.g. vascular forearms, chest tattoo, gold chain…"></textarea>
+    </div>
+
+    <div class="card">
+      <h2>3 · Wardrobe</h2>
+      <div class="row">
+        <div><label>Top</label><input type="text" id="top" value="fitted gym stringer tank top" /></div>
+        <div><label>Bottoms</label><input type="text" id="bottoms" value="athletic gym shorts with elastic waistband" /></div>
+      </div>
+      <div class="row">
+        <div><label>Footwear</label><input type="text" id="footwear" value="training shoes" /></div>
+        <div><label>Accessories</label><input type="text" id="accessories" value="lifting wrist wraps, smartwatch" /></div>
+      </div>
+      <p class="note">Tip: for shirtless shots set Top to “shirtless, bare chest”.</p>
+    </div>
+
+    <div class="card">
+      <h2>4 · Environments</h2>
+      <p class="muted">Click to toggle. Add your own below.</p>
+      <div class="chips" id="envChips"></div>
+      <div class="addrow"><input type="text" id="envAdd" placeholder="Add custom environment…" /><button id="envAddBtn">Add</button></div>
+    </div>
+
+    <div class="card">
+      <h2>5 · Poses</h2>
+      <p class="muted">Click to toggle. Add your own below.</p>
+      <div class="chips" id="poseChips"></div>
+      <div class="addrow"><input type="text" id="poseAdd" placeholder="Add custom pose…" /><button id="poseAddBtn">Add</button></div>
+    </div>
+
+    <div class="card">
+      <h2>6 · Framing & timing</h2>
+      <div class="row">
+        <div>
+          <label>Aspect ratio</label>
+          <select id="aspectRatio">
+            <option>9:16</option><option>3:4</option><option>1:1</option><option>4:3</option><option>16:9</option>
+          </select>
+        </div>
+        <div><label>Expression</label><input type="text" id="expression" value="candid, confident, focused" /></div>
+      </div>
+      <label>Lighting in the environment</label>
+      <input type="text" id="lighting" list="lightingList" value="bright even lighting, moderate contrast preserving skin texture" />
+      <datalist id="lightingList">
+        <option value="bright even gym lighting, clean and crisp"></option>
+        <option value="moody dramatic low-key lighting, deep shadows"></option>
+        <option value="warm golden hour sunlight"></option>
+        <option value="soft natural window light"></option>
+        <option value="harsh overhead fluorescent lighting"></option>
+        <option value="neon / colored ambient lighting"></option>
+        <option value="dim, cozy indoor evening light"></option>
+        <option value="bright outdoor daylight, sunny"></option>
+        <option value="overcast soft daylight"></option>
+      </datalist>
+      <div class="row">
+        <div><label>Wait between gens (sec)</label><input type="number" id="waitSeconds" value="30" min="0" /></div>
+        <div><label>Random extra wait (sec)</label><input type="number" id="jitterSeconds" value="20" min="0" /></div>
+      </div>
+      <div class="row">
+        <div><label>Order</label>
+          <select id="shuffle"><option value="true">Shuffle (recommended)</option><option value="false">Sequential</option></select>
+        </div>
+        <div></div>
+      </div>
+      <p class="note">Also set <b>9:16 · 1x</b> in Flow's own composer (the settings popover next to the model name). That toggle controls the real output size & count; the JSON aspect ratio is only a hint. Longer, shuffled, jittered waits reduce “unusual activity” flags but can't eliminate them.</p>
+    </div>
+  </div>
+
+  <!-- RIGHT: run controls -->
+  <div>
+    <div class="card sticky">
+      <h2>Queue</h2>
+      <div class="flex">
+        <div style="width:130px"><label style="margin-top:0">Images in batch</label><input type="number" id="count" value="10" min="0" /></div>
+        <button id="addBatchBtn" class="primary grow" style="align-self:flex-end">➕ Add batch to queue</button>
+      </div>
+      <p class="note">Snapshots the settings on the left as one batch. Change the settings, add another batch, and so on. Batches run top-to-bottom — you can add more even while it's running. Count 0 = one of every environment×pose combo.</p>
+
+      <div id="queueList" style="margin:12px 0"></div>
+
+      <div class="flex">
+        <button id="startBtn" class="primary grow">▶ Start queue</button>
+        <button id="stopBtn" class="danger" disabled>■ Stop</button>
+        <button id="clearBtn">Clear</button>
+      </div>
+      <div id="currentText" class="muted" style="margin-top:8px"></div>
+
+      <h2 style="margin-top:18px">Log</h2>
+      <div class="console" id="console"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const DEFAULT_ENVS = [
+  "Commercial gym floor","Squat rack area","Free-weights section","Cable machine station",
+  "Home / garage gym","Locker room","Gym mirror wall","Cardio / treadmills",
+  "Outdoor calisthenics park","Boxing gym","CrossFit box","Running track",
+  "Basketball court","Rooftop workout","Beach workout","Sauna"
+];
+const DEFAULT_POSES = [
+  "Gym mirror selfie","Post-workout selfie","Flexing biceps in mirror","Shirtless physique check",
+  "Mid-set with dumbbells","Resting on bench between sets","Deadlift setup","Pull-up bar hang",
+  "Towel around neck, post-workout","Drinking from shaker bottle","Lat spread pose","Side chest pose",
+  "Leaning on squat rack","Chalking hands","Walking on treadmill","Stretching / mobility",
+  "Front double biceps","Selfie holding phone forward"
+];
+
+// selection state: Map<label, selected>
+const envState = new Map(DEFAULT_ENVS.map(e => [e, false]));
+const poseState = new Map(DEFAULT_POSES.map(p => [p, false]));
+
+function renderChips(containerId, stateMap) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  for (const [label, on] of stateMap) {
+    const el = document.createElement('span');
+    el.className = 'chip' + (on ? ' on' : '');
+    el.textContent = label;
+    el.onclick = () => { stateMap.set(label, !stateMap.get(label)); renderChips(containerId, stateMap); };
+    const x = document.createElement('span');
+    x.className = 'x'; x.textContent = '✕';
+    x.onclick = (ev) => { ev.stopPropagation(); stateMap.delete(label); renderChips(containerId, stateMap); };
+    el.appendChild(x);
+    c.appendChild(el);
+  }
+}
+renderChips('envChips', envState);
+renderChips('poseChips', poseState);
+
+document.getElementById('envAddBtn').onclick = () => {
+  const v = document.getElementById('envAdd').value.trim();
+  if (v) { envState.set(v, true); document.getElementById('envAdd').value=''; renderChips('envChips', envState); }
+};
+document.getElementById('poseAddBtn').onclick = () => {
+  const v = document.getElementById('poseAdd').value.trim();
+  if (v) { poseState.set(v, true); document.getElementById('poseAdd').value=''; renderChips('poseChips', poseState); }
+};
+document.getElementById('envAdd').addEventListener('keydown', e => { if (e.key==='Enter') document.getElementById('envAddBtn').click(); });
+document.getElementById('poseAdd').addEventListener('keydown', e => { if (e.key==='Enter') document.getElementById('poseAddBtn').click(); });
+
+const val = id => document.getElementById(id).value;
+function collectConfig() {
+  return {
+    characterName: val('characterName'),
+    physique: val('physique'), sweat: val('sweat'), hair: val('hair'),
+    skin: val('skin'), appearanceExtra: val('appearanceExtra'),
+    top: val('top'), bottoms: val('bottoms'), footwear: val('footwear'), accessories: val('accessories'),
+    expression: val('expression'), cameraStyle: 'authentic iPhone photo, natural perspective, no wide-angle distortion',
+    lighting: val('lighting'),
+    aspectRatio: val('aspectRatio'),
+    environments: [...envState].filter(([,on])=>on).map(([l])=>l),
+    poses: [...poseState].filter(([,on])=>on).map(([l])=>l),
+    waitSeconds: parseInt(val('waitSeconds'))||0,
+    jitterSeconds: parseInt(val('jitterSeconds'))||0,
+    shuffle: val('shuffle') === 'true',
+  };
+}
+// Short human summary of a batch for the queue list.
+function buildLabel(cfg, count) {
+  const bits = [];
+  bits.push((count ? count + '×' : 'all combos'));
+  if (cfg.top && /shirtless/i.test(cfg.top)) bits.push('shirtless');
+  if (cfg.sweat && !/dry|no sweat/i.test(cfg.sweat)) bits.push(cfg.sweat.split(',')[0]);
+  bits.push(`${cfg.environments.length} env × ${cfg.poses.length} pose`);
+  bits.push(cfg.aspectRatio);
+  return bits.join(' · ');
+}
+
+// ---------- Prebuilt packs ----------
+const PACKS = {
+  men: [
+    { title: '🏋️ Dark aesthetic gym', desc: 'Dark American gym, big mirrors, moody lighting. Gymshark / YoungLA fits.',
+      config: {
+        physique: 'lean muscular athletic build, defined muscle tone, visible abs, veiny forearms',
+        sweat: 'light sweat sheen, subtle post-workout glow',
+        top: 'fitted Gymshark training t-shirt or YoungLA stringer tank',
+        bottoms: 'YoungLA gym shorts', footwear: 'training shoes',
+        accessories: 'lifting wrist straps, smartwatch', expression: 'focused, confident',
+        lighting: 'moody low-key dark gym lighting with bright accent lights reflecting off big mirrors',
+        environments: [
+          'dark aesthetic American gym with big mirror walls and moody accent lighting',
+          'squat rack area in an upscale dark modern gym with large mirrors',
+          'dumbbell free-weights zone with a big mirror wall and low warm lighting',
+          'cable machine station in a dark high-end gym with mirror reflections' ],
+        poses: [
+          'gym mirror selfie holding phone', 'shirtless physique check in the big mirror',
+          'mid-set flexing in the mirror', 'resting on a bench between sets glancing at phone',
+          'lat spread pose in the mirror', 'leaning on the squat rack, mirror selfie' ],
+      } },
+    { title: '🌴 Miami balcony (day)', desc: 'Luxury Miami high-rise balcony, golden daylight, designer casual.',
+      config: {
+        physique: 'lean muscular athletic build', sweat: 'dry, clean',
+        top: 'open linen shirt over bare chest, or fitted designer tee',
+        bottoms: 'tailored casual shorts', footwear: 'designer sneakers or luxury sliders',
+        accessories: 'sunglasses, luxury watch, gold chain', expression: 'relaxed, confident',
+        lighting: 'bright warm Miami daylight, golden sunlight',
+        environments: [
+          'luxury high-rise balcony in Miami overlooking the ocean and skyline',
+          'modern Miami apartment balcony with palm trees and a city view' ],
+        poses: [
+          'leaning on the balcony railing looking out over Miami', 'casual selfie on the Miami balcony',
+          'standing confidently on the balcony with the city behind' ],
+      } },
+    { title: '🌙 Dark Miami night (iPhone-lit)', desc: 'Night balcony / beach club, lit by phone flash. Moody & dark.',
+      config: {
+        physique: 'lean muscular athletic build', sweat: 'dry',
+        top: 'designer black tee or open shirt', bottoms: 'black tailored trousers or shorts',
+        footwear: 'designer shoes', accessories: 'silver chain, luxury watch', expression: 'cool, understated',
+        lighting: 'dark night scene lit mainly by iPhone flash and screen light, deep shadows, neon and distant city lights',
+        environments: [
+          'dark Miami high-rise balcony at night with city-light bokeh',
+          'dimly lit upscale Miami beach club at night', 'dark Miami rooftop lounge at night' ],
+        poses: [
+          'moody selfie lit only by phone light in the dark', 'candid night selfie with blurred city lights behind',
+          'looking down at phone, face lit by the screen' ],
+      } },
+    { title: '🪞 Room fit check (basic)', desc: 'Simple bedroom mirror selfie, aesthetic streetwear.',
+      config: {
+        physique: 'lean athletic build', sweat: 'dry',
+        top: 'aesthetic fitted streetwear top', bottoms: 'relaxed straight jeans or cargos',
+        footwear: 'clean sneakers', accessories: 'watch, simple chain', expression: 'neutral, cool',
+        lighting: 'soft natural room light',
+        environments: [
+          'clean modern bedroom with a large full-length mirror',
+          'minimal aesthetic bedroom with soft natural light and a mirror' ],
+        poses: [ 'basic mirror selfie holding the phone at chest height', 'casual outfit mirror selfie, relaxed stance' ],
+      } },
+    { title: '🚗 Car selfies (subtle luxury)', desc: 'Range Rover / BMW / Audi / Mercedes / Corvette interiors.',
+      config: {
+        physique: 'lean athletic build', sweat: 'dry',
+        top: 'fitted casual designer top or hoodie', bottoms: 'casual trousers or jeans',
+        footwear: 'clean sneakers', accessories: 'watch, sunglasses', expression: 'calm, confident',
+        lighting: 'natural daylight through the car windows',
+        environments: [ "driver's seat of a Range Rover", 'interior of a BMW', 'inside an Audi', 'Mercedes interior', 'Corvette interior' ],
+        poses: [
+          'car selfie in the driver seat glancing at the phone',
+          'steady parked-car selfie with direct eye contact to the phone',
+          'casual selfie in the parked car with seatbelt on' ],
+      } },
+  ],
+  women: [
+    { title: '🏋️ Dark aesthetic gym', desc: 'Dark American gym, big mirrors. DFYNE / Gymshark sets.',
+      config: {
+        physique: 'toned athletic feminine figure, fit and lean',
+        sweat: 'light sweat sheen, subtle glow',
+        top: 'DFYNE or Gymshark matching sports bra set',
+        bottoms: 'high-waisted seamless leggings (DFYNE / Gymshark)', footwear: 'training shoes',
+        accessories: 'smartwatch, sleek ponytail', expression: 'confident, focused',
+        lighting: 'moody low-key dark gym lighting with bright accents reflecting off big mirrors',
+        environments: [
+          'dark aesthetic American gym with big mirror walls and moody accent lighting',
+          'glute / squat area in an upscale dark modern gym with big mirrors',
+          'stretching area with a large mirror wall and low warm lighting',
+          'cable machine station in a dark high-end gym with mirror reflections' ],
+        poses: [
+          'gym mirror selfie holding phone', 'glute and leg check in the big mirror',
+          'post-workout mirror selfie', 'mid-set mirror selfie with weights',
+          'resting glancing at phone with the mirror behind' ],
+      } },
+    { title: '🚗 Car selfies', desc: 'Driving selfie or steady, looking right at the phone. Soft daylight.',
+      config: {
+        physique: 'slim toned feminine figure', sweat: 'dry',
+        top: 'trendy aesthetic top', bottoms: 'casual chic bottoms', footwear: 'clean trendy shoes',
+        accessories: 'delicate jewelry, sunglasses', expression: 'soft, natural, confident',
+        lighting: 'soft natural daylight through the car windows on the face',
+        environments: [ "driver's seat of a car in daytime", 'parked car interior with soft natural light', 'passenger seat with warm daylight' ],
+        poses: [
+          'selfie while driving, one hand on the wheel, glancing at the phone',
+          'steady car selfie looking directly into the phone',
+          'natural-light car selfie with the face toward the camera' ],
+      } },
+    { title: '🪞 Room fit check (Pinterest)', desc: 'Aesthetic bedroom, full-length mirror, Pinterest styling.',
+      config: {
+        physique: 'slim toned feminine figure', sweat: 'dry',
+        top: 'trendy coordinated Pinterest-style outfit top', bottoms: 'matching aesthetic bottoms',
+        footwear: 'trendy shoes', accessories: 'dainty jewelry, handbag', expression: 'soft, effortless',
+        lighting: 'soft warm aesthetic lighting',
+        environments: [
+          'aesthetic Pinterest-style bedroom with a full-length mirror and cozy neutral tones',
+          'clean girly aesthetic room with soft light and a large mirror' ],
+        poses: [ 'full-body mirror fit check, posing', 'outfit mirror selfie, Pinterest aesthetic', 'candid mirror pose adjusting the outfit' ],
+      } },
+    { title: '🛍️ Street fit check (Pinterest)', desc: 'Street-style outfit shots, nice architecture, Pinterest vibe.',
+      config: {
+        physique: 'slim toned feminine figure', sweat: 'dry',
+        top: 'trendy street-style outfit', bottoms: 'aesthetic coordinated bottoms', footwear: 'stylish shoes',
+        accessories: 'sunglasses, handbag, jewelry', expression: 'effortless, candid',
+        lighting: 'soft natural daylight',
+        environments: [
+          'aesthetic city street, Pinterest style, nice architecture',
+          'urban street with cafes and warm tones', 'clean modern street with soft daylight' ],
+        poses: [ 'street-style fit check pose on the sidewalk', 'candid walking outfit shot', 'posing against a nice wall, Pinterest style' ],
+      } },
+    { title: '🌙 Night out (dark iPhone-lit)', desc: 'Beach club / rooftop at night, glam, lit by phone flash.',
+      config: {
+        physique: 'slim toned feminine figure', sweat: 'dry',
+        top: 'elegant night-out top or dress', bottoms: 'matching skirt or trousers if not a dress',
+        footwear: 'heels', accessories: 'jewelry, small handbag', expression: 'confident, glamorous',
+        lighting: 'dark night scene lit by iPhone flash and screen, deep shadows, neon and city lights',
+        environments: [
+          'dark upscale Miami beach club at night', 'dark rooftop lounge at night with city lights',
+          'dim Miami balcony at night with city-light bokeh' ],
+        poses: [ 'moody night selfie lit by phone flash', 'candid selfie with blurred neon lights behind', 'glam mirror selfie in dim lighting' ],
+      } },
+  ],
+};
+
+let gender = 'men';
+function packBaseDefaults() {
+  return {
+    characterName: val('characterName'),
+    skin: 'visible pores and natural skin grain, realistic, no smoothing',
+    hair: val('hair') || 'natural styling, slightly tousled',
+    appearanceExtra: '',
+    cameraStyle: 'authentic iPhone photo, natural perspective, no wide-angle distortion',
+    aspectRatio: '9:16', shuffle: true, waitSeconds: 35, jitterSeconds: 25,
+  };
+}
+function renderPacks() {
+  const el = document.getElementById('packList');
+  el.innerHTML = '';
+  PACKS[gender].forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'pack';
+    div.innerHTML = `<span class="add">+ Queue</span><div class="pt">${p.title}</div><div class="pd">${p.desc}</div>`;
+    div.onclick = () => addPack(p);
+    el.appendChild(div);
+  });
+}
+async function addPack(p) {
+  const count = parseInt(document.getElementById('packCount').value) || 10;
+  const cfg = { ...packBaseDefaults(), ...p.config };
+  const label = `${p.title.replace(/^[^\s]+\s/, '')} — ${count}×`;
+  const r = await fetch('/api/queue/add', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count, label, config: cfg }),
+  });
+  if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to queue pack'); }
+}
+document.getElementById('genderSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  gender = b.dataset.g;
+  [...document.querySelectorAll('#genderSeg button')].forEach(x => x.classList.toggle('active', x === b));
+  renderPacks();
+});
+renderPacks();
+
+// --- console + queue via SSE ---
+const consoleEl = document.getElementById('console');
+function addLog(line) {
+  consoleEl.textContent += line + '\n';
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+function setRunningUI(running) {
+  document.getElementById('startBtn').disabled = running;
+  document.getElementById('stopBtn').disabled = !running;
+}
+function renderQueue(q, running) {
+  const el = document.getElementById('queueList');
+  if (!q.length) { el.innerHTML = '<div class="qempty">Queue is empty. Configure settings and click “Add batch to queue”.</div>'; return; }
+  el.innerHTML = '';
+  q.forEach((b, i) => {
+    const pct = b.total ? Math.round(100 * b.done / b.total) : 0;
+    const div = document.createElement('div');
+    div.className = 'qitem';
+    const canRemove = b.status === 'pending';
+    div.innerHTML = `
+      <div class="top">
+        <span class="lbl"><b>#${b.id}</b> ${b.label}</span>
+        <span class="badge ${b.status}">${b.status}</span>
+        ${canRemove ? `<button class="rm" title="Remove">✕</button>` : ''}
+      </div>
+      ${(b.status==='running'||b.done) ? `<div class="qbar"><div style="width:${pct}%"></div></div>
+        <div class="muted" style="font-size:11px;margin-top:3px">${b.done} / ${b.total}</div>` : ''}
+    `;
+    if (canRemove) div.querySelector('.rm').onclick = () =>
+      fetch('/api/queue/remove', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.id }) });
+    el.appendChild(div);
+  });
+}
+const es = new EventSource('/api/events');
+es.addEventListener('log', e => addLog(JSON.parse(e.data).line));
+es.addEventListener('state', e => {
+  const s = JSON.parse(e.data);
+  setRunningUI(s.running);
+  renderQueue(s.queue || [], s.running);
+  document.getElementById('currentText').textContent = s.current ? '▶ ' + s.current : (s.running ? 'Starting…' : '');
+});
+
+document.getElementById('addBatchBtn').onclick = async () => {
+  const cfg = collectConfig();
+  if (!cfg.environments.length || !cfg.poses.length) { alert('Pick at least one environment and one pose.'); return; }
+  const count = parseInt(val('count')) || 0;
+  const r = await fetch('/api/queue/add', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ count, label: buildLabel(cfg, count), config: cfg }),
+  });
+  if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to add batch'); }
+};
+document.getElementById('clearBtn').onclick = () => fetch('/api/queue/clear', { method:'POST' });
+
+// --- status / connection ---
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/status'); const s = await r.json();
+    document.getElementById('cmd').textContent = s.debugCommand;
+    const dot = s.chrome.connected ? 'var(--good)' : 'var(--bad)';
+    const txt = s.chrome.connected ? ('Connected · ' + (s.chrome.browser||'Chrome')) : 'Not connected';
+    document.getElementById('connPill').innerHTML = `<span class="status-dot" style="background:${dot}"></span>${txt}`;
+    document.getElementById('connText').textContent = s.chrome.connected ? '✓ Chrome debug port reachable' : '✗ launch Chrome with the command above';
+  } catch {}
+}
+document.getElementById('testConn').onclick = refreshStatus;
+document.getElementById('copyCmd').onclick = () => {
+  navigator.clipboard.writeText(document.getElementById('cmd').textContent);
+  document.getElementById('copyCmd').textContent = 'Copied!';
+  setTimeout(()=>document.getElementById('copyCmd').textContent='Copy command', 1200);
+};
+
+document.getElementById('startBtn').onclick = async () => {
+  const r = await fetch('/api/start', { method:'POST' });
+  if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to start'); }
+};
+document.getElementById('stopBtn').onclick = () => fetch('/api/stop', { method:'POST' });
+
+refreshStatus();
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>
