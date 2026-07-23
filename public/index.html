@@ -64,11 +64,17 @@
   .seg { display: inline-flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 20px; padding: 3px; }
   .seg button { border: none; background: transparent; color: var(--dim); padding: 6px 16px; border-radius: 16px; font-weight: 600; cursor: pointer; }
   .seg button.active { background: var(--accent2); color: #fff; }
-  .pack { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; margin-bottom: 9px; cursor: pointer; transition: border-color .15s, background .15s; }
-  .pack:hover { border-color: var(--accent); background: #1f2530; }
+  .pack { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; margin-bottom: 9px; transition: border-color .15s; }
+  .pack:hover { border-color: var(--accent); }
+  .pack .ptop { display: flex; align-items: flex-start; gap: 10px; }
+  .pack .pmeta { flex: 1; min-width: 0; }
   .pack .pt { font-weight: 600; font-size: 13.5px; }
   .pack .pd { color: var(--dim); font-size: 11.5px; margin-top: 3px; line-height: 1.35; }
-  .pack .add { float: right; font-size: 11px; color: var(--accent); font-weight: 600; }
+  .pack .qbtn { background: var(--panel); border: 1px solid var(--accent2); color: var(--accent); border-radius: 8px; padding: 6px 11px; font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+  .pack .qbtn:hover { background: var(--accent2); color: #fff; }
+  .pack .bgref { width: 100%; margin-top: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 7px; padding: 6px 9px; font-size: 12px; }
+  .pack .bgref:focus { border-color: var(--accent2); outline: none; }
+  .pack .bgref::placeholder { color: #5c6675; }
 </style>
 </head>
 <body>
@@ -109,6 +115,9 @@
       <h2>2 · Character</h2>
       <label>Character name (must match the asset in Flow's picker)</label>
       <input type="text" id="characterName" value="Untitled Character" />
+      <label>Background reference (optional) — for custom batches below</label>
+      <input type="text" id="backgroundRef" placeholder="e.g. bedroom-ref (leave blank to use text backgrounds)" />
+      <p class="note">Name of an uploaded room/space asset. Used by the manual “Add batch to queue” builder below. Prebuilt packs each have their own room-reference field on the card.</p>
       <div class="row">
         <div><label>Physique</label><input type="text" id="physique" value="lean muscular athletic build, well-defined muscle tone, visible abs" /></div>
       </div>
@@ -168,7 +177,7 @@
         <div><label>Expression</label><input type="text" id="expression" value="candid, confident, focused" /></div>
       </div>
       <label>Lighting in the environment</label>
-      <input type="text" id="lighting" list="lightingList" value="bright even lighting, moderate contrast preserving skin texture" />
+      <input type="text" id="lighting" list="lightingList" value="flat ambient light, not flattering, slightly washed-out contrast, a bit of shine on nose and forehead" />
       <datalist id="lightingList">
         <option value="bright even gym lighting, clean and crisp"></option>
         <option value="moody dramatic low-key lighting, deep shadows"></option>
@@ -270,7 +279,7 @@ document.getElementById('poseAdd').addEventListener('keydown', e => { if (e.key=
 const val = id => document.getElementById(id).value;
 function collectConfig() {
   return {
-    characterName: val('characterName'),
+    characterName: val('characterName'), backgroundRef: val('backgroundRef'),
     physique: val('physique'), sweat: val('sweat'), hair: val('hair'),
     skin: val('skin'), appearanceExtra: val('appearanceExtra'),
     top: val('top'), bottoms: val('bottoms'), footwear: val('footwear'), accessories: val('accessories'),
@@ -295,9 +304,185 @@ function buildLabel(cfg, count) {
   return bits.join(' · ');
 }
 
+// ---------- Pose pools ----------
+// A location supplies the environment + lighting + camera + outfit; the pose
+// comes from one of these pools. Location × pose = the variety we were missing.
+// Pools are kept strictly separate so the phone rule is never violated:
+// mirror locations only ever get mirror poses, candid locations get no-phone poses.
+const MIRROR_POSES = [
+  'MIRROR SELFIE — standing square to the mirror, phone at chest in one hand and visible in the reflection, other arm hanging relaxed, head tilted down at the screen',
+  'MIRROR SELFIE — phone raised near the face and visible in the reflection, head tilted slightly, chin down, free hand loose at the side',
+  'MIRROR SELFIE — body turned side-on to the mirror in profile, phone held out and visible, head turned down toward the phone',
+  'MIRROR SELFIE — half turn, glancing back over the shoulder into the mirror, phone held low at hip height',
+  'MIRROR SELFIE — one hand in the pocket, weight shifted onto one leg, phone at chest, looking down at the screen',
+  'MIRROR SELFIE — low angle with the phone held at waist height pointing slightly up, full body in frame',
+  'MIRROR SELFIE — leaning in slightly toward the mirror, free hand braced on a surface, phone at chest',
+  'MIRROR SELFIE — full body straight on, feet visible, phone held with both hands at chest height',
+  'MIRROR SELFIE — mid-turn away from the mirror, torso rotating, head still angled at the phone',
+  'MIRROR SELFIE — free hand pushing hair back off the forehead, phone at chest, eyes down',
+];
+const CANDID_POSES = [ // all STANDING — no sitting (sitting shots read badly)
+  'NO PHONE ANYWHERE — photo taken by a friend. Standing with both hands in his pockets, head turned slightly, looking off camera',
+  'NO PHONE ANYWHERE — photo taken by a friend. Leaning one shoulder against a wall, one foot propped up behind him, arms loosely folded, gaze off to the side',
+  'NO PHONE ANYWHERE — photo taken by a friend. Caught mid-stride walking toward the camera, head slightly down, one hand adjusting his sleeve',
+  'NO PHONE ANYWHERE — photo taken by a friend. Both hands reaching up pulling the hood over his head, elbows raised, looking down',
+  'NO PHONE ANYWHERE — photo taken by a friend. One hand adjusting his beanie or cap, elbow raised, faint half-smile',
+  'NO PHONE ANYWHERE — photo taken by a friend. Holding a coffee or drink in one hand, head tilted down toward it, relaxed weight on one leg',
+  'NO PHONE ANYWHERE — photo taken by a friend. Turned three-quarters away, glancing back over his shoulder at the camera',
+  'NO PHONE ANYWHERE — photo taken by a friend. Standing square, thumbs hooked in his pockets, chin slightly down, looking into the lens',
+  'NO PHONE ANYWHERE — photo taken by a friend. One hand tugging the hem of his hoodie, weight shifted, looking down and away',
+  'NO PHONE ANYWHERE — photo taken by a friend. Mid-laugh, head tipped back slightly, hand near his face, genuinely candid',
+  'NO PHONE ANYWHERE — photo taken by a friend. Standing side-on, looking down the street away from the camera, hands relaxed at his sides',
+  'NO PHONE ANYWHERE — photo taken by a friend. Fixing his hair with one hand, elbow up, looking off to the side',
+];
+const POV_POSES = [
+  'ARM-EXTENDED POV SELFIE — one arm raised holding the phone toward himself, looking down into the lens, head tilted',
+  'ARM-EXTENDED POV SELFIE — phone held high above eye level angled down, free hand resting on his chest',
+  'ARM-EXTENDED POV SELFIE — leaning back, phone at arm-length slightly off to one side, eyes on the screen not the lens',
+  'ARM-EXTENDED POV SELFIE — free hand raised near the head pushing hair back, phone at arm-length',
+];
+// Tight face/upper-chest close-ups — these were missing from the last batch.
+const CLOSEUP_MIRROR = [
+  'MIRROR SELFIE, TIGHT CLOSE-UP — only head and upper chest fill the frame, phone raised near the face and visible in the reflection, looking down at the screen, jaw and neck chain visible',
+  'MIRROR SELFIE, TIGHT CLOSE-UP — face and shoulders only, free hand pushing hair back, phone partly covering the lower face in the reflection, soft focus on the eyes',
+  'MIRROR SELFIE, TIGHT CLOSE-UP — slight side angle of the face, chin down, upper chest and collar in frame, phone at the edge of the shot',
+];
+const CLOSEUP_POV = [
+  'ARM-EXTENDED POV SELFIE, TIGHT CLOSE-UP — face fills the frame from just above, looking down into the lens, natural relaxed expression',
+  'ARM-EXTENDED POV SELFIE, TIGHT CLOSE-UP — head and shoulders, free hand resting near the jaw, eyes slightly off the lens',
+];
+const MIRROR_ALL = MIRROR_POSES.concat(CLOSEUP_MIRROR);
+const POV_ALL = POV_POSES.concat(CLOSEUP_POV);
+
 // ---------- Prebuilt packs ----------
 const PACKS = {
   men: [
+    { title: '🔄 Reference Image Swap (Body Swap)', desc: 'Iterates through ALL reference pictures in the folder (men_ref_pics). Swaps face/identity of Untitled Character into each reference picture.',
+      config: {
+        isRefSwapPack: true,
+        physique: 'lean muscular athletic build',
+        sweat: 'dry',
+      } },
+    // Each scene is a recipe read off one of the reference photos in
+    // men_ref_pics/ — its light source & direction, colour cast, camera height,
+    // pose and environment clutter. This teaches Flow the PHOTOGRAPHY, with no
+    // reference image attached, so there is zero identity contamination.
+    { title: '📸 Real-scene recipes', desc: '20 locations × pose pools = 200+ shot combinations. Lighting welded to each room. Most realistic.',
+      config: {
+        physique: 'lean muscular athletic build, defined but natural',
+        sweat: 'dry, faint natural sheen',
+        top: 'oversized Fear of God Essentials hoodie or Represent tee',
+        bottoms: 'baggy jeans or Essentials sweatpants', footwear: 'Jordan 1s',
+        accessories: "Arc'teryx beanie, thin silver chain, watch",
+        expression: 'neutral, unbothered, calm',
+        scenes: [
+          // ================= MIRROR LOCATIONS (phone visible in reflection) =================
+          { env: 'dark modern gym room with black walls, a large LED-edge-lit mirror, a lit sign on the wall, dark rubber floor, water bottle and plates on the ground',
+            lighting: 'only the LED strip framing the mirror plus one small ceiling spot — bright rim on the face and shoulders, deep falloff into near-black walls behind',
+            camera: 'phone at chest height in a mirror, slight downward tilt, mild wide-angle, soft focus, visible noise in the dark areas',
+            wardrobe: { top: 'fitted Gymshark training tee', bottoms: 'baggy grey Gymshark sweatpants', footwear: 'clean training sneakers', accessories: 'over-ear headphones, watch' },
+            poses: MIRROR_ALL },
+          { env: 'busy commercial gym floor with squat racks, weight plates, a yellow lifting platform, other people training in the background, big wall mirror',
+            lighting: 'flat overhead ceiling fluorescents, even and slightly cool, mild shine on the forehead, no dramatic shadows',
+            camera: 'mirror selfie at chest height, whole body in frame, slightly off-centre',
+            wardrobe: { top: 'fitted white YoungLA training tee', bottoms: 'baggy grey sweatpants', footwear: 'white training sneakers', accessories: 'watch, AirPods' },
+            poses: MIRROR_ALL },
+          { env: 'gym locker room with grey numbered lockers, tiled floor, a gym bag and water bottle on the bench behind, faint dust specks on the mirror glass',
+            lighting: 'cool overhead fluorescent strips, flat and slightly grey-green, even exposure',
+            camera: 'straight-on mirror selfie, phone at chest, mild compression artefacts, dust visible on the mirror',
+            wardrobe: { top: 'navy Gymshark sleeveless training top', bottoms: 'baggy grey sweatpants', footwear: 'training sneakers', accessories: 'over-ear headphones' },
+            poses: MIRROR_ALL },
+          { env: 'plain grey wall in a gym corner with a bench and a bag on the floor, a large mirror on the wall',
+            lighting: 'flat even indoor light from above, mild sheen on the skin, soft shadow cast on the wall',
+            camera: 'mirror selfie, torso filling the frame, slight softness',
+            wardrobe: { top: 'shirtless', bottoms: 'baggy YoungLA sweatpants', footwear: 'training sneakers', accessories: 'AirPods, watch' },
+            poses: MIRROR_ALL },
+          { env: 'small home bathroom with a glass shower cubicle behind, tiled walls and a wall mirror',
+            lighting: 'one harsh ceiling downlight directly overhead — hotspot on the hair and shoulders, shadows under the brow and chin, slightly blown highlights',
+            camera: 'close mirror selfie, mild wide-angle distortion, slightly soft focus',
+            wardrobe: { top: 'plain white tank top', bottoms: 'baggy grey Essentials sweatpants', footwear: 'barefoot', accessories: 'watch' },
+            poses: MIRROR_ALL },
+          { env: 'home hallway mirror beside a wooden wardrobe, open door behind, tiled floor, a little clutter on the floor',
+            lighting: 'flat dim indoor ambient, slightly warm, low contrast, no visible direct source',
+            camera: 'handheld mirror selfie, visible motion softness, grain in the shadows, framing slightly tilted and off-centre',
+            wardrobe: { top: 'oversized black Corteiz or Trapstar hoodie over a white tee', bottoms: 'baggy washed black jeans', footwear: 'New Balance 2002R', accessories: "Arc'teryx beanie, silver chain" },
+            poses: MIRROR_ALL },
+          { env: 'lift/elevator interior with brushed stainless steel doors and walls, vertical reflections and streaks',
+            lighting: 'a single overhead elevator light — top-down, bright on the shoulders and beanie, soft shadow under the chin, metallic reflections',
+            camera: 'mirror selfie at chest height, full body, phone clearly visible in the reflection',
+            wardrobe: { top: 'tan Aimé Leon Dore hoodie', bottoms: 'baggy grey cargo trousers', footwear: 'Jordan 4s', accessories: "Arc'teryx beanie, black crossbody bag" },
+            poses: MIRROR_ALL },
+          { env: 'restaurant or bar bathroom with dark tiles, warm wall sconces beside a framed mirror, dark stone counter',
+            lighting: 'warm low tungsten sconces either side of the mirror, moody and dim, warm colour cast, soft shadows',
+            camera: 'close mirror selfie, warm cast, noise in the shadows, slightly soft',
+            wardrobe: { top: 'black Rhude or Chrome Hearts graphic tee', bottoms: 'baggy black jeans', footwear: 'Balenciaga Track sneakers', accessories: 'silver chain, chunky watch' },
+            poses: MIRROR_ALL },
+          { env: 'bedroom with a large leaning floor mirror, unmade bed and clothes visible behind, window to one side',
+            lighting: 'soft daylight from the side window, gentle falloff across the room, natural and slightly cool',
+            camera: 'full-length mirror selfie from waist height, whole body, slight lens distortion',
+            wardrobe: { top: 'washed brown Broken Planet hoodie', bottoms: 'baggy carpenter jeans', footwear: 'New Balance 550', accessories: "Arc'teryx beanie" },
+            poses: MIRROR_ALL },
+
+          // ================= POV SELFIE LOCATIONS (arm extended) =================
+          { env: 'driver seat of a BMW M3 with the window showing bright overcast sky, dark leather and carbon interior',
+            lighting: 'bright diffused daylight through the window blowing out the sky, flat soft light on the face, low contrast',
+            camera: 'low POV selfie held at chest level pointing up, mild wide-angle, blown highlights in the window',
+            wardrobe: { top: 'grey Aimé Leon Dore hoodie with the hood up', bottoms: 'baggy jeans', footwear: 'New Balance 990', accessories: "Arc'teryx beanie" },
+            poses: POV_ALL },
+          { env: 'bed in the morning with rumpled white sheets, curtains half drawn, plain wall behind',
+            lighting: 'soft diffused morning daylight through the curtains, low contrast, gentle and slightly warm',
+            camera: 'POV selfie from just above the face angled down, mild wide-angle, soft focus',
+            wardrobe: { top: 'plain white tee', bottoms: 'grey Essentials sweatpants', footwear: 'barefoot', accessories: 'none' },
+            poses: POV_ALL },
+
+          // ================= CANDID LOCATIONS (no phone, shot by a friend) =================
+          { env: 'empty road at golden hour with low white buildings, olive trees and a parked car in the distance',
+            lighting: 'low warm golden-hour sun, soft long light, pastel sky gradient, gentle contrast',
+            camera: 'full-body from a few metres away, slightly grainy, natural phone colour, no HDR',
+            wardrobe: { top: 'oversized washed Stussy tee', bottoms: 'baggy off-white jeans', footwear: 'New Balance 990', accessories: 'cap, canvas shoulder bag' },
+            poses: CANDID_POSES },
+          { env: 'waterfront railing at blue hour with a lit city skyline behind and water in between',
+            lighting: 'blue-hour ambient with warm city window lights as bokeh behind, soft even light on the face',
+            camera: 'waist-up from slightly in front, background city lights slightly out of focus',
+            wardrobe: { top: 'light grey Syna World zip hoodie', bottoms: 'baggy camo cargo trousers', footwear: 'Jordan 4s', accessories: "Arc'teryx beanie, silver chain" },
+            poses: CANDID_POSES },
+          { env: 'old town street at night with stone buildings, warm wall uplights, blurred people in the background',
+            lighting: 'warm sodium wall uplights on the buildings, mixed street light on the face, dark sky, noise in the shadows',
+            camera: 'waist-up from a couple of metres, handheld, slight motion softness',
+            wardrobe: { top: 'black leather jacket over a plain tee', bottoms: 'baggy black jeans', footwear: 'Balenciaga Triple S', accessories: 'chunky silver watch' },
+            poses: CANDID_POSES },
+          { env: 'garden pool at night, illuminated blue pool water, dark trees, a streetlamp glowing behind',
+            lighting: 'blue underwater pool glow lighting the scene from below and behind, warm streetlamp flare in the trees, otherwise very dark',
+            camera: 'full-body from a few metres away, slightly low angle, dark with visible noise, blown highlight on the lamp',
+            wardrobe: { top: 'shirtless', bottoms: 'baggy light-wash jeans', footwear: 'New Balance 2002R', accessories: 'sunglasses pushed up on the head' },
+            poses: CANDID_POSES },
+          { env: 'quiet city street at blue hour with a black BMW M3 parked at the kerb, clean modern buildings behind',
+            lighting: 'soft even blue-hour ambient light, warm shop windows behind, no harsh neon and no colour-cast gimmicks — clean natural dusk light',
+            camera: 'full-body from a few metres, natural phone colour, mild grain',
+            wardrobe: { top: 'oversized black Syna World or Broken Planet hoodie', bottoms: 'baggy grey jeans', footwear: 'Balenciaga Track sneakers', accessories: "Arc'teryx beanie, silver chain" },
+            poses: CANDID_POSES },
+          { env: 'dim bedroom with a framed picture on the wall behind and a bed just out of frame',
+            lighting: 'dim flat indoor ambient, slightly underexposed, low contrast and soft',
+            camera: 'waist-up from seated eye level, soft focus and visible noise',
+            wardrobe: { top: 'plain washed black tee', bottoms: 'baggy grey sweatpants', footwear: 'barefoot', accessories: 'silver cross chain' },
+            poses: CANDID_POSES },
+          { env: 'small specialty coffee shop with a window seat, wooden table, cups and plants, street visible outside',
+            lighting: 'soft daylight through the shop window from the side, warm interior bulbs behind, natural mixed light',
+            camera: 'waist-up from across the table, shallow natural depth, slight grain',
+            wardrobe: { top: 'cream knit Aimé Leon Dore sweater', bottoms: 'baggy jeans', footwear: 'New Balance 990', accessories: "Arc'teryx beanie" },
+            poses: CANDID_POSES },
+          { env: 'concrete stairwell or car park stairwell with painted handrails and scuffed walls',
+            lighting: 'hard overhead strip light in a concrete space, strong top-down shadows, cool grey cast',
+            camera: 'full-body from below on the stairs looking up slightly, grain in the shadows',
+            wardrobe: { top: 'black Corteiz cargo hoodie', bottoms: 'baggy black cargo trousers', footwear: 'New Balance 2002R', accessories: "Arc'teryx beanie" },
+            poses: CANDID_POSES },
+          { env: 'outdoor basketball court in the late afternoon, chain-link fence, painted lines, city trees behind',
+            lighting: 'warm low afternoon sun raking across the court, long shadows on the tarmac, natural contrast',
+            camera: 'full-body from a few metres, natural daylight colour, mild grain',
+            wardrobe: { top: 'oversized washed graphic tee', bottoms: 'baggy black basketball shorts', footwear: 'Jordan 4s', accessories: 'silver chain' },
+            poses: CANDID_POSES },
+        ],
+      } },
     { title: '🏋️ Dark aesthetic gym', desc: 'Dark American gym, big mirrors, moody lighting. Gymshark / YoungLA fits.',
       config: {
         physique: 'lean muscular athletic build, defined muscle tone, visible abs, veiny forearms',
@@ -316,19 +501,25 @@ const PACKS = {
           'mid-set flexing in the mirror', 'resting on a bench between sets glancing at phone',
           'lat spread pose in the mirror', 'leaning on the squat rack, mirror selfie' ],
       } },
-    { title: '🌴 Miami balcony (day)', desc: 'Luxury Miami high-rise balcony, golden daylight, designer casual.',
+    { title: '🥊 Boxing / MMA', desc: 'Sparring, wrestling, grappling, heavy bag. Fighter energy, sweaty.',
       config: {
-        physique: 'lean muscular athletic build', sweat: 'dry, clean',
-        top: 'open linen shirt over bare chest, or fitted designer tee',
-        bottoms: 'tailored casual shorts', footwear: 'designer sneakers or luxury sliders',
-        accessories: 'sunglasses, luxury watch, gold chain', expression: 'relaxed, confident',
-        lighting: 'bright warm Miami daylight, golden sunlight',
+        physique: 'lean muscular athletic fighter build, defined and conditioned',
+        sweat: 'sweaty, intense training glow, damp skin',
+        top: 'MMA rashguard or shirtless', bottoms: 'MMA fight shorts or grappling shorts',
+        footwear: 'barefoot or wrestling shoes',
+        accessories: 'boxing gloves or hand wraps', expression: 'intense, focused',
+        lighting: 'dramatic moody gym lighting with strong highlights',
         environments: [
-          'luxury high-rise balcony in Miami overlooking the ocean and skyline',
-          'modern Miami apartment balcony with palm trees and a city view' ],
+          'boxing gym with a ring and heavy bags',
+          'MMA cage / octagon training area',
+          'wrestling mat room with padded walls',
+          'BJJ / grappling mat area',
+          'boxing gym with big mirrors and rows of heavy bags' ],
         poses: [
-          'leaning on the balcony railing looking out over Miami', 'casual selfie on the Miami balcony',
-          'standing confidently on the balcony with the city behind' ],
+          'sparring stance with gloves up', 'hitting the heavy bag mid-punch',
+          'wrestling / grappling on the mat', 'MMA ground-work pose',
+          'shadow boxing in the mirror', 'wrapping hands with an intense look',
+          'leaning on the ring ropes', 'sweaty mirror selfie in fight gear' ],
       } },
     { title: '🌙 Dark Miami night (iPhone-lit)', desc: 'Night balcony / beach club, lit by phone flash. Moody & dark.',
       config: {
@@ -343,31 +534,84 @@ const PACKS = {
           'moody selfie lit only by phone light in the dark', 'candid night selfie with blurred city lights behind',
           'looking down at phone, face lit by the screen' ],
       } },
-    { title: '🪞 Room fit check (basic)', desc: 'Simple bedroom mirror selfie, aesthetic streetwear.',
+    { title: '🪞 Room fit check (ZARA)', desc: 'ZARA fits, varied poses, SAME consistent bedroom every shot.',
       config: {
+        backgroundRef: 'bedroom-ref',
         physique: 'lean athletic build', sweat: 'dry',
-        top: 'aesthetic fitted streetwear top', bottoms: 'relaxed straight jeans or cargos',
-        footwear: 'clean sneakers', accessories: 'watch, simple chain', expression: 'neutral, cool',
-        lighting: 'soft natural room light',
+        top: 'trendy ZARA outfit — fitted ZARA t-shirt, ZARA knit, or ZARA overshirt',
+        bottoms: 'ZARA trousers or straight ZARA jeans', footwear: 'clean minimal sneakers',
+        accessories: 'watch, simple silver chain', expression: 'neutral, cool, model-like',
+        lighting: 'soft even natural room light, identical in every shot',
         environments: [
-          'clean modern bedroom with a large full-length mirror',
-          'minimal aesthetic bedroom with soft natural light and a mirror' ],
-        poses: [ 'basic mirror selfie holding the phone at chest height', 'casual outfit mirror selfie, relaxed stance' ],
+          'the SAME clean modern minimalist bedroom with one large full-length mirror and neutral decor — keep this exact background identical and consistent across every image' ],
+        poses: [
+          'straight-on mirror selfie holding phone at chest',
+          'side-angle mirror selfie showing the outfit',
+          'half-turn mirror selfie looking over the shoulder',
+          'mirror selfie looking down while adjusting the fit',
+          'one hand in pocket, relaxed mirror pose',
+          'mirror selfie from a slightly low angle',
+          'leaning against the wall beside the mirror',
+          'full-body outfit pose facing the mirror' ],
       } },
-    { title: '🚗 Car selfies (subtle luxury)', desc: 'Range Rover / BMW / Audi / Mercedes / Corvette interiors.',
+    { title: '🖥️ PC setup (dark)', desc: 'Sitting at the PC setup working in the dark, monitor glow. Same room.',
+      config: {
+        backgroundRef: 'pc-room-ref',
+        physique: 'lean athletic build', sweat: 'dry',
+        top: 'ZARA hoodie or fitted plain tee', bottoms: 'relaxed joggers',
+        footwear: '', accessories: 'headphones around the neck', expression: 'focused, calm',
+        lighting: 'dark room lit only by the monitor glow and subtle RGB, moody low light, deep shadows',
+        environments: [
+          'the SAME dark PC / gaming setup at night — multiple monitors with a soft glow, dark room, keep this exact background consistent across every image' ],
+        poses: [
+          'selfie in front of the PC setup, face lit by the monitors',
+          'working at the desk, glancing at the phone for a selfie',
+          'leaning back in the gaming chair taking a selfie',
+          'candid selfie mid-work with the monitors glowing behind',
+          'side-lit selfie, only the screen light on the face' ],
+      } },
+    { title: '🏠 Home selfies', desc: 'Living space, branded fits (Essentials, Nike). Uses a room reference for consistency.',
+      config: {
+        backgroundRef: 'living-room-ref',
+        physique: 'lean athletic build', sweat: 'dry',
+        top: 'Fear of God Essentials hoodie or fitted Nike tee',
+        bottoms: 'Essentials sweatpants or Nike joggers', footwear: 'Nike sneakers or Jordans',
+        accessories: 'simple silver chain, watch', expression: 'relaxed, cool',
+        lighting: 'soft natural daylight, clean and airy',
+        environments: [
+          'the SAME minimal modern living space with neutral tones and soft daylight — keep this exact background consistent across every image' ],
+        poses: [
+          'POV selfie with the arm extended, looking at the camera',
+          'mirror selfie in the living room', 'sitting on the couch taking a selfie',
+          'leaning against the wall, casual selfie', 'standing in the living space, relaxed pose',
+          'high-angle POV selfie, candid' ],
+      } },
+    { title: '🎲 Randomizer selfies', desc: 'Random activity, place, pose & outfit each shot. High-angle above-the-head framing.',
       config: {
         physique: 'lean athletic build', sweat: 'dry',
-        top: 'fitted casual designer top or hoodie', bottoms: 'casual trousers or jeans',
-        footwear: 'clean sneakers', accessories: 'watch, sunglasses', expression: 'calm, confident',
-        lighting: 'natural daylight through the car windows',
-        environments: [ "driver's seat of a Range Rover", 'interior of a BMW', 'inside an Audi', 'Mercedes interior', 'Corvette interior' ],
+        top: 'a different random stylish outfit each shot — vary between streetwear, casual, smart-casual and athletic',
+        bottoms: 'bottoms matching the random outfit', footwear: 'shoes matching the outfit',
+        accessories: 'varied accessories', expression: 'candid, natural, varied',
+        appearanceExtra: 'Randomize the activity, outfit, pose and background so every image feels different and spontaneous.',
+        cameraStyle: 'high-angle selfie with the phone held above the head, framing from above the head down to the upper body, casual candid iPhone selfie',
+        lighting: 'natural lighting that matches the environment',
+        environments: [
+          'busy city street', 'cozy cafe', 'home living room', 'park path', 'shopping mall',
+          'rooftop at sunset', 'modern kitchen', 'elevator with a mirror', 'parking garage',
+          'subway platform', 'bookstore aisle', 'beach boardwalk' ],
         poses: [
-          'car selfie in the driver seat glancing at the phone',
-          'steady parked-car selfie with direct eye contact to the phone',
-          'casual selfie in the parked car with seatbelt on' ],
+          'high-angle selfie holding the phone above the head, looking up at the camera',
+          'candid above-the-head selfie mid-activity', 'above-the-head selfie looking to the side',
+          'above-the-head selfie laughing', 'high-angle walking selfie', 'high-angle sitting selfie' ],
       } },
   ],
   women: [
+    { title: '🔄 Reference Image Swap (Body Swap)', desc: 'Iterates through ALL reference pictures in the folder (women_ref_pics). Swaps face/identity of Untitled Character into each reference picture.',
+      config: {
+        isRefSwapPack: true,
+        physique: 'slim toned feminine figure',
+        sweat: 'dry',
+      } },
     { title: '🏋️ Dark aesthetic gym', desc: 'Dark American gym, big mirrors. DFYNE / Gymshark sets.',
       config: {
         physique: 'toned athletic feminine figure, fit and lean',
@@ -386,39 +630,91 @@ const PACKS = {
           'post-workout mirror selfie', 'mid-set mirror selfie with weights',
           'resting glancing at phone with the mirror behind' ],
       } },
-    { title: '🚗 Car selfies', desc: 'Driving selfie or steady, looking right at the phone. Soft daylight.',
+    { title: '🏠 Home POV selfies', desc: 'Minimal apartment / kitchen. Black cami dress or white tank + Nike shorts. Arm-extended selfie.',
       config: {
+        backgroundRef: 'apartment-ref',
         physique: 'slim toned feminine figure', sweat: 'dry',
-        top: 'trendy aesthetic top', bottoms: 'casual chic bottoms', footwear: 'clean trendy shoes',
-        accessories: 'delicate jewelry, sunglasses', expression: 'soft, natural, confident',
-        lighting: 'soft natural daylight through the car windows on the face',
-        environments: [ "driver's seat of a car in daytime", 'parked car interior with soft natural light', 'passenger seat with warm daylight' ],
+        top: 'fitted black cami mini dress, or a white tank top with black Nike running shorts',
+        bottoms: 'part of the dress, or black Nike running shorts', footwear: 'barefoot or clean sneakers',
+        accessories: 'thin gold necklace, small gold hoops', expression: 'soft, relaxed, effortless',
+        lighting: 'soft bright natural daylight, clean and airy',
+        environments: [
+          'minimal modern apartment with neutral tones and soft daylight',
+          'clean modern kitchen with a marble counter and soft daylight',
+          'bright minimalist living room with large windows' ],
         poses: [
-          'selfie while driving, one hand on the wheel, glancing at the phone',
-          'steady car selfie looking directly into the phone',
-          'natural-light car selfie with the face toward the camera' ],
+          'POV selfie with the arm extended, other hand on the hip, looking at the camera',
+          'POV selfie sitting on the kitchen counter, one hand resting on the chest',
+          'high-angle POV selfie, relaxed candid expression',
+          'POV selfie standing in the apartment, natural effortless pose' ],
       } },
-    { title: '🪞 Room fit check (Pinterest)', desc: 'Aesthetic bedroom, full-length mirror, Pinterest styling.',
+    { title: '🚗 Car selfies', desc: 'POV selfie, arm extended, hand near head, looking to the side. Bright natural light.',
       config: {
         physique: 'slim toned feminine figure', sweat: 'dry',
-        top: 'trendy coordinated Pinterest-style outfit top', bottoms: 'matching aesthetic bottoms',
+        top: 'fitted white tank top or trendy aesthetic top', bottoms: 'leggings or casual chic bottoms',
+        footwear: 'clean trendy shoes', accessories: 'delicate jewelry, sleek ponytail',
+        expression: 'soft, natural, effortless',
+        lighting: 'bright warm natural sunlight streaming through the car windows onto the face',
+        environments: [
+          "driver's seat of a nice car (BMW / Audi / Range Rover) in bright daylight",
+          'parked car interior with warm sunlight through the windows',
+          'passenger seat with bright natural light' ],
+        poses: [
+          'POV selfie with one arm extended holding the phone, the free hand raised near the head/hair, looking off to the side',
+          'steady selfie in the driver seat looking slightly away from the camera',
+          'high-angle car selfie, natural window light on the face, one hand adjusting hair',
+          'selfie while driving, one hand on the wheel, glancing toward the phone' ],
+      } },
+    { title: '🪞 Room fit check (ZARA)', desc: 'ZARA fits, varied Pinterest poses, SAME consistent bedroom every shot.',
+      config: {
+        backgroundRef: 'bedroom-ref',
+        physique: 'slim toned feminine figure', sweat: 'dry',
+        top: 'trendy coordinated ZARA outfit', bottoms: 'matching ZARA piece',
         footwear: 'trendy shoes', accessories: 'dainty jewelry, handbag', expression: 'soft, effortless',
-        lighting: 'soft warm aesthetic lighting',
+        lighting: 'soft warm aesthetic lighting, identical in every shot',
         environments: [
-          'aesthetic Pinterest-style bedroom with a full-length mirror and cozy neutral tones',
-          'clean girly aesthetic room with soft light and a large mirror' ],
-        poses: [ 'full-body mirror fit check, posing', 'outfit mirror selfie, Pinterest aesthetic', 'candid mirror pose adjusting the outfit' ],
+          'the SAME aesthetic Pinterest-style bedroom with one full-length mirror and cozy neutral tones — keep this exact background identical and consistent across every image' ],
+        poses: [
+          'full-body mirror fit check, posing', 'side-angle mirror selfie showing the outfit',
+          'over-the-shoulder mirror pose', 'looking down while adjusting the outfit',
+          'candid mirror pose', 'low-angle full-body mirror shot',
+          'hand on hip Pinterest pose', 'walking-toward-the-mirror candid' ],
       } },
-    { title: '🛍️ Street fit check (Pinterest)', desc: 'Street-style outfit shots, nice architecture, Pinterest vibe.',
+    { title: '🛍️ Street fit check (Pinterest)', desc: 'NYC stoop / street style — tank, cargos, Jordans, designer bag. Clean-girl.',
       config: {
         physique: 'slim toned feminine figure', sweat: 'dry',
-        top: 'trendy street-style outfit', bottoms: 'aesthetic coordinated bottoms', footwear: 'stylish shoes',
-        accessories: 'sunglasses, handbag, jewelry', expression: 'effortless, candid',
-        lighting: 'soft natural daylight',
+        top: 'fitted black or white ribbed tank top', bottoms: 'relaxed cargo pants or tailored trousers',
+        footwear: 'Nike Jordan 1 sneakers', accessories: 'small tinted sunglasses, designer shoulder bag (Gucci/YSL style), thin gold jewelry',
+        expression: 'cool, effortless, model-off-duty',
+        lighting: 'soft natural daylight, slightly overcast',
         environments: [
-          'aesthetic city street, Pinterest style, nice architecture',
-          'urban street with cafes and warm tones', 'clean modern street with soft daylight' ],
-        poses: [ 'street-style fit check pose on the sidewalk', 'candid walking outfit shot', 'posing against a nice wall, Pinterest style' ],
+          'sitting on a NYC brownstone stoop with a dark door and brass details',
+          'aesthetic city street with nice architecture, Pinterest style',
+          'urban street corner with cafes and warm neutral tones' ],
+        poses: [
+          'sitting on the steps, chin resting on hand, looking at the camera',
+          'sitting on the stoop, elbows on knees, relaxed cool pose',
+          'street-style full-body fit check standing on the sidewalk',
+          'candid walking outfit shot', 'leaning against a wall, over-the-shoulder look',
+          'high-angle sitting pose looking up at the camera' ],
+      } },
+    { title: '🎲 Randomizer selfies', desc: 'Random activity, place, pose & outfit each shot. High-angle above-the-head framing.',
+      config: {
+        physique: 'slim toned feminine figure', sweat: 'dry',
+        top: 'a different random stylish outfit each shot — vary between trendy, casual, going-out and athletic looks',
+        bottoms: 'bottoms matching the random outfit', footwear: 'shoes matching the outfit',
+        accessories: 'varied accessories', expression: 'candid, natural, varied',
+        appearanceExtra: 'Randomize the activity, outfit, pose and background so every image feels different and spontaneous.',
+        cameraStyle: 'high-angle selfie with the phone held above the head, framing from above the head down to the upper body, casual candid iPhone selfie',
+        lighting: 'natural lighting that matches the environment',
+        environments: [
+          'busy city street', 'cozy cafe', 'home living room', 'park path', 'shopping mall',
+          'rooftop at sunset', 'modern kitchen', 'elevator with a mirror', 'parking garage',
+          'boutique changing room', 'bookstore aisle', 'beach boardwalk' ],
+        poses: [
+          'high-angle selfie holding the phone above the head, looking up at the camera',
+          'candid above-the-head selfie mid-activity', 'above-the-head selfie looking to the side',
+          'above-the-head selfie laughing', 'high-angle walking selfie', 'high-angle sitting selfie' ],
       } },
     { title: '🌙 Night out (dark iPhone-lit)', desc: 'Beach club / rooftop at night, glam, lit by phone flash.',
       config: {
@@ -436,33 +732,66 @@ const PACKS = {
 
 let gender = 'men';
 function packBaseDefaults() {
-  return {
+  const base = {
     characterName: val('characterName'),
-    skin: 'visible pores and natural skin grain, realistic, no smoothing',
     hair: val('hair') || 'natural styling, slightly tousled',
     appearanceExtra: '',
     cameraStyle: 'authentic iPhone photo, natural perspective, no wide-angle distortion',
     aspectRatio: '9:16', shuffle: true, waitSeconds: 35, jitterSeconds: 25,
   };
+  if (gender === 'women') {
+    base.skin = "natural sun-kissed skin, subtle glossy lips, soft no-makeup makeup look, keep the character's own freckles and features, realistic pores, no heavy retouching or smoothing";
+    base.styleNote = 'Pinterest clean-girl / model-off-duty aesthetic: effortless, expensive-looking but understated, minimal neutral styling, delicate gold jewelry (thin chains, small hoops), soft natural lighting, candid and aspirational like a high-follower Instagram model — clean, elegant, not overdone';
+  } else {
+    base.skin = "real male skin with visible pores and natural texture, subtle blemishes and imperfections, keep the character's own features, no smoothing or retouching";
+    base.styleNote = "Authentic male Instagram-model aesthetic: effortless and aspirational, real candid iPhone mirror/POV selfies from the camera roll, natural imperfect lighting (dim moody gym, bathroom, elevator, bedroom, sunset balcony), relaxed cool body language and a genuine expression, real skin texture with sweat / tattoos / flyaway hair kept — looks like a real influencer's phone photo, not a polished render";
+  }
+  return base;
 }
 function renderPacks() {
   const el = document.getElementById('packList');
   el.innerHTML = '';
-  PACKS[gender].forEach((p, i) => {
+  PACKS[gender].forEach((p) => {
     const div = document.createElement('div');
     div.className = 'pack';
-    div.innerHTML = `<span class="add">+ Queue</span><div class="pt">${p.title}</div><div class="pd">${p.desc}</div>`;
-    div.onclick = () => addPack(p);
+    const bgDefault = (p.config.backgroundRef || '').replace(/"/g, '&quot;');
+    div.innerHTML = `
+      <div class="ptop">
+        <div class="pmeta"><div class="pt">${p.title}</div><div class="pd">${p.desc}</div></div>
+        <button class="qbtn">+ Queue</button>
+      </div>
+      <input class="bgref" type="text" placeholder="Room / space reference image name (optional)" value="${bgDefault}" />`;
+    const input = div.querySelector('.bgref');
+    div.querySelector('.qbtn').addEventListener('click', () => addPack(p, input.value.trim()));
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') addPack(p, input.value.trim()); });
     el.appendChild(div);
   });
 }
-async function addPack(p) {
-  const count = parseInt(document.getElementById('packCount').value) || 10;
+async function addPack(p, bgRef) {
+  const userCount = parseInt(document.getElementById('packCount').value) || 0;
   const cfg = { ...packBaseDefaults(), ...p.config };
-  const label = `${p.title.replace(/^[^\s]+\s/, '')} — ${count}×`;
+  if (p.config.isRefSwapPack) {
+    try {
+      const res = await fetch(`/api/ref-pics?gender=${gender}`);
+      const data = await res.json();
+      if (!data.files || !data.files.length) {
+        alert(`No reference pictures found in folder ${gender}_ref_pics/`);
+        return;
+      }
+      cfg.refPics = data.files;
+      cfg.folderName = `${gender}_ref_pics`;
+    } catch (e) {
+      alert('Error fetching reference pictures: ' + (e.message || e));
+      return;
+    }
+  }
+  cfg.backgroundRef = bgRef || '';
+  const totalPics = cfg.refPics ? cfg.refPics.length : 0;
+  const targetCount = p.config.isRefSwapPack ? totalPics : (userCount || 10);
+  const label = `${p.title.replace(/^[^\s]+\s/, '')} — ` + (cfg.refPics ? `${targetCount}× (${totalPics} ref pics in folder)` : `${targetCount}×`) + (cfg.backgroundRef ? ` · 🖼 ${cfg.backgroundRef}` : '');
   const r = await fetch('/api/queue/add', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count, label, config: cfg }),
+    body: JSON.stringify({ count: targetCount, label, config: cfg }),
   });
   if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to queue pack'); }
 }

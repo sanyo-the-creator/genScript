@@ -1,109 +1,42 @@
 const basePrompt = {
-  "GLOBAL_IDENTITY_LOCK": "IDENTITY IS EXTERNALLY ANCHORED VIA MASTER ANCHOR IMAGE (ANCHOR A).\nDO NOT GENERATE, INFER, MODIFY, OR REPLACE CORE IDENTITY.\nFACIAL STRUCTURE, BONE GEOMETRY, AND BODY PROPORTIONS MUST MATCH ANCHOR A EXACTLY.",
-  "TEMPORARY_IDENTITY_OVERRIDE": {
-    "scope": "styling-only",
-    "allowed_changes": [
-      "hair parting"
-    ],
-    "constraints": "override applies ONLY to hair parting configuration; facial structure, hair density, hairline, and overall identity remain unchanged",
-    "revert_instruction": "remove this block to restore full global identity lock"
+  "IDENTITY_AND_REFERENCE_LOCK": {
+    "identity_source": "Use the attached reference image as the base. SAME person: same facial structure, same eyes, same lips, same nose, same face proportions, same hair color and hairline. Copy the face and hair exactly — do not invent a different man.",
+    "reference_isolation": "CRITICAL: Attached reference images are used ONLY for facial identity and head features. DO NOT copy the pose, background environment, lighting, angle, or clothing from reference images. Generate a completely NEW realistic setting, NEW realistic pose, NEW casual outfit, and NEW realistic lighting as specified in this prompt."
   },
-  "identity_constraints": {
-    "integrity": "Keep the same woman exactly as the reference image. Do not change face, body, or identity.",
-    "facial_structure": "Preserve exact facial bone structure and proportions.",
-    "prohibitions": [
-      "no identity drift",
-      "no reshaping"
-    ]
+  "PHOTO_QUALITY": {
+    "style": "Clean, authentic iPhone camera-roll photo straight from a smartphone — NOT a studio session, NOT AI, NOT 3D rendered.",
+    "camera": "Sharp, true-to-life smartphone camera quality with clean optics, authentic ambient lighting, natural color profile, and real skin texture with visible pores and hair details. Zero plastic skin smoothing, zero beauty filters.",
+    "lighting": "Natural ambient lighting matching the location, crisp contrast, real skin texture",
+    "human_detail": "Authentic human details: natural skin texture, visible pores, real hairline. No skin smoothing, no retouching, no beauty filters."
   },
-  "skin_and_micro_details": {
-    "texture": "visible pores and natural skin grain on face and body",
-    "freckles": "freckles across nose and cheeks preserved",
-    "glow": "natural skin glow under bright indoor lighting, not airbrushed",
-    "lips": "naturally full lips with visible lip texture and hydration lines, soft glossy finish",
-    "eyes": "sharp eyes with realistic wetline, iris detail, and crisp catchlights",
-    "processing": "no smoothing, no beauty filters, no plastic skin"
+  "BODY_AND_VIBE": {
+    "transformation_after": "The subject looks GENUINELY IMPRESSIVE (10/10 fit): lean-athletic build, styled hair, alert confident gaze, upright posture, well-fitted stylish outfit, calm composed energy.",
+    "core_principle": "Authentic camera quality, impressive subject."
   },
-  "environment": {
-    "location": "modern kitchen interior",
-    "time": "evening or indoor night ambience",
-    "kitchen_details": [
-      "sleek modern cabinetry",
-      "clean stone countertop",
-      "subtle under-cabinet lighting",
-      "minimal clutter"
-    ],
-    "background_rule": "kitchen remains readable and realistic, no artificial blur"
+  "POSE_AND_CAMERA": {
+    "framing": "Framing is slightly OFF — head shifted off-center, imperfect crop, not consciously posing.",
+    "selfie_mechanics": "If a MIRROR SELFIE (bathroom or bedroom mirror selfie): he is holding his phone up in front of himself, aimed at the mirror, the phone itself clearly visible in the reflection covering part of his face or chest. Classic selfie realism: mild wide-angle distortion from holding the phone close, arm slightly bent and visible in the mirror. His eye contact is with the PHONE SCREEN, not directly into the lens.",
+    "candid_mechanics": "If NOT a mirror selfie: NO phone anywhere in his hands (photo taken by a friend). His hands do something natural instead: in pockets, holding a drink or bag, adjusting a hood/cap, or relaxed at sides.",
+    "pose": "Bathroom mirror selfie",
+    "expression": "candid, natural, calm composed confident energy"
   },
-  "wardrobe": {
-    "override_rule": "replace all reference clothing completely",
-    "top": "cropped lightweight thin-string white vest top",
-    "bottoms": "Nike athletic gym shorts with elastic waistband and subtle logo placement",
-    "fit_logic": "clothing conforms naturally to the body with no compression, reshaping, or proportion changes"
+  "WARDROBE": {
+    "override_rule": "Dress him in a plausible casual outfit that FITS THIS SCENE — DIFFERENT from the clothes in the reference images. Never copy the reference outfit; the same hoodie must not appear in every photo.",
+    "top": "fitted casual t-shirt or oversized hoodie",
+    "bottoms": "baggy jeans or casual athletic pants",
+    "footwear": "clean sneakers",
+    "accessories": "watch or silver chain"
   },
-  "accessories_and_grooming": {
-    "jewelry": "none unless already present in anchor image",
-    "nails": "natural or subtle manicure only, no exaggerated styling unless present in anchor image",
-    "hair": {
-      "style": "straight hair",
-      "parting": "strict middle parting, perfectly centered and symmetrical",
-      "bangs": "none",
-      "ear_coverage": "both ears fully covered by hair at all times",
-      "placement": "hair must fall forward in front of the ears on both sides, resting over the cheeks and jawline",
-      "constraints": [
-        "absolutely no hair tucked behind ears",
-        "no ear exposure",
-        "no side sweep",
-        "no off-center bias",
-        "no asymmetry artifacts"
-      ]
-    }
+  "ENVIRONMENT": {
+    "location": "Home bathroom with a mirror",
+    "setting_feel": "A real home bathroom, bedroom, gym, or indoor setting with natural ambient light, towel or shower curtain out of focus in the background, or realistic room clutter."
   },
-  "pose_and_expression": {
-    "pose": "POV front-facing selfie",
-    "seating_surface": "subject sitting on top of the kitchen countertop",
-    "leg_positioning": "legs bent naturally over the edge of the counter, relaxed and casual",
-    "arm_configuration": {
-      "extended_arm": "ONE arm extended high and forward but angled outward to the side, elbow slightly bent, phone held above eye-line yet forward from the head, with the entire hand and forearm kept fully out of frame",
-      "hand_visibility_rule": "no hand, no fingers, no wrist, no forearm visible anywhere in frame",
-      "free_arm": "the other arm bent naturally with the hand resting gently on the upper chest"
-    },
-    "body_position": "upright seated posture with a subtle torso twist creating asymmetry",
-    "head_angle": "head tilted slightly to one side, not square to camera",
-    "expression": "candid, natural, lightly confident expression",
-    "framing": "tight upper-body selfie framing; crop starts below collarbones and ends above head with reduced headroom"
-  },
-  "camera_and_lighting": {
-    "camera_style": "candid phone-camera realism",
-    "camera": {
-      "type": "front-facing smartphone camera",
-      "angle": "high downward angle from extended arm POV",
-      "placement_logic": "camera held forward and slightly to the subject’s right, not overhead",
-      "rotation": "camera rotated clockwise approximately 10–15 degrees to create a clear right-tilted frame",
-      "distance": "extended arm’s length, device fully out of frame",
-      "framing_rule": "subject positioned lower-left in frame to prevent top-edge hand intrusion",
-      "lens_feel": "natural iPhone perspective, no wide-angle distortion",
-      "composition_bias": "intentional right-leaning diagonal composition, not level or symmetrical"
-    },
-    "lighting": {
-      "primary": "bright indoor kitchen lighting with soft even fill",
-      "secondary": "subtle warm practicals adding depth",
-      "contrast": "moderate, preserving facial structure and skin texture",
-      "bokeh": "none"
-    }
-  },
-  "selfie_realism_rule": "high-angle selfie must be achieved by forward-and-side camera placement, not overhead reach; keep hand and forearm completely out of frame while maintaining the right-tilted angle",
-  "realism": {
-    "detail_level": "high-fidelity photographic realism",
-    "constraints": [
-      "no AI artifacts",
-      "no over-stylization",
-      "no loss of texture",
-      "no artificial bokeh",
-      "no cinematic grading"
-    ]
-  },
-  "aspect_ratio": "4:5"
+  "avoid": [
+    "posed magazine expression", "dramatic or studio lighting",
+    "perfectly composed framing", "retouching or beauty smoothing",
+    "clean studio background", "plastic skin", "AI / CGI / rendered look", "copying reference clothing"
+  ],
+  "aspect_ratio": "9:16"
 };
 
 // --- 2. YOUR ROTATION LISTS ---
@@ -378,8 +311,8 @@ async function startAutomation() {
 
             // B. Update the prompt object
             let currentPrompt = JSON.parse(JSON.stringify(basePrompt)); 
-            currentPrompt.environment.location = env;
-            currentPrompt.pose_and_expression.pose = pose;
+            currentPrompt.ENVIRONMENT.location = env;
+            currentPrompt.POSE_AND_CAMERA.pose = pose;
             const promptString = JSON.stringify(currentPrompt, null, 2);
 
             // C. Paste the prompt (using the Slate.js compatible selector)

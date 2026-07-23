@@ -85,65 +85,78 @@ function clean(obj) {
   return out;
 }
 
-function buildPrompt(cfg, env, pose) {
-  return clean({
-    GLOBAL_IDENTITY_LOCK:
-      'IDENTITY IS EXTERNALLY ANCHORED VIA MASTER ANCHOR IMAGE (ANCHOR A). ' +
-      'DO NOT GENERATE, INFER, MODIFY, OR REPLACE CORE IDENTITY. ' +
-      'FACIAL STRUCTURE, BONE GEOMETRY, AND BODY PROPORTIONS MUST MATCH ANCHOR A EXACTLY.',
-    shot_on_iphone:
-      'This is an authentic candid photo shot on an iPhone. It MUST look like a real ' +
-      'smartphone photograph taken by a person — natural iPhone camera rendering, realistic ' +
-      'lens characteristics and depth of field, true-to-life color and lighting, and subtle ' +
-      'real-world imperfections (natural skin texture, slight sensor noise, minor motion). ' +
-      'It must NOT look AI-generated, CGI, 3D-rendered, illustrated, plastic, airbrushed, ' +
-      'over-sharpened, or over-processed.',
-    identity_constraints: {
-      integrity: 'Keep the same person exactly as the reference image. Do not change face or identity.',
-      facial_structure: 'Preserve exact facial bone structure and proportions.',
-      prohibitions: ['no identity drift', 'no reshaping'],
-    },
-    appearance: {
-      physique: cfg.physique,
-      sweat: cfg.sweat,
-      skin: cfg.skin,
-      extra: cfg.appearanceExtra,
-    },
-    // Styling-only hair override: restyle the character's existing hair without
-    // changing the hair itself (color, length, density, texture, hairline).
-    hair_styling: cfg.hair ? {
-      scope: 'styling-only',
-      style: cfg.hair,
-      constraints:
-        "Change ONLY how the hair is styled/arranged. Preserve the character's actual hair " +
-        'exactly as in the reference — same color, length, density, texture, and hairline. ' +
-        'Do not alter identity.',
-    } : undefined,
-    wardrobe: {
-      override_rule: 'replace all reference clothing completely',
-      top: cfg.top,
-      bottoms: cfg.bottoms,
-      footwear: cfg.footwear,
-      accessories: cfg.accessories,
-    },
-    environment: { location: env },
-    pose_and_expression: {
-      pose: pose,
-      expression: cfg.expression,
-    },
-    camera_and_lighting: {
-      camera_style: cfg.cameraStyle,
-      lighting: cfg.lighting,
-    },
-    realism: {
-      detail_level: 'authentic iPhone photo realism',
-      constraints: [
-        'must look like a real photo shot on an iPhone',
-        'must NOT look AI-generated or 3D-rendered',
-        'no AI artifacts', 'no over-stylization', 'no plastic skin', 'no beauty filters',
+function buildPrompt(cfg, task) {
+  if (task.isRefSwap) {
+    const charName = cfg.characterName || 'Untitled Character';
+    const refImg = task.refImageName || 'reference image';
+    return clean({
+      ABSOLUTE_CHARACTER_CONSISTENCY: {
+        core_mandate: `Keep ${charName} ABSOLUTELY CONSISTENT — exact same person. ${charName} is NOT a head swap or face paste onto ${refImg}.`,
+        full_body_identity: `Preserve ${charName}'s full body identity ABSOLUTELY: exact face, eyes, nose, lips, hair, skin tone, muscle mass, physique, body proportions, tattoos, glasses, and personal accessories from ${charName}.`,
+        prohibitions: `DO NOT paste or blend ${charName}'s head onto ${refImg}'s body. DO NOT copy muscle mass, body shape, tattoos, skin tone, or facial features from ${refImg}.`,
+      },
+      SCENE_TRANSFER: {
+        instruction: `Place ${charName} into the scene, pose, outfit, environment, and lighting setup of ${refImg}.`,
+        scene_elements: `Match the exact environment, background setting, lighting direction, pose posture, camera framing, outfit drape, and scene composition from ${refImg}.`,
+      },
+      PHOTO_REALISM:
+        'A clean, authentic iPhone camera-roll photo — sharp natural image quality, true-to-life lighting and color, natural skin texture with visible pores and hair details. NOT a studio photo session, NOT AI, NOT 3D rendered. Clean smartphone optics, zero plastic skin smoothing, zero beauty filters.',
+      avoid: [
+        'face paste look', 'head cutout look', 'inconsistent body', 'copying reference body or tattoos',
+        'posed magazine expression', 'studio or dramatic lighting', 'plastic smoothed skin', 'airbrushed skin', 'AI / CGI / rendered look',
       ],
+      aspect_ratio: cfg.aspectRatio || '9:16',
+    });
+  }
+
+  const { env, pose } = task;
+  const isMirror = /MIRROR SELFIE/i.test(pose);
+  const isPov = /POV SELFIE/i.test(pose);
+
+  // Only the mechanics that match THIS pose — no always-on boilerplate that
+  // makes every prompt look identical to the model.
+  let phone_mechanics;
+  if (isMirror) {
+    phone_mechanics =
+      'MIRROR SELFIE: phone held up aimed at the mirror and clearly visible in the reflection covering part of the face or chest, arm bent and visible, mild wide-angle distortion from holding the phone close. Gaze is on the PHONE SCREEN, not the lens — the slightly-off look of someone composing a selfie, never a posed stare.';
+  } else if (isPov) {
+    phone_mechanics =
+      'ARM-EXTENDED POV SELFIE: one arm reaches toward the camera holding the phone, mild wide-angle distortion, eyes roughly on the screen, casual and unposed.';
+  } else {
+    phone_mechanics =
+      'NO PHONE ANYWHERE — this photo was taken by a friend. His hands do something natural (pockets, holding a drink/bag, adjusting a hood/cap, relaxed at sides). Do not put a phone in his hands.';
+  }
+
+  return clean({
+    // THE SHOT — lead with the concrete, varying content so it dominates.
+    SHOT: {
+      pose: pose,
+      location: env,
+      lighting: task.lighting || cfg.lighting,
+      camera: task.camera || cfg.cameraStyle,
+      framing: 'framing slightly OFF — head off-centre, imperfect crop, not consciously posing',
+      phone_mechanics,
+      expression: cfg.expression || 'candid, natural, calm composed confident',
     },
-    aspect_ratio: cfg.aspectRatio,
+    WARDROBE: {
+      note: 'exactly this outfit for this shot',
+      top: (task.wardrobe && task.wardrobe.top) || cfg.top,
+      bottoms: (task.wardrobe && task.wardrobe.bottoms) || cfg.bottoms,
+      footwear: (task.wardrobe && task.wardrobe.footwear) || cfg.footwear,
+      accessories: (task.wardrobe && task.wardrobe.accessories) || cfg.accessories,
+    },
+    IDENTITY: {
+      source: 'Attached reference = the SAME person: same face, eyes, lips, nose, proportions, hair colour and hairline. Copy the face and hair exactly.',
+      isolation: 'Use the attached reference ONLY for the face/head. Take NOTHING else from it — the pose, location, lighting, camera and outfit come entirely from SHOT and WARDROBE above.',
+    },
+    // ONE tight realism block (no six overlapping ones fighting each other).
+    PHOTO_REALISM:
+      'A clean, authentic iPhone camera-roll photo — sharp natural image quality, true-to-life lighting and color, natural skin texture with visible pores and hair details. NOT a studio photo session, NOT AI, NOT 3D rendered. Clean smartphone optics, zero plastic skin smoothing, zero beauty filters.',
+    avoid: [
+      'posed magazine expression', 'studio or dramatic lighting',
+      'plastic smoothed skin', 'airbrushed skin', 'AI / CGI / rendered look',
+    ],
+    aspect_ratio: cfg.aspectRatio || '9:16',
   });
 }
 
@@ -242,6 +255,154 @@ async function addCharacterReference(page, name, attempts = 3) {
   return false;
 }
 
+// Count every reference thumbnail currently in the composer (character + any
+// image references). Used to confirm a background reference was added.
+function countComposerRefs(page) {
+  return page.evaluate(() => {
+    const ed = document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]');
+    if (!ed) return 0;
+    let c = ed;
+    for (let i = 0; i < 6 && c.parentElement; i++) c = c.parentElement;
+    return c.querySelectorAll('img').length;
+  });
+}
+
+// Attach a background/room reference image (by asset name) IN ADDITION to the
+// character, so the environment stays visually consistent. Best-effort: if the
+// asset isn't found, we log and fall back to the text background. Assumes the
+// character was already added (so a new ref should increase the thumbnail count).
+async function addBackgroundReference(page, name) {
+  const before = await countComposerRefs(page);
+  if (!(await clickButtonWithIcon(page, 'add_2'))) return false;
+
+  const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
+  if (search) {
+    await search.click();
+    await page.keyboard.down('Meta'); await page.keyboard.press('KeyA'); await page.keyboard.up('Meta');
+    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    const searchName = name.replace(/\.(jpg|jpeg|png|webp)$/i, '');
+    await page.keyboard.type(searchName, { delay: 15 });
+    await search.dispose();
+    await sleep(1000);
+  }
+
+  let opt = null;
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    opt = await findCharacterOption(page, name); // same search-by-name helper
+    if (opt) break;
+    await sleep(300);
+  }
+  if (!opt) { log(`Background reference "${name}" not found in asset library.`); await closePicker(page); return false; }
+  await opt.click();
+  await opt.dispose();
+  await sleep(700);
+
+  if ((await countComposerRefs(page)) <= before) {
+    if (await clickButtonWithText(page, 'Add to Prompt')) await sleep(900);
+  }
+  const ok = (await countComposerRefs(page)) > before;
+  if (ok) { log(`Background reference "${name}" attached.`); }
+  else { log(`Could not attach background reference "${name}".`); await closePicker(page); }
+  return ok;
+}
+
+// Upload a local reference image file from disk (e.g. men_ref_pics/02a2caaa.jpg)
+// directly into Google Flow using Puppeteer's input[type=file] upload handler.
+async function uploadLocalRefImage(page, folderName, fileName) {
+  const filePath = path.isAbsolute(fileName)
+    ? fileName
+    : path.join(__dirname, folderName || 'men_ref_pics', fileName);
+
+  if (!fs.existsSync(filePath)) {
+    log(`Local file not found on disk: ${filePath} — falling back to asset library search.`);
+    return await addBackgroundReference(page, fileName);
+  }
+
+  log(`Uploading local file from disk: ${filePath}...`);
+  const beforeCount = await countComposerRefs(page);
+
+  // 1. Check if a file input element exists on the page
+  let fileInput = await page.$('input[type="file"]');
+
+  // 2. If no file input found, click (+) picker button to open modal
+  if (!fileInput) {
+    if (await clickButtonWithIcon(page, 'add_2')) {
+      await sleep(600);
+      fileInput = await page.$('input[type="file"]');
+    }
+  }
+
+  // 3. Upload local file via Puppeteer CDP
+  if (fileInput) {
+    try {
+      await fileInput.uploadFile(filePath);
+      await fileInput.dispose();
+      await sleep(2000); // allow upload processing
+
+      if ((await countComposerRefs(page)) > beforeCount) {
+        log(`Successfully uploaded and attached local image "${fileName}".`);
+        await closePicker(page);
+        return true;
+      }
+
+      // Check if clicking "Add to Prompt" is needed
+      if (await clickButtonWithText(page, 'Add to Prompt')) {
+        await sleep(900);
+      }
+
+      if ((await countComposerRefs(page)) > beforeCount) {
+        log(`Successfully attached uploaded image "${fileName}".`);
+        await closePicker(page);
+        return true;
+      }
+    } catch (err) {
+      log(`Direct file upload error: ${err.message || err}`);
+    }
+  }
+
+  await closePicker(page);
+
+  // Fallback: search by asset name in Google Flow asset library
+  log(`Falling back to asset library search for "${fileName}"...`);
+  return await addBackgroundReference(page, fileName);
+}
+
+// Pre-upload all local reference image files from a disk folder (e.g. men_ref_pics)
+// into Google Flow's asset library before starting the generation queue.
+async function uploadAllRefImages(page, folderName, files) {
+  if (!Array.isArray(files) || !files.length) return;
+  log(`\n=== Pre-uploading ${files.length} reference picture(s) from "${folderName}" into Google Flow asset library ===`);
+
+  for (let i = 0; i < files.length; i++) {
+    const fileName = files[i];
+    const filePath = path.join(__dirname, folderName || 'men_ref_pics', fileName);
+    if (!fs.existsSync(filePath)) continue;
+
+    log(`Pre-uploading [${i + 1}/${files.length}]: ${fileName}...`);
+    try {
+      let fileInput = await page.$('input[type="file"]');
+      if (!fileInput) {
+        if (await clickButtonWithIcon(page, 'add_2')) {
+          await sleep(500);
+          fileInput = await page.$('input[type="file"]');
+        }
+      }
+      if (fileInput) {
+        await fileInput.uploadFile(filePath);
+        await fileInput.dispose();
+        await sleep(1500);
+      }
+      await closePicker(page);
+    } catch (e) {
+      log(`Pre-upload note for ${fileName}: ${e.message || e}`);
+      await closePicker(page);
+    }
+  }
+  log(`Pre-upload complete. All reference pictures are available in Google Flow's asset library.\n`);
+}
+
 // Reset the composer using Flow's own "Clear prompt" control. This is the only
 // reliable way to empty the Slate editor — Cmd/Ctrl+A and programmatic DOM
 // selections don't work because Slate keeps its own selection model. The button
@@ -291,18 +452,66 @@ function shuffle(arr) {
   return a;
 }
 
-// Build the exact list of {env,pose} tasks for one batch. If `count` is set,
-// produce exactly that many by cycling through the env×pose combinations
-// (re-shuffling each cycle for variety); count 0 means "one of each combo".
 function buildTasks(cfg) {
+  const count = Math.max(0, parseInt(cfg.count) || 0);
+
+  if (Array.isArray(cfg.refPics) && cfg.refPics.length) {
+    const pics = cfg.shuffle ? shuffle(cfg.refPics) : cfg.refPics.slice();
+    const target = count || pics.length;
+    const tasks = [];
+    let i = 0;
+    while (tasks.length < target) {
+      const pic = pics[i % pics.length];
+      tasks.push({
+        isRefSwap: true,
+        refImageName: pic,
+        folderName: cfg.folderName || 'men_ref_pics',
+        env: `Ref pic: ${pic}`,
+        pose: `Match pose of ${pic}`
+      });
+      i++;
+    }
+    return tasks;
+  }
+
+  if (Array.isArray(cfg.scenes) && cfg.scenes.length) {
+    const locs = cfg.scenes.map(s => ({
+      env: s.env,
+      lighting: s.lighting || cfg.lighting,
+      camera: s.camera || cfg.cameraStyle,
+      wardrobe: s.wardrobe || null,
+      posePool: (Array.isArray(s.poses) && s.poses.length) ? s.poses.slice() : [s.pose],
+    }));
+    const totalCombos = locs.reduce((a, l) => a + l.posePool.length, 0);
+    const target = count || totalCombos;
+
+    // Per-location shuffled pose queue (refills when exhausted).
+    const queues = locs.map(l => (cfg.shuffle ? shuffle(l.posePool) : l.posePool.slice()));
+    let order = locs.map((_, i) => i);
+    if (cfg.shuffle) order = shuffle(order);
+
+    const tasks = [];
+    let step = 0;
+    while (tasks.length < target) {
+      const li = order[step % order.length];
+      step++;
+      const l = locs[li];
+      if (!queues[li].length) queues[li] = cfg.shuffle ? shuffle(l.posePool) : l.posePool.slice();
+      const pose = queues[li].shift();
+      tasks.push({ env: l.env, pose, lighting: l.lighting, camera: l.camera, wardrobe: l.wardrobe });
+      // Reshuffle the visiting order after each full pass through the locations.
+      if (cfg.shuffle && step % order.length === 0) order = shuffle(order);
+    }
+    return tasks;
+  }
+
+  // Non-scene packs: env × pose combinations, cycled.
   let combos = [];
   for (const env of cfg.environments) {
-    for (const pose of cfg.poses) combos.push({ env, pose });
+    for (const pose of cfg.poses) combos.push({ env, pose, lighting: cfg.lighting, camera: cfg.cameraStyle });
   }
   if (!combos.length) return [];
   if (cfg.shuffle) combos = shuffle(combos);
-
-  const count = Math.max(0, parseInt(cfg.count) || 0);
   if (!count) return combos;
 
   const tasks = [];
@@ -323,18 +532,41 @@ function composerCleared(page) {
   });
 }
 
-// Fire one generation. Returns true only once generation has actually started
-// (composer cleared). Clicks are verified and retried — a click that doesn't
-// take is the whole reason generations were silently not starting.
-async function generateOne(page, cfg, env, pose) {
-  // Reliably wipe any leftover text/chip first (removes chip), THEN add the
-  // character, THEN type into the now-empty editor.
+// Fire one generation with EXACTLY 2 reference images attached (Character + Ref Image).
+async function generateOne(page, cfg, task) {
+  // 1. Reliably wipe any leftover text/chip first (removes chip)
   await resetComposer(page);
+
+  // 2. Attach Image 1: Character reference asset (Untitled Character)
   if (!(await addCharacterReference(page, cfg.characterName))) {
     log('Skipping this prompt — character reference not attached.');
     return false;
   }
-  const promptString = JSON.stringify(buildPrompt(cfg, env, pose));
+
+  // 3. Attach Image 2: Reference picture from uploaded asset library
+  const sceneMode = Array.isArray(cfg.scenes) && cfg.scenes.length;
+  if (task.isRefSwap && task.refImageName) {
+    log(`Attaching reference image "${task.refImageName}" (Image 2)...`);
+    const ok = await addBackgroundReference(page, task.refImageName);
+    if (!ok) {
+      log(`Asset library attachment missed "${task.refImageName}", uploading local file...`);
+      await uploadLocalRefImage(page, task.folderName || 'men_ref_pics', task.refImageName);
+    }
+  } else if (cfg.backgroundRef && cfg.backgroundRef.trim() && !sceneMode) {
+    await addBackgroundReference(page, cfg.backgroundRef.trim());
+  } else if (cfg.backgroundRef && cfg.backgroundRef.trim() && sceneMode) {
+    log('Ignoring the room reference — this pack uses scene recipes that define their own environments.');
+  }
+
+  // 4. Verify 2 reference chips exist in composer for refSwap tasks
+  const refCount = await countComposerRefs(page);
+  if (task.isRefSwap && refCount === 2) {
+    log(`✅ Confirmed: 2 reference images attached (Untitled Character + ${task.refImageName}).`);
+  } else if (task.isRefSwap) {
+    log(`Note: composer has ${refCount} chip(s) attached.`);
+  }
+
+  const promptString = JSON.stringify(buildPrompt(cfg, task));
   if (!(await setPromptText(page, promptString))) { log('Skipping — could not set prompt text.'); return false; }
 
   // If the chip vanished (e.g. an editor glitch), re-add it instead of skipping.
@@ -403,7 +635,9 @@ async function runQueue() {
     log('No Flow tab found. Open your Flow project in the debug Chrome window.');
     state.running = false; pushState(); browser.disconnect(); return;
   }
-  await page.bringToFront();
+  try {
+    await page.bringToFront();
+  } catch (e) {}
 
   while (!state.stopRequested) {
     const batch = queue.find(b => b.status === 'pending');
@@ -416,16 +650,21 @@ async function runQueue() {
     pushState();
     log(`\n=== Batch #${batch.id} (${batch.label}) — ${tasks.length} generation(s) ===`);
 
-    for (const { env, pose } of tasks) {
+    // Pre-upload phase: upload reference pictures into Google Flow asset library if needed
+    if (Array.isArray(batch.config.refPics) && batch.config.refPics.length) {
+      await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics);
+    }
+
+    for (const task of tasks) {
       if (state.stopRequested) break;
-      state.current = `Batch #${batch.id}: ${env} + ${pose}`;
+      state.current = `Batch #${batch.id}: ${task.env} + ${task.pose}`;
       pushState();
-      log(`Generating: ${env} + ${pose}`);
+      log(`Generating: ${task.env} + ${task.pose}`);
 
       // Guard each generation: a stuck renderer or timed-out CDP call must not
       // kill the queue. On failure, reload the tab and move on to the next one.
       try {
-        await withTimeout(generateOne(page, batch.config, env, pose), 150000, 'generation');
+        await withTimeout(generateOne(page, batch.config, task), 150000, 'generation');
       } catch (e) {
         log('Generation failed: ' + (e.message || e));
         await recoverPage(page);
@@ -498,6 +737,20 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/ref-pics') {
+    const gender = url.searchParams.get('gender') || 'men';
+    const folder = path.join(__dirname, `${gender}_ref_pics`);
+    if (!fs.existsSync(folder)) {
+      return sendJson(res, 200, { files: [], folder: `${gender}_ref_pics` });
+    }
+    try {
+      const files = fs.readdirSync(folder).filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f));
+      return sendJson(res, 200, { files, folder: `${gender}_ref_pics` });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/events') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -519,7 +772,9 @@ const server = http.createServer(async (req, res) => {
       let payload;
       try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
       const cfg = payload.config || {};
-      if (!cfg.environments?.length || !cfg.poses?.length) {
+      const hasScenes = Array.isArray(cfg.scenes) && cfg.scenes.length;
+      const isRefSwap = Array.isArray(cfg.refPics) && cfg.refPics.length;
+      if (!hasScenes && !isRefSwap && (!cfg.environments?.length || !cfg.poses?.length)) {
         return sendJson(res, 400, { error: 'Pick at least one environment and one pose.' });
       }
       cfg.count = Math.max(0, parseInt(payload.count) || 0);
