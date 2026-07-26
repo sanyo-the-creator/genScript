@@ -220,6 +220,9 @@
         <button id="stopBtn" class="danger" disabled>■ Stop</button>
         <button id="clearBtn">Clear</button>
       </div>
+      <div class="flex" style="margin-top: 8px;">
+        <button id="autonomousBtn" style="background: #34a853; color: white; border: none; font-weight: bold; width: 100%;">🔄 Run Autonomous links.json</button>
+      </div>
       <div id="currentText" class="muted" style="margin-top:8px"></div>
 
       <h2 style="margin-top:18px">Log</h2>
@@ -880,6 +883,13 @@ document.getElementById('startBtn').onclick = async () => {
   if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to start'); }
 };
 document.getElementById('stopBtn').onclick = () => fetch('/api/stop', { method:'POST' });
+document.getElementById('autonomousBtn').onclick = async () => {
+  const r = await fetch('/api/autonomous/queue', { method:'POST' });
+  if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to queue autonomous projects'); return; }
+  const data = await r.json();
+  addLog(`[System] Queued ${data.queuedCount} projects from links.json. Starting execution loop...`);
+  await fetch('/api/start', { method:'POST' });
+};
 
 refreshStatus();
 setInterval(refreshStatus, 5000);

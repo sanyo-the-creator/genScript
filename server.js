@@ -87,26 +87,11 @@ function clean(obj) {
 
 function buildPrompt(cfg, task) {
   if (task.isRefSwap) {
-    const charName = cfg.characterName || 'Untitled Character';
-    const refImg = task.refImageName || 'reference image';
-    return clean({
-      ABSOLUTE_CHARACTER_CONSISTENCY: {
-        core_mandate: `Keep ${charName} ABSOLUTELY CONSISTENT — exact same person. ${charName} is NOT a head swap or face paste onto ${refImg}.`,
-        full_body_identity: `Preserve ${charName}'s full body identity ABSOLUTELY: exact face, eyes, nose, lips, hair, skin tone, muscle mass, physique, body proportions, tattoos, glasses, and personal accessories from ${charName}.`,
-        prohibitions: `DO NOT paste or blend ${charName}'s head onto ${refImg}'s body. DO NOT copy muscle mass, body shape, tattoos, skin tone, or facial features from ${refImg}.`,
-      },
-      SCENE_TRANSFER: {
-        instruction: `Place ${charName} into the scene, pose, outfit, environment, and lighting setup of ${refImg}.`,
-        scene_elements: `Match the exact environment, background setting, lighting direction, pose posture, camera framing, outfit drape, and scene composition from ${refImg}.`,
-      },
-      PHOTO_REALISM:
-        'A clean, authentic iPhone camera-roll photo — sharp natural image quality, true-to-life lighting and color, natural skin texture with visible pores and hair details. NOT a studio photo session, NOT AI, NOT 3D rendered. Clean smartphone optics, zero plastic skin smoothing, zero beauty filters.',
-      avoid: [
-        'face paste look', 'head cutout look', 'inconsistent body', 'copying reference body or tattoos',
-        'posed magazine expression', 'studio or dramatic lighting', 'plastic smoothed skin', 'airbrushed skin', 'AI / CGI / rendered look',
-      ],
-      aspect_ratio: cfg.aspectRatio || '9:16',
-    });
+    let charName = cfg.characterName || 'Untitled Character';
+    if (charName.startsWith('@')) {
+      charName = charName.substring(1);
+    }
+    return `swap character on refference image with our ${charName}. keep our ${charName} the same, his body, his facial features, his hair, everything has to look like our ${charName}. just keep the body pose, facial expression, outfit and enviroment EXACTLY as it is on refference image. basically do a bodyswap. if the character is holding a phone it should be silver iphone 17 with clear magsafe case. dont reduce the quality of the image.`;
   }
 
   const { env, pose } = task;
@@ -226,16 +211,16 @@ async function addCharacterReference(page, name, attempts = 3) {
 
     // Wait for the character row, then click it.
     let opt = null;
-    const optDeadline = Date.now() + 4000;
+    const optDeadline = Date.now() + 10000;
     while (Date.now() < optDeadline) {
       opt = await findCharacterOption(page, name);
       if (opt) break;
-      await sleep(300);
+      await sleep(400);
     }
     if (!opt) { log(`Could not find "${name}" in the picker.`); await closePicker(page); continue; }
     await opt.click();
     await opt.dispose();
-    await sleep(700);
+    await sleep(900);
 
     // If clicking didn't attach directly, the picker variant with a preview
     // needs an "Add to Prompt" click.
@@ -376,6 +361,10 @@ async function uploadAllRefImages(page, folderName, files) {
   log(`\n=== Pre-uploading ${files.length} reference picture(s) from "${folderName}" into Google Flow asset library ===`);
 
   for (let i = 0; i < files.length; i++) {
+    if (state.stopRequested) {
+      log('Stop requested — aborting pre-upload.');
+      return;
+    }
     const fileName = files[i];
     const filePath = path.join(__dirname, folderName || 'men_ref_pics', fileName);
     if (!fs.existsSync(filePath)) continue;
@@ -534,21 +523,25 @@ function composerCleared(page) {
 
 // Fire one generation with EXACTLY 2 reference images attached (Character + Ref Image).
 async function generateOne(page, cfg, task) {
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
   // 1. Reliably wipe any leftover text/chip first (removes chip)
   await resetComposer(page);
 
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
   // 2. Attach Image 1: Character reference asset (Untitled Character)
   if (!(await addCharacterReference(page, cfg.characterName))) {
     log('Skipping this prompt — character reference not attached.');
     return false;
   }
 
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
   // 3. Attach Image 2: Reference picture from uploaded asset library
   const sceneMode = Array.isArray(cfg.scenes) && cfg.scenes.length;
   if (task.isRefSwap && task.refImageName) {
     log(`Attaching reference image "${task.refImageName}" (Image 2)...`);
     const ok = await addBackgroundReference(page, task.refImageName);
     if (!ok) {
+      if (state.stopRequested) throw new Error('STOP_REQUESTED');
       log(`Asset library attachment missed "${task.refImageName}", uploading local file...`);
       await uploadLocalRefImage(page, task.folderName || 'men_ref_pics', task.refImageName);
     }
@@ -558,6 +551,7 @@ async function generateOne(page, cfg, task) {
     log('Ignoring the room reference — this pack uses scene recipes that define their own environments.');
   }
 
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
   // 4. Verify 2 reference chips exist in composer for refSwap tasks
   const refCount = await countComposerRefs(page);
   if (task.isRefSwap && refCount === 2) {
@@ -566,16 +560,19 @@ async function generateOne(page, cfg, task) {
     log(`Note: composer has ${refCount} chip(s) attached.`);
   }
 
-  const promptString = JSON.stringify(buildPrompt(cfg, task));
+  const built = buildPrompt(cfg, task);
+  const promptString = typeof built === 'string' ? built : JSON.stringify(built);
   if (!(await setPromptText(page, promptString))) { log('Skipping — could not set prompt text.'); return false; }
 
   // If the chip vanished (e.g. an editor glitch), re-add it instead of skipping.
   if ((await countCharacterChips(page)) === 0) {
+    if (state.stopRequested) throw new Error('STOP_REQUESTED');
     log('Character chip missing before generate — re-adding.');
     if (!(await addCharacterReference(page, cfg.characterName))) { log('Could not re-add character — skipping.'); return false; }
   }
 
   for (let attempt = 1; attempt <= 3; attempt++) {
+    if (state.stopRequested) throw new Error('STOP_REQUESTED');
     const btn = await waitForGenerateButton(page);
     if (!btn) { log('Create button not active yet...'); await sleep(700); continue; }
     const box = await btn.boundingBox();
@@ -644,6 +641,17 @@ async function runQueue() {
     if (!batch) break;
 
     batch.status = 'running';
+    if (batch.config.projectUrl) {
+      log(`Autonomous Navigation: Loading project ${batch.config.projectUrl}...`);
+      try {
+        await page.goto(batch.config.projectUrl, { waitUntil: 'domcontentloaded' });
+        log('Waiting for Google Flow workspace editor to load...');
+        await page.waitForSelector('[data-slate-editor="true"]', { timeout: 30000 }).catch(() => {});
+        await sleep(6000); // Buffer for react assets and library initialization
+      } catch (err) {
+        log(`Failed to navigate to project URL: ${err.message || err}`);
+      }
+    }
     const tasks = buildTasks(batch.config);
     batch.total = tasks.length;
     batch.done = 0;
@@ -666,6 +674,10 @@ async function runQueue() {
       try {
         await withTimeout(generateOne(page, batch.config, task), 150000, 'generation');
       } catch (e) {
+        if (e.message === 'STOP_REQUESTED' || state.stopRequested) {
+          log('Stop requested — aborting batch immediately.');
+          break;
+        }
         log('Generation failed: ' + (e.message || e));
         await recoverPage(page);
       }
@@ -811,11 +823,74 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Clear all batches that are not currently running.
-  if (req.method === 'POST' && url.pathname === '/api/queue/clear') {
-    queue = queue.filter(b => b.status === 'running');
-    pushState();
-    return sendJson(res, 200, { ok: true });
+  // Autonomous queue endpoint to parse links.json and queue all batches.
+  if (req.method === 'POST' && url.pathname === '/api/autonomous/queue') {
+    const linksPath = path.join(__dirname, 'links.json');
+    if (!fs.existsSync(linksPath)) {
+      return sendJson(res, 400, { error: 'links.json not found in project root directory.' });
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(linksPath, 'utf8'));
+      const list = Array.isArray(data) ? data : [];
+      let queuedCount = 0;
+      for (const item of list) {
+        const link = item.link || item.url;
+        if (!link || !link.includes('labs.google/fx/tools/flow/project/')) {
+          log(`Skipping non-Flow project link: ${link}`);
+          continue;
+        }
+        const gender = (item.gender || 'men').toLowerCase() === 'female' ? 'women' : 'men';
+        const folder = gender === 'men' ? 'men_ref_pics' : 'women_ref_pics';
+        const refPics = fs.readdirSync(path.join(__dirname, folder)).filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f));
+        if (!refPics.length) {
+          log(`Skipping project ${link} because folder ${folder}/ is empty.`);
+          continue;
+        }
+
+        const baseDefaults = {
+          characterName: 'Untitled Character',
+          hair: 'natural styling, slightly tousled',
+          appearanceExtra: '',
+          cameraStyle: 'authentic iPhone photo, natural perspective, no wide-angle distortion',
+          aspectRatio: '9:16',
+          shuffle: true,
+          waitSeconds: 35,
+          jitterSeconds: 25,
+          skin: gender === 'women'
+            ? "natural sun-kissed skin, subtle glossy lips, soft no-makeup makeup look, keep the character's own freckles and features, realistic pores, no heavy retouching or smoothing"
+            : "real male skin with visible pores and natural texture, subtle blemishes and imperfections, keep the character's own features, no smoothing or retouching",
+          styleNote: gender === 'women'
+            ? "Pinterest clean-girl / model-off-duty aesthetic: effortless, expensive-looking but understated, minimal neutral styling, delicate gold jewelry (thin chains, small hoops), soft natural lighting, candid and aspirational like a high-follower Instagram model — clean, elegant, not overdone"
+            : "Authentic male Instagram-model aesthetic: effortless and aspirational, real candid iPhone mirror/POV selfies from the camera roll, natural imperfect lighting (dim moody gym, bathroom, elevator, bedroom, sunset balcony), relaxed cool body language and a genuine expression, real skin texture with sweat / tattoos / flyaway hair kept — looks like a real influencer's phone photo, not a polished render",
+        };
+
+        const cfg = {
+          ...baseDefaults,
+          isRefSwapPack: true,
+          refPics,
+          folderName: folder,
+          gender,
+          projectUrl: link
+        };
+
+        const batch = {
+          id: nextId++,
+          count: refPics.length,
+          label: `🔄 Autonomous Swap: ${gender.toUpperCase()} (${refPics.length} pics)`,
+          config: cfg,
+          status: 'pending',
+          done: 0,
+          total: 0,
+        };
+        queue.push(batch);
+        queuedCount++;
+      }
+      log(`Successfully queued ${queuedCount} autonomous project batches from links.json.`);
+      pushState();
+      return sendJson(res, 200, { ok: true, queuedCount });
+    } catch (err) {
+      return sendJson(res, 500, { error: 'Failed to process links.json: ' + err.message });
+    }
   }
 
   // Start processing the queue.
