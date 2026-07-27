@@ -190,12 +190,12 @@
         <option value="overcast soft daylight"></option>
       </datalist>
       <div class="row">
-        <div><label>Wait between gens (sec)</label><input type="number" id="waitSeconds" value="30" min="0" /></div>
-        <div><label>Random extra wait (sec)</label><input type="number" id="jitterSeconds" value="20" min="0" /></div>
+        <div><label>Wait between gens (sec)</label><input type="number" id="waitSeconds" value="35" min="0" /></div>
+        <div><label>Random extra wait (sec)</label><input type="number" id="jitterSeconds" value="15" min="0" /></div>
       </div>
       <div class="row">
         <div><label>Order</label>
-          <select id="shuffle"><option value="true">Shuffle (recommended)</option><option value="false">Sequential</option></select>
+          <select id="shuffle"><option value="false">Sequential (recommended)</option><option value="true">Shuffle</option></select>
         </div>
         <div></div>
       </div>
@@ -740,7 +740,7 @@ function packBaseDefaults() {
     hair: val('hair') || 'natural styling, slightly tousled',
     appearanceExtra: '',
     cameraStyle: 'authentic iPhone photo, natural perspective, no wide-angle distortion',
-    aspectRatio: '9:16', shuffle: true, waitSeconds: 35, jitterSeconds: 25,
+    aspectRatio: '9:16', shuffle: false, waitSeconds: 35, jitterSeconds: 15,
   };
   if (gender === 'women') {
     base.skin = "natural sun-kissed skin, subtle glossy lips, soft no-makeup makeup look, keep the character's own freckles and features, realistic pores, no heavy retouching or smoothing";

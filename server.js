@@ -91,7 +91,13 @@ function buildPrompt(cfg, task) {
     if (charName.startsWith('@')) {
       charName = charName.substring(1);
     }
-    return `swap character on refference image with our ${charName}. keep our ${charName} the same, his body, his facial features, his hair, everything has to look like our ${charName}. just keep the body pose, facial expression, outfit and enviroment EXACTLY as it is on refference image. basically do a bodyswap. if the character is holding a phone it should be silver iphone 17 with clear magsafe case. dont reduce the quality of the image.`;
+    const isFemale = cfg.gender === 'women' || cfg.gender === 'female' || (cfg.folderName && cfg.folderName.includes('women')) || (task.folderName && task.folderName.includes('women'));
+
+    if (isFemale) {
+      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep our ${charName} body comsistent so the new body on the refference image is actually our ${charName}'s body, the only thing you can change is the hairstyle. keep the haircolor consistent to our character but you can use hairstyle on refference image. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
+    } else {
+      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep our ${charName} body consistent so the new body on the refference image is actually our ${charName}'s body. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
+    }
   }
 
   const { env, pose } = task;
@@ -262,10 +268,12 @@ async function addBackgroundReference(page, name) {
 
   const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
   if (search) {
+    await page.evaluate((el) => {
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, search);
+    await sleep(200);
     await search.click();
-    await page.keyboard.down('Meta'); await page.keyboard.press('KeyA'); await page.keyboard.up('Meta');
-    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
-    await page.keyboard.press('Backspace');
     const searchName = name.replace(/\.(jpg|jpeg|png|webp)$/i, '');
     await page.keyboard.type(searchName, { delay: 15 });
     await search.dispose();
@@ -355,21 +363,78 @@ async function uploadLocalRefImage(page, folderName, fileName) {
 }
 
 // Pre-upload all local reference image files from a disk folder (e.g. men_ref_pics)
-// into Google Flow's asset library before starting the generation queue.
+// into Google Flow's asset library before starting the generation queue, skipping
+// any files that are already present in the project library.
 async function uploadAllRefImages(page, folderName, files) {
   if (!Array.isArray(files) || !files.length) return;
-  log(`\n=== Pre-uploading ${files.length} reference picture(s) from "${folderName}" into Google Flow asset library ===`);
+  log(`\n=== Checking Google Flow project library for existing reference pictures ===`);
 
-  for (let i = 0; i < files.length; i++) {
+  const toUpload = [];
+  try {
+    if (await clickButtonWithIcon(page, 'add_2')) {
+      await sleep(1000);
+
+      const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
+      if (search) {
+        for (const fileName of files) {
+          if (state.stopRequested) break;
+          const baseName = fileName.replace(/\.[^/.]+$/, "");
+
+          // Clear search box via native DOM events to guarantee success
+          await page.evaluate((el) => {
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }, search);
+          await sleep(200);
+
+          // Type file base name to filter search results
+          await search.click();
+          await page.keyboard.type(baseName, { delay: 10 });
+          await sleep(650); // wait for search filtering
+
+          const opt = await findCharacterOption(page, baseName);
+          if (opt) {
+            log(`File "${fileName}" already exists in project library, skipping upload.`);
+            await opt.dispose();
+          } else {
+            toUpload.push(fileName);
+          }
+        }
+        await search.dispose();
+      } else {
+        log('Search input not found in picker; uploading all files.');
+        toUpload.push(...files);
+      }
+      await closePicker(page);
+    } else {
+      log('Could not open picker; uploading all files.');
+      toUpload.push(...files);
+    }
+  } catch (err) {
+    log(`Note: error scanning existing assets: ${err.message || err}`);
+    toUpload.push(...files);
+    await closePicker(page).catch(() => { });
+  }
+
+  if (state.stopRequested) return;
+
+  if (toUpload.length === 0) {
+    log('All reference pictures already exist in the library. Skipping upload phase.\n');
+    return;
+  }
+
+  log(`=== Pre-uploading ${toUpload.length} new reference picture(s) from "${folderName}" ===`);
+
+  for (let i = 0; i < toUpload.length; i++) {
     if (state.stopRequested) {
       log('Stop requested — aborting pre-upload.');
       return;
     }
-    const fileName = files[i];
+    const fileName = toUpload[i];
     const filePath = path.join(__dirname, folderName || 'men_ref_pics', fileName);
     if (!fs.existsSync(filePath)) continue;
 
-    log(`Pre-uploading [${i + 1}/${files.length}]: ${fileName}...`);
+    log(`Pre-uploading [${i + 1}/${toUpload.length}]: ${fileName}...`);
     try {
       let fileInput = await page.$('input[type="file"]');
       if (!fileInput) {
@@ -634,7 +699,7 @@ async function runQueue() {
   }
   try {
     await page.bringToFront();
-  } catch (e) {}
+  } catch (e) { }
 
   while (!state.stopRequested) {
     const batch = queue.find(b => b.status === 'pending');
@@ -646,7 +711,7 @@ async function runQueue() {
       try {
         await page.goto(batch.config.projectUrl, { waitUntil: 'domcontentloaded' });
         log('Waiting for Google Flow workspace editor to load...');
-        await page.waitForSelector('[data-slate-editor="true"]', { timeout: 30000 }).catch(() => {});
+        await page.waitForSelector('[data-slate-editor="true"]', { timeout: 30000 }).catch(() => { });
         await sleep(6000); // Buffer for react assets and library initialization
       } catch (err) {
         log(`Failed to navigate to project URL: ${err.message || err}`);
@@ -745,7 +810,8 @@ const server = http.createServer(async (req, res) => {
       queue: queueView(),
       debugCommand:
         '/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome ' +
-        '--remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile"',
+        '--remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile" ' +
+        '--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding',
     });
   }
 
@@ -834,6 +900,10 @@ const server = http.createServer(async (req, res) => {
       const list = Array.isArray(data) ? data : [];
       let queuedCount = 0;
       for (const item of list) {
+        if (item.disabled || item.skip) {
+          log(`Skipping disabled project: ${item.link || item.url || 'unnamed'}`);
+          continue;
+        }
         const link = item.link || item.url;
         if (!link || !link.includes('labs.google/fx/tools/flow/project/')) {
           log(`Skipping non-Flow project link: ${link}`);
@@ -853,9 +923,9 @@ const server = http.createServer(async (req, res) => {
           appearanceExtra: '',
           cameraStyle: 'authentic iPhone photo, natural perspective, no wide-angle distortion',
           aspectRatio: '9:16',
-          shuffle: true,
+          shuffle: false,
           waitSeconds: 35,
-          jitterSeconds: 25,
+          jitterSeconds: 15,
           skin: gender === 'women'
             ? "natural sun-kissed skin, subtle glossy lips, soft no-makeup makeup look, keep the character's own freckles and features, realistic pores, no heavy retouching or smoothing"
             : "real male skin with visible pores and natural texture, subtle blemishes and imperfections, keep the character's own features, no smoothing or retouching",
