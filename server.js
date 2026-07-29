@@ -27,6 +27,32 @@ const PORT = 3000;
 const CHROME_DEBUG_URL = 'http://127.0.0.1:9222';
 
 // ---------------------------------------------------------------------------
+// Phone Screen Swap (POV) tool — source folders
+// ---------------------------------------------------------------------------
+// Reference images = real POV photos of a person holding a phone. The tool
+// keeps the whole photo identical and only swaps what's shown on the phone
+// screen for one of the Upshift app screenshots.
+const PHONE_POV_FOLDERS = {
+  men: path.join(__dirname, 'men_phone_pov'),
+  women: path.join(__dirname, 'women_phone_pov'),
+};
+const SCREENSHOTS_ROOT = path.join(__dirname, 'upshift_screenshots');
+const IMG_RE = /\.(jpg|jpeg|png|webp)$/i;
+
+// "streak60_student.PNG" -> "Streak 60 Student"
+function prettyName(fileName) {
+  return fileName
+    .replace(/\.[^/.]+$/, '')                 // drop extension
+    .replace(/[_-]+/g, ' ')                    // underscores / dashes -> space
+    .replace(/([a-z])([A-Z])/g, '$1 $2')       // camelCase -> spaced
+    .replace(/([a-zA-Z])(\d)/g, '$1 $2')       // letter|digit boundary
+    .replace(/(\d)([a-zA-Z])/g, '$1 $2')       // digit|letter boundary
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());   // Title Case
+}
+
+// ---------------------------------------------------------------------------
 // Shared run state + batch queue
 // ---------------------------------------------------------------------------
 // A "batch" is one config snapshot plus a target image count. The queue is
@@ -86,6 +112,9 @@ function clean(obj) {
 }
 
 function buildPrompt(cfg, task) {
+  if (task.isScreenSwap) {
+    return `Two images are attached: the first is an app screenshot, the second is a real POV photo of a person holding a phone. Keep the POV photo EXACTLY as it is — the same person, hand, fingers, pose, face, body, outfit, background, lighting and camera angle, and the phone hardware (frame, bezels, notch/island, thickness) must all stay completely unchanged. The ONLY change you make: replace whatever is currently shown on the phone's screen with the attached app screenshot. Map the screenshot onto the phone display so it follows the exact perspective, angle, tilt and rotation of the phone in the photo, filling the screen edge to edge inside the bezels. Add realistic screen brightness, subtle glare and reflections, and match the ambient lighting and color temperature so the screen looks like it is genuinely displaying this app. Do not stretch, crop or distort the screenshot's content beyond the perspective warp needed to sit flat on the screen — every element of the app UI must stay legible and correctly proportioned. Everything outside the phone screen must remain identical to the original photo. The result must look like a completely natural, unedited real photograph.`;
+  }
   if (task.isRefSwap) {
     let charName = cfg.characterName || 'Untitled Character';
     if (charName.startsWith('@')) {
@@ -509,6 +538,42 @@ function shuffle(arr) {
 function buildTasks(cfg) {
   const count = Math.max(0, parseInt(cfg.count) || 0);
 
+  // Phone Screen Swap (POV): iterate over every POV reference photo and, for
+  // each, swap the chosen Upshift screenshot onto the phone screen. Mirrors the
+  // Reference Image Swap pack: files live inside the project, are pre-uploaded
+  // to Flow's asset library, then attached by name (upload is only a fallback).
+  if (cfg.isScreenSwap) {
+    const gender = cfg.gender === 'women' ? 'women' : 'men';
+    const povFolderAbs = PHONE_POV_FOLDERS[gender];
+    let povFiles = [];
+    try { povFiles = fs.readdirSync(povFolderAbs).filter(f => IMG_RE.test(f)); } catch { }
+    if (!povFiles.length || !cfg.screenshotFile) return [];
+
+    const povFolder = path.relative(__dirname, povFolderAbs);
+    const ssFolder = path.relative(__dirname, path.join(SCREENSHOTS_ROOT, cfg.category || ''));
+    const label = cfg.screenshotLabel || cfg.screenshotFile;
+
+    const pics = cfg.shuffle ? shuffle(povFiles) : povFiles.slice();
+    const target = count || pics.length;
+    const tasks = [];
+    let i = 0;
+    while (tasks.length < target) {
+      const pic = pics[i % pics.length];
+      tasks.push({
+        isScreenSwap: true,
+        povFolder,
+        povFile: pic,
+        ssFolder,
+        ssFile: cfg.screenshotFile,
+        screenshotLabel: label,
+        env: `POV: ${pic}`,
+        pose: `Screen → ${label}`,
+      });
+      i++;
+    }
+    return tasks;
+  }
+
   if (Array.isArray(cfg.refPics) && cfg.refPics.length) {
     const pics = cfg.shuffle ? shuffle(cfg.refPics) : cfg.refPics.slice();
     const target = count || pics.length;
@@ -586,8 +651,84 @@ function composerCleared(page) {
   });
 }
 
+// Click Create (with fallbacks) and confirm generation actually started by
+// waiting for the composer to clear. Shared by every generation mode.
+async function fireGenerate(page) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (state.stopRequested) throw new Error('STOP_REQUESTED');
+    const btn = await waitForGenerateButton(page);
+    if (!btn) { log('Create button not active yet...'); await sleep(700); continue; }
+    const box = await btn.boundingBox();
+    log(`Clicking Generate (attempt ${attempt})...`);
+    await btn.click();
+    await btn.dispose();
+    await sleep(1500);
+    if (await composerCleared(page)) { log('Generation started.'); return true; }
+
+    // Fallback: click the exact button coordinates via the mouse.
+    if (box) {
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      await sleep(1500);
+      if (await composerCleared(page)) { log('Generation started.'); return true; }
+    }
+    log('Composer did not clear; retrying click...');
+  }
+  log('Generate did not start after retries — skipping.');
+  return false;
+}
+
+// Phone Screen Swap: attach the POV photo (Image 1) + the app screenshot
+// (Image 2), then generate. Uses the SAME proven mechanism as the Reference
+// Image Swap pack — attach from the asset library by name, with a local-file
+// upload only as a fallback. No character reference is involved here.
+async function attachByNameOrUpload(page, name, folder, label) {
+  const base = name.replace(/\.[^/.]+$/, '');
+  log(`Attaching ${label} "${name}"...`);
+  let ok = await addBackgroundReference(page, base);
+  if (!ok) {
+    if (state.stopRequested) throw new Error('STOP_REQUESTED');
+    log(`Asset library missed "${name}", uploading local file...`);
+    ok = await uploadLocalRefImage(page, folder, name);
+  }
+  return ok;
+}
+
+async function generateScreenSwap(page, cfg, task) {
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
+  // 1. Wipe any leftover text/chips first.
+  await resetComposer(page);
+
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
+  // 2. Image 1: the Upshift app screenshot to place on the phone screen.
+  if (!(await attachByNameOrUpload(page, task.ssFile, task.ssFolder, `screenshot (Image 1) "${task.screenshotLabel}"`))) {
+    log('Could not attach screenshot — skipping.');
+    return false;
+  }
+
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
+  // 3. Image 2: the POV photo of the person holding the phone.
+  if (!(await attachByNameOrUpload(page, task.povFile, task.povFolder, 'POV reference (Image 2)'))) {
+    log('Could not attach POV reference photo — skipping.');
+    return false;
+  }
+
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
+  // 4. Verify both images are attached.
+  const refCount = await countComposerRefs(page);
+  if (refCount === 2) log(`✅ Confirmed: 2 images attached (${task.povFile} + ${task.ssFile}).`);
+  else log(`Note: composer has ${refCount} image(s) attached.`);
+
+  const promptString = buildPrompt(cfg, task);
+  if (!(await setPromptText(page, promptString))) { log('Skipping — could not set prompt text.'); return false; }
+
+  if (state.stopRequested) throw new Error('STOP_REQUESTED');
+  return await fireGenerate(page);
+}
+
 // Fire one generation with EXACTLY 2 reference images attached (Character + Ref Image).
 async function generateOne(page, cfg, task) {
+  if (task.isScreenSwap) return await generateScreenSwap(page, cfg, task);
+
   if (state.stopRequested) throw new Error('STOP_REQUESTED');
   // 1. Reliably wipe any leftover text/chip first (removes chip)
   await resetComposer(page);
@@ -636,27 +777,7 @@ async function generateOne(page, cfg, task) {
     if (!(await addCharacterReference(page, cfg.characterName))) { log('Could not re-add character — skipping.'); return false; }
   }
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    if (state.stopRequested) throw new Error('STOP_REQUESTED');
-    const btn = await waitForGenerateButton(page);
-    if (!btn) { log('Create button not active yet...'); await sleep(700); continue; }
-    const box = await btn.boundingBox();
-    log(`Clicking Generate (attempt ${attempt})...`);
-    await btn.click();
-    await btn.dispose();
-    await sleep(1500);
-    if (await composerCleared(page)) { log('Generation started.'); return true; }
-
-    // Fallback: click the exact button coordinates via the mouse.
-    if (box) {
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-      await sleep(1500);
-      if (await composerCleared(page)) { log('Generation started.'); return true; }
-    }
-    log('Composer did not clear; retrying click...');
-  }
-  log('Generate did not start after retries — skipping.');
-  return false;
+  return await fireGenerate(page);
 }
 
 // Reject after `ms` so a stuck browser call can't hang the whole run.
@@ -726,6 +847,12 @@ async function runQueue() {
     // Pre-upload phase: upload reference pictures into Google Flow asset library if needed
     if (Array.isArray(batch.config.refPics) && batch.config.refPics.length) {
       await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics);
+    } else if (batch.config.isScreenSwap && tasks.length) {
+      // Pre-upload every POV photo + the chosen screenshot so they can be
+      // attached by name during generation (same as the Reference Image Swap).
+      const povFiles = [...new Set(tasks.map(t => t.povFile))];
+      await uploadAllRefImages(page, tasks[0].ssFolder, [tasks[0].ssFile]);
+      if (!state.stopRequested) await uploadAllRefImages(page, tasks[0].povFolder, povFiles);
     }
 
     for (const task of tasks) {
@@ -803,15 +930,22 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/status') {
     const chrome = await checkChrome();
+    const debugFlags =
+      '--remote-debugging-port=9222 --user-data-dir=%DIR% ' +
+      '--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding';
+    const debugCommands = {
+      mac: '/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome ' +
+        debugFlags.replace('%DIR%', '"$HOME/chrome-debug-profile"'),
+      windows: '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ' +
+        debugFlags.replace('%DIR%', '"%USERPROFILE%\\chrome-debug-profile"'),
+    };
     return sendJson(res, 200, {
       chrome,
       running: state.running,
       current: state.current,
       queue: queueView(),
-      debugCommand:
-        '/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome ' +
-        '--remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile" ' +
-        '--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding',
+      debugCommands,
+      debugCommand: debugCommands.mac, // back-compat
     });
   }
 
@@ -824,6 +958,55 @@ const server = http.createServer(async (req, res) => {
     try {
       const files = fs.readdirSync(folder).filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f));
       return sendJson(res, 200, { files, folder: `${gender}_ref_pics` });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // Phone Screen Swap: list POV reference photos for the chosen gender.
+  if (req.method === 'GET' && url.pathname === '/api/pov-refs') {
+    const gender = url.searchParams.get('gender') === 'women' ? 'women' : 'men';
+    const folder = PHONE_POV_FOLDERS[gender];
+    if (!folder || !fs.existsSync(folder)) {
+      return sendJson(res, 200, { files: [], folder: folder || '', gender });
+    }
+    try {
+      const files = fs.readdirSync(folder).filter(f => IMG_RE.test(f));
+      return sendJson(res, 200, { files, folder, gender });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // Phone Screen Swap: list the screenshot category folders.
+  if (req.method === 'GET' && url.pathname === '/api/screenshot-folders') {
+    if (!fs.existsSync(SCREENSHOTS_ROOT)) {
+      return sendJson(res, 200, { folders: [], root: SCREENSHOTS_ROOT });
+    }
+    try {
+      const folders = fs.readdirSync(SCREENSHOTS_ROOT, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => ({ name: d.name, label: prettyName(d.name) }));
+      return sendJson(res, 200, { folders, root: SCREENSHOTS_ROOT });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // Phone Screen Swap: list screenshots inside a chosen category folder.
+  if (req.method === 'GET' && url.pathname === '/api/screenshots') {
+    const folder = url.searchParams.get('folder') || '';
+    const dir = path.resolve(SCREENSHOTS_ROOT, folder);
+    // Guard against path traversal outside the screenshots root.
+    if (dir !== SCREENSHOTS_ROOT && !dir.startsWith(SCREENSHOTS_ROOT + path.sep)) {
+      return sendJson(res, 400, { error: 'Invalid folder' });
+    }
+    if (!fs.existsSync(dir)) return sendJson(res, 200, { files: [], folder });
+    try {
+      const files = fs.readdirSync(dir)
+        .filter(f => IMG_RE.test(f))
+        .map(f => ({ name: f, label: prettyName(f), path: path.join(dir, f) }));
+      return sendJson(res, 200, { files, folder });
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
     }
@@ -852,7 +1035,8 @@ const server = http.createServer(async (req, res) => {
       const cfg = payload.config || {};
       const hasScenes = Array.isArray(cfg.scenes) && cfg.scenes.length;
       const isRefSwap = Array.isArray(cfg.refPics) && cfg.refPics.length;
-      if (!hasScenes && !isRefSwap && (!cfg.environments?.length || !cfg.poses?.length)) {
+      const isScreenSwap = cfg.isScreenSwap && cfg.gender && cfg.screenshotFile;
+      if (!hasScenes && !isRefSwap && !isScreenSwap && (!cfg.environments?.length || !cfg.poses?.length)) {
         return sendJson(res, 400, { error: 'Pick at least one environment and one pose.' });
       }
       cfg.count = Math.max(0, parseInt(payload.count) || 0);
@@ -887,6 +1071,13 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true });
     });
     return;
+  }
+
+  // Clear all pending batches from the queue (running batch is kept).
+  if (req.method === 'POST' && url.pathname === '/api/queue/clear') {
+    queue = queue.filter(b => b.status === 'running');
+    pushState();
+    return sendJson(res, 200, { ok: true });
   }
 
   // Autonomous queue endpoint to parse links.json and queue all batches.
