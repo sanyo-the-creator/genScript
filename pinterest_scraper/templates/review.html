@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review — {{ folder }}</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#262a34; --txt:#e7e9ee; --muted:#8b90a0;
+          --pink:#e60023; --green:#2ec36b; }
+  * { box-sizing:border-box; -webkit-user-select:none; user-select:none; }
+  html,body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--txt); overflow:hidden;
+         font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         display:flex; flex-direction:column; }
+  .top { display:flex; align-items:center; gap:12px; padding:14px 18px; }
+  .top a { color:var(--muted); text-decoration:none; font-size:14px; }
+  .top a:hover { color:var(--txt); }
+  .title { font-weight:600; flex:1; text-align:center; }
+  .stats { font-size:13px; color:var(--muted); }
+  .stats b.k { color:var(--green); } .stats b.t { color:var(--pink); }
+  .adder { display:flex; align-items:center; gap:6px; }
+  .adder input { width:62px; background:#0f1115; border:1px solid var(--line); color:var(--txt);
+                 border-radius:8px; padding:6px 8px; font-size:13px; }
+  .adder button { background:#2a2f3a; color:var(--txt); border:1px solid var(--line);
+                  border-radius:8px; padding:7px 12px; font-size:13px; font-weight:600; cursor:pointer; }
+  .adder button:hover { border-color:#3a4050; background:#333a47; }
+  .adder button:disabled { opacity:.5; cursor:default; }
+
+  .stage { flex:1; position:relative; display:flex; align-items:center; justify-content:center;
+           padding:8px 16px 0; }
+  .card { position:absolute; width:min(420px,90vw); height:100%; max-height:62vh;
+          border-radius:20px; overflow:hidden; background:var(--card);
+          border:1px solid var(--line); box-shadow:0 20px 50px rgba(0,0,0,.45);
+          display:flex; align-items:center; justify-content:center;
+          will-change:transform; touch-action:none; }
+  .card img { width:100%; height:100%; object-fit:cover; pointer-events:none; }
+  .stamp { position:absolute; top:26px; font-size:34px; font-weight:800; letter-spacing:.06em;
+           padding:6px 16px; border-radius:12px; border:4px solid; opacity:0; transform:rotate(-12deg); }
+  .stamp.keep { right:22px; color:var(--green); border-color:var(--green); }
+  .stamp.nope { left:22px; color:var(--pink); border-color:var(--pink); transform:rotate(12deg); }
+
+  .controls { display:flex; align-items:center; justify-content:center; gap:22px;
+              padding:20px 0 28px; }
+  .btn { width:70px; height:70px; border-radius:50%; border:none; cursor:pointer;
+         font-size:30px; display:flex; align-items:center; justify-content:center;
+         box-shadow:0 8px 22px rgba(0,0,0,.4); transition:transform .12s, filter .12s; }
+  .btn:active { transform:scale(.9); }
+  .btn:hover { filter:brightness(1.12); }
+  .del { background:var(--pink); color:#fff; }
+  .keep { background:var(--green); color:#fff; }
+  .undo { width:52px; height:52px; font-size:20px; background:#2a2f3a; color:var(--txt); }
+  .undo:disabled { opacity:.35; cursor:default; }
+  .hint { text-align:center; color:var(--muted); font-size:12px; padding-bottom:16px; }
+  .done { text-align:center; color:var(--muted); font-size:17px; }
+  .done a { color:var(--green); }
+</style>
+</head>
+<body>
+  <div class="top">
+    <a href="/">← All collections</a>
+    <span class="title">{{ folder }}</span>
+    <span class="stats" id="stats"></span>
+    <span class="adder">
+      <input type="number" id="addn" value="30" min="1" max="500" title="How many more to download">
+      <button id="addbtn" title="Download more of this search">＋ Add more</button>
+    </span>
+  </div>
+
+  <div class="stage" id="stage"></div>
+
+  <div class="controls">
+    <button class="btn undo" id="undo" title="Undo (Z)" disabled>↺</button>
+    <button class="btn del" id="del" title="Delete (← / Del)">🗑</button>
+    <button class="btn keep" id="keep" title="Keep (→ / Space)">♥</button>
+  </div>
+  <div class="hint">← delete&nbsp;&nbsp;·&nbsp;&nbsp;→ keep&nbsp;&nbsp;·&nbsp;&nbsp;Z undo&nbsp;&nbsp;·&nbsp;&nbsp;or swipe / drag</div>
+
+<script>
+const folder = {{ folder|tojson }};
+const stage = document.getElementById('stage');
+const statsEl = document.getElementById('stats');
+const undoBtn = document.getElementById('undo');
+
+let queue = [];        // remaining filenames
+let kept = 0, trashed = 0;
+let history = [];       // {name, action}
+let current = null;     // {name, el}
+let busy = false;
+
+async function load() {
+  const r = await fetch('/api/images/' + encodeURIComponent(folder));
+  const d = await r.json();
+  queue = d.images;
+  kept = d.kept; trashed = d.trashed;
+  renderStats();
+  next();
+}
+
+function renderStats() {
+  statsEl.innerHTML = `${queue.length} left · <b class="k">${kept}</b> kept · <b class="t">${trashed}</b> trashed`;
+}
+
+// --- add more images to this collection ---
+const addBtn = document.getElementById('addbtn');
+async function addMore() {
+  if (addBtn.disabled) return;
+  const count = parseInt(document.getElementById('addn').value) || 30;
+  const query = folder.replace(/-/g, ' ');   // folder slug -> search term
+  addBtn.disabled = true;
+  const label = addBtn.textContent;
+  addBtn.textContent = 'Searching…';
+  const r = await fetch('/api/scrape', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ query, limit: count })
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    addBtn.textContent = e.error === undefined ? 'Failed' : (e.error.slice(0,18) || 'Failed');
+    setTimeout(() => { addBtn.textContent = label; addBtn.disabled = false; }, 2000);
+    return;
+  }
+  poll();
+}
+async function poll() {
+  const s = await (await fetch('/api/scrape/status')).json();
+  if (s.total > 0) addBtn.textContent = `↓ ${s.done}/${s.total}`;
+  if (s.running) { setTimeout(poll, 700); return; }
+  // done — pull in any brand-new files not already queued/decided
+  const d = await (await fetch('/api/images/' + encodeURIComponent(folder))).json();
+  const known = new Set(queue);
+  if (current) known.add(current.name);
+  const fresh = d.images.filter(n => !known.has(n));
+  queue.push(...fresh);
+  renderStats();
+  addBtn.textContent = fresh.length ? `+${fresh.length} added` : 'No new ones';
+  setTimeout(() => { addBtn.textContent = '＋ Add more'; addBtn.disabled = false; }, 1800);
+  if (!current && queue.length) next();   // was on the "done" screen
+}
+addBtn.addEventListener('click', addMore);
+
+function next() {
+  if (!queue.length) { showDone(); return; }
+  const name = queue[0];
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML =
+    `<div class="stamp keep">KEEP</div><div class="stamp nope">NOPE</div>` +
+    `<img src="/image/${encodeURIComponent(folder)}/${encodeURIComponent(name)}" alt="">`;
+  stage.appendChild(card);
+  current = { name, el: card };
+  attachDrag(card);
+}
+
+function showDone() {
+  current = null;
+  stage.innerHTML = `<div class="done">🎉 All reviewed!<br><br>
+    <b class="k" style="color:var(--green)">${kept}</b> kept ·
+    <b style="color:var(--pink)">${trashed}</b> deleted<br><br>
+    Kept images are in the <code>_keep</code> folder; deleted ones went to your Recycle Bin.<br><br>
+    <a href="/">← Back to collections</a></div>`;
+}
+
+async function decide(action, dir) {
+  if (busy || !current) return;
+  busy = true;
+  const card = current.el;
+  const name = current.name;
+  // fly out
+  const x = dir * (window.innerWidth);
+  card.style.transition = 'transform .32s ease-in, opacity .32s';
+  card.style.transform = `translate(${x}px, 40px) rotate(${dir*18}deg)`;
+  card.style.opacity = '0';
+
+  queue.shift();
+  history.push({ name, action });
+  if (action === 'keep') kept++; else trashed++;
+  renderStats();
+  undoBtn.disabled = false;
+
+  fetch('/api/decide', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ folder, name, action }) });
+
+  setTimeout(() => {
+    card.remove();
+    busy = false;
+    next();
+  }, 300);
+}
+
+async function undo() {
+  if (busy || !history.length) return;
+  const last = history[history.length - 1];
+  busy = true;
+  if (last.action === 'delete') undoBtn.textContent = '…';
+  const r = await fetch('/api/undo', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ folder, name: last.name, action: last.action }) });
+  undoBtn.textContent = '↺';
+  if (!r.ok) {
+    busy = false;
+    flash(last.action === 'delete' ? "Couldn't restore that image" : 'Undo failed');
+    return;
+  }
+  history.pop();
+  if (last.action === 'keep') kept--; else trashed--;
+  if (current && current.el) current.el.remove();
+  queue.unshift(last.name);
+  renderStats();
+  undoBtn.disabled = history.length === 0;
+  busy = false;
+  next();
+}
+
+function flash(msg) {
+  let el = document.getElementById('flash');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'flash';
+    el.style.cssText = 'position:fixed;left:50%;bottom:120px;transform:translateX(-50%);' +
+      'background:#2a2f3a;border:1px solid var(--line);color:var(--txt);padding:9px 16px;' +
+      'border-radius:10px;font-size:13px;z-index:20;opacity:0;transition:opacity .2s;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 1800);
+}
+
+// --- drag / swipe ---
+function attachDrag(card) {
+  let startX=0, startY=0, dx=0, dy=0, dragging=false;
+  const keepStamp = card.querySelector('.stamp.keep');
+  const nopeStamp = card.querySelector('.stamp.nope');
+
+  const down = e => {
+    if (busy) return;
+    dragging = true;
+    const p = e.touches ? e.touches[0] : e;
+    startX = p.clientX; startY = p.clientY;
+    card.style.transition = 'none';
+  };
+  const move = e => {
+    if (!dragging) return;
+    const p = e.touches ? e.touches[0] : e;
+    dx = p.clientX - startX; dy = p.clientY - startY;
+    card.style.transform = `translate(${dx}px, ${dy}px) rotate(${dx*0.05}deg)`;
+    const t = Math.min(Math.abs(dx)/120, 1);
+    keepStamp.style.opacity = dx > 0 ? t : 0;
+    nopeStamp.style.opacity = dx < 0 ? t : 0;
+  };
+  const up = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (dx > 110) { decide('keep', 1); }
+    else if (dx < -110) { decide('delete', -1); }
+    else {
+      card.style.transition = 'transform .2s';
+      card.style.transform = '';
+      keepStamp.style.opacity = 0; nopeStamp.style.opacity = 0;
+    }
+    dx = dy = 0;
+  };
+  card.addEventListener('mousedown', down);
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  card.addEventListener('touchstart', down, {passive:true});
+  card.addEventListener('touchmove', move, {passive:true});
+  card.addEventListener('touchend', up);
+}
+
+// --- buttons + keyboard ---
+document.getElementById('del').addEventListener('click', () => decide('delete', -1));
+document.getElementById('keep').addEventListener('click', () => decide('keep', 1));
+undoBtn.addEventListener('click', undo);
+window.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); decide('delete', -1); }
+  else if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); decide('keep', 1); }
+  else if (e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+});
+
+load();
+</script>
+</body>
+</html>

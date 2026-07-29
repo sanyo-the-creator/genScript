@@ -4,3 +4,7 @@ node_modules/
 dist/
 build/
 *.log
+
+# Bundled Pinterest Scraper tool — keep code, ignore scraped output & caches
+pinterest_scraper/downloads/
+pinterest_scraper/__pycache__/

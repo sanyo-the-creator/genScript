@@ -21,10 +21,18 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const puppeteer = require('puppeteer-core');
 
 const PORT = 3000;
 const CHROME_DEBUG_URL = 'http://127.0.0.1:9222';
+
+// Bundled internal tool: the Pinterest Scraper (Flask app on port 5077),
+// living inside this project. We launch it on demand so it's reachable
+// straight from this panel.
+const SCRAPER_DIR = path.join(__dirname, 'pinterest_scraper');
+const SCRAPER_PORT = 5077;
+const SCRAPER_URL = `http://127.0.0.1:${SCRAPER_PORT}`;
 
 // ---------------------------------------------------------------------------
 // Phone Screen Swap (POV) tool — source folders
@@ -1071,6 +1079,49 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true });
     });
     return;
+  }
+
+  // Launch (or reuse) the sibling Pinterest Scraper Flask app, then report its URL.
+  if (req.method === 'POST' && url.pathname === '/api/launch-scraper') {
+    const isUp = async () => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 1200);
+        await fetch(SCRAPER_URL, { signal: ctrl.signal });
+        clearTimeout(t);
+        return true;
+      } catch { return false; }
+    };
+
+    if (await isUp()) return sendJson(res, 200, { ok: true, url: SCRAPER_URL, running: true });
+
+    if (!fs.existsSync(path.join(SCRAPER_DIR, 'app.py'))) {
+      return sendJson(res, 404, { error: `Pinterest Scraper not found at ${SCRAPER_DIR}` });
+    }
+
+    try {
+      const py = process.platform === 'win32' ? 'python' : 'python3';
+      const child = spawn(py, ['app.py'], {
+        cwd: SCRAPER_DIR,
+        env: { ...process.env, PORT: String(SCRAPER_PORT) },
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.on('error', e => log(`Could not start Pinterest Scraper: ${e.message || e}`));
+      child.unref();
+      log(`Launching Pinterest Scraper (${py} app.py) in ${SCRAPER_DIR}...`);
+    } catch (e) {
+      return sendJson(res, 500, { error: 'Failed to launch scraper: ' + (e.message || e) });
+    }
+
+    // Wait a few seconds for Flask to bind the port before telling the client to open it.
+    for (let i = 0; i < 20; i++) {
+      await sleep(500);
+      if (await isUp()) return sendJson(res, 200, { ok: true, url: SCRAPER_URL, launched: true });
+    }
+    // It may still be starting (first run installs nothing, but imports can be slow).
+    return sendJson(res, 200, { ok: true, url: SCRAPER_URL, launched: true, slow: true });
   }
 
   // Clear all pending batches from the queue (running batch is kept).

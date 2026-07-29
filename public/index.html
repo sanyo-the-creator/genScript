@@ -75,12 +75,23 @@
   .pack .bgref { width: 100%; margin-top: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 7px; padding: 6px 9px; font-size: 12px; }
   .pack .bgref:focus { border-color: var(--accent2); outline: none; }
   .pack .bgref::placeholder { color: #5c6675; }
+  header .grow { flex: 1; }
+  .toolnav { display: flex; align-items: center; gap: 8px; }
+  .toolnav-cur { font-size: 12px; color: var(--text); background: var(--panel2); border: 1px solid var(--line); padding: 6px 12px; border-radius: 8px; font-weight: 600; }
+  .toolnav-link { font-size: 12px; color: var(--accent); background: var(--panel); border: 1px solid var(--accent2); padding: 6px 12px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+  .toolnav-link:hover { background: var(--accent2); color: #fff; }
+  .toolnav-link:disabled { opacity: .6; cursor: wait; }
 </style>
 </head>
 <body>
 <header>
   <h1>🏋️ Flow Generator — Control Panel</h1>
   <span id="connPill" class="pill">checking…</span>
+  <div class="grow"></div>
+  <nav class="toolnav">
+    <span class="toolnav-cur">🖼️ Flow Generator</span>
+    <button id="openScraperBtn" class="toolnav-link" title="Open the Pinterest Scraper (starts it if needed)">📌 Pinterest Scraper ↗</button>
+  </nav>
 </header>
 
 <div class="wrap">
@@ -1020,6 +1031,29 @@ document.getElementById('autonomousBtn').onclick = async () => {
   const data = await r.json();
   addLog(`[System] Queued ${data.queuedCount} projects from links.json. Starting execution loop...`);
   await fetch('/api/start', { method:'POST' });
+};
+
+// --- open sibling tool: Pinterest Scraper ---
+document.getElementById('openScraperBtn').onclick = async (e) => {
+  const btn = e.currentTarget;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Starting…';
+  try {
+    const r = await fetch('/api/launch-scraper', { method: 'POST' });
+    const text = await r.text();
+    let d = {};
+    try { d = JSON.parse(text); } catch {
+      alert('This button needs the server restarted (run `node server.js`) to enable the launcher.');
+      return;
+    }
+    if (!r.ok) { alert(d.error || 'Could not open Pinterest Scraper'); return; }
+    window.open(d.url, '_blank');
+    if (d.slow) alert('Pinterest Scraper is still starting — if the tab is blank, refresh it in a few seconds.');
+  } catch (err) {
+    alert('Error: ' + (err.message || err));
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
 };
 
 refreshStatus();
