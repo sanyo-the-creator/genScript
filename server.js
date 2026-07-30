@@ -87,7 +87,7 @@ function log(line) {
 function queueView() {
   return queue.map(b => ({
     id: b.id, count: b.count, label: b.label,
-    status: b.status, done: b.done, total: b.total,
+    status: b.status, done: b.done, total: b.total, ok: b.ok || 0,
   }));
 }
 function pushState() {
@@ -585,7 +585,9 @@ function buildTasks(cfg) {
       // Fall back to the original file if the copy fails (names may still clash).
     }
 
-    const pics = cfg.shuffle ? shuffle(povFiles) : povFiles.slice();
+    // Always shuffle so a partial count picks reference photos at random
+    // (e.g. 7 of 15) instead of the first N in folder order.
+    const pics = shuffle(povFiles);
     const target = count || pics.length;
     const tasks = [];
     let i = 0;
@@ -722,6 +724,11 @@ async function attachByNameOrUpload(page, name, folder, label) {
     log(`Asset library missed "${name}", uploading local file...`);
     ok = await uploadLocalRefImage(page, folder, name);
   }
+  // Always dismiss the picker so the NEXT add_2 opens a fresh overlay instead
+  // of re-triggering a full re-render of the (large) asset grid — that double
+  // open was freezing the tab for 60s between the two attaches.
+  await closePicker(page);
+  await sleep(400);
   return ok;
 }
 
@@ -819,6 +826,23 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
 
+// Light recovery: close any open picker/modal and dismiss stacked toasts,
+// WITHOUT reloading. Reloading a big Flow project re-renders hundreds of
+// gallery items and pegs the renderer, which made the NEXT task hang too —
+// a reload-cascade that killed the whole run. Prefer this between tasks.
+async function softRecover(page) {
+  try {
+    for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await sleep(250); }
+    // Dismiss any "Dismiss" toasts that piled up (e.g. upscale/download notices).
+    await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button'))
+        .filter(b => /^\s*dismiss\s*$/i.test(b.textContent || ''));
+      btns.forEach(b => { try { b.click(); } catch { } });
+    }).catch(() => { });
+    await sleep(400);
+  } catch { }
+}
+
 // Reload the Flow tab to recover a stuck/unresponsive renderer.
 async function recoverPage(page) {
   try {
@@ -837,9 +861,9 @@ async function runQueue() {
   let browser;
   try {
     // protocolTimeout caps how long any single CDP call may hang before it
-    // throws (default is 180s). We keep it tight so a stuck step fails fast and
-    // the per-task handler can recover instead of freezing the run.
-    browser = await puppeteer.connect({ browserURL: CHROME_DEBUG_URL, defaultViewport: null, protocolTimeout: 60000 });
+    // throws. 90s is enough for a slow-but-alive picker, while still failing a
+    // truly frozen call fast so the loop can soft-recover and move on.
+    browser = await puppeteer.connect({ browserURL: CHROME_DEBUG_URL, defaultViewport: null, protocolTimeout: 90000 });
   } catch (e) {
     log('Could not connect to Chrome on port 9222. Launch Chrome with the debug command shown in the panel, then try again.');
     state.running = false; pushState(); return;
@@ -873,6 +897,7 @@ async function runQueue() {
     const tasks = buildTasks(batch.config);
     batch.total = tasks.length;
     batch.done = 0;
+    batch.ok = 0;
     pushState();
     log(`\n=== Batch #${batch.id} (${batch.label}) — ${tasks.length} generation(s) ===`);
 
@@ -880,32 +905,49 @@ async function runQueue() {
     if (Array.isArray(batch.config.refPics) && batch.config.refPics.length) {
       await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics);
     } else if (batch.config.isScreenSwap && tasks.length) {
-      // Pre-upload every POV photo + the chosen screenshot so they can be
-      // attached by name during generation (same as the Reference Image Swap).
-      const povFiles = [...new Set(tasks.map(t => t.povFile))];
+      // Pre-upload the chosen screenshot + the ENTIRE POV folder (not just this
+      // batch's random subset) so the library stabilises after the first batch
+      // and attach-by-name stops missing (which was causing duplicate uploads).
       await uploadAllRefImages(page, tasks[0].ssFolder, [tasks[0].ssFile]);
-      if (!state.stopRequested) await uploadAllRefImages(page, tasks[0].povFolder, povFiles);
+      let allPov = [];
+      try { allPov = fs.readdirSync(path.join(__dirname, tasks[0].povFolder)).filter(f => IMG_RE.test(f)); } catch { }
+      if (!allPov.length) allPov = [...new Set(tasks.map(t => t.povFile))];
+      if (!state.stopRequested) await uploadAllRefImages(page, tasks[0].povFolder, allPov);
     }
 
+    let consecutiveFails = 0;
     for (const task of tasks) {
       if (state.stopRequested) break;
       state.current = `Batch #${batch.id}: ${task.env} + ${task.pose}`;
       pushState();
       log(`Generating: ${task.env} + ${task.pose}`);
 
+      // Keep the Flow tab foreground — a backgrounded/occluded tab gets throttled
+      // and CDP evaluates can hang.
+      try { await page.bringToFront(); } catch { }
+
       // Guard each generation: a stuck renderer or timed-out CDP call must not
-      // kill the queue. On failure, reload the tab and move on to the next one.
+      // kill the queue.
+      let ok = false;
       try {
-        await withTimeout(generateOne(page, batch.config, task), 150000, 'generation');
+        ok = await withTimeout(generateOne(page, batch.config, task), 120000, 'generation');
       } catch (e) {
         if (e.message === 'STOP_REQUESTED' || state.stopRequested) {
           log('Stop requested — aborting batch immediately.');
           break;
         }
         log('Generation failed: ' + (e.message || e));
-        await recoverPage(page);
       }
       batch.done += 1;
+      if (ok) { batch.ok += 1; consecutiveFails = 0; }
+      else {
+        consecutiveFails += 1;
+        log(`⚠️ This one did NOT generate (${batch.ok}/${batch.done} actually created so far in this batch).`);
+        // Light recovery first (close pickers/toasts). Only fully reload after a
+        // few fails in a row, to avoid a reload-cascade that freezes everything.
+        if (consecutiveFails >= 3) { await recoverPage(page); consecutiveFails = 0; }
+        else await softRecover(page);
+      }
       pushState();
 
       // Wait with jitter between generations (mild mitigation for rate flags).
@@ -922,7 +964,7 @@ async function runQueue() {
 
     batch.status = state.stopRequested ? 'stopped' : 'done';
     pushState();
-    log(`Batch #${batch.id} ${batch.status}.`);
+    log(`Batch #${batch.id} ${batch.status} — ✅ ${batch.ok || 0}/${batch.total} images actually generated.`);
   }
 
   browser.disconnect();

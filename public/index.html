@@ -957,7 +957,7 @@ function renderQueue(q, running) {
         ${canRemove ? `<button class="rm" title="Remove">✕</button>` : ''}
       </div>
       ${(b.status==='running'||b.done) ? `<div class="qbar"><div style="width:${pct}%"></div></div>
-        <div class="muted" style="font-size:11px;margin-top:3px">${b.done} / ${b.total}</div>` : ''}
+        <div class="muted" style="font-size:11px;margin-top:3px">${b.done} / ${b.total} processed · <b style="color:${(b.ok||0)===b.done?'var(--good)':'var(--bad)'}">✅ ${b.ok||0} generated</b></div>` : ''}
     `;
     if (canRemove) div.querySelector('.rm').onclick = () =>
       fetch('/api/queue/remove', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.id }) });
