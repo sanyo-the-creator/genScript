@@ -8,3 +8,6 @@ build/
 # Bundled Pinterest Scraper tool — keep code, ignore scraped output & caches
 pinterest_scraper/downloads/
 pinterest_scraper/__pycache__/
+
+# Temp renamed screenshot copies for unique Flow asset names
+.upload_tmp/

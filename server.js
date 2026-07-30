@@ -558,8 +558,32 @@ function buildTasks(cfg) {
     if (!povFiles.length || !cfg.screenshotFile) return [];
 
     const povFolder = path.relative(__dirname, povFolderAbs);
-    const ssFolder = path.relative(__dirname, path.join(SCREENSHOTS_ROOT, cfg.category || ''));
     const label = cfg.screenshotLabel || cfg.screenshotFile;
+
+    // Screenshots across categories share names (many "streak100.PNG"), so
+    // Flow's asset library can't tell them apart — the existing-check would
+    // match a same-named asset from another category and skip the real upload.
+    // Fix: upload a copy renamed with the category baked in, e.g.
+    // "streak100__Quit_Gambling_streak_block.PNG", so every name is unique.
+    const category = cfg.category || '';
+    const ext = path.extname(cfg.screenshotFile);
+    const baseNoExt = cfg.screenshotFile.slice(0, cfg.screenshotFile.length - ext.length);
+    const folderTag = (category || 'root').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '');
+    const ssUploadName = `${baseNoExt}__${folderTag}${ext}`;
+
+    // Materialise the uniquely-named copy so Puppeteer uploads it under that name.
+    let ssFolder = path.relative(__dirname, path.join(SCREENSHOTS_ROOT, category));
+    let ssFile = cfg.screenshotFile;
+    try {
+      const srcAbs = path.join(SCREENSHOTS_ROOT, category, cfg.screenshotFile);
+      const tmpDir = path.join(__dirname, '.upload_tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      fs.copyFileSync(srcAbs, path.join(tmpDir, ssUploadName));
+      ssFolder = '.upload_tmp';
+      ssFile = ssUploadName;
+    } catch (e) {
+      // Fall back to the original file if the copy fails (names may still clash).
+    }
 
     const pics = cfg.shuffle ? shuffle(povFiles) : povFiles.slice();
     const target = count || pics.length;
@@ -572,7 +596,7 @@ function buildTasks(cfg) {
         povFolder,
         povFile: pic,
         ssFolder,
-        ssFile: cfg.screenshotFile,
+        ssFile,
         screenshotLabel: label,
         env: `POV: ${pic}`,
         pose: `Screen → ${label}`,
