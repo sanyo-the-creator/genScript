@@ -4,6 +4,7 @@ node_modules/
 dist/
 build/
 *.log
+.env
 
 # Bundled Pinterest Scraper tool — keep code, ignore scraped output & caches
 pinterest_scraper/downloads/

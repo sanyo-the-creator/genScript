@@ -25,6 +25,7 @@ const CHARACTER_NAME = 'Untitled Character';
 const basePrompt = {
   "IDENTITY_AND_REFERENCE_LOCK": {
     "identity_source": "Use the attached reference image as the base. SAME person: same facial structure, same eyes, same lips, same nose, same face proportions, same hair color and hairline. Copy the face and hair exactly — do not invent a different man.",
+    "body_consistency": "IMPORTANT: Keep the body of the character ABSOLUTELY unchanged during the generations. Keep it consistent always.",
     "reference_isolation": "CRITICAL: Attached reference images are used ONLY for facial identity and head features. DO NOT copy the pose, background environment, lighting, angle, or clothing from reference images. Generate a completely NEW realistic setting, NEW realistic pose, NEW casual outfit, and NEW realistic lighting as specified in this prompt."
   },
   "PHOTO_QUALITY": {

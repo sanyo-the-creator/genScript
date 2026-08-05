@@ -131,9 +131,9 @@ function buildPrompt(cfg, task) {
     const isFemale = cfg.gender === 'women' || cfg.gender === 'female' || (cfg.folderName && cfg.folderName.includes('women')) || (task.folderName && task.folderName.includes('women'));
 
     if (isFemale) {
-      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep our ${charName} body comsistent so the new body on the refference image is actually our ${charName}'s body, the only thing you can change is the hairstyle. keep the haircolor consistent to our character but you can use hairstyle on refference image. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
+      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep the body of ${charName} ABSOLUTELY unchanged during the generations. Keep it consistent always, so the new body on the refference image is actually our ${charName}'s body, the only thing you can change is the hairstyle. keep the haircolor consistent to our character but you can use hairstyle on refference image. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
     } else {
-      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep our ${charName} body consistent so the new body on the refference image is actually our ${charName}'s body. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
+      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep the body of ${charName} ABSOLUTELY unchanged during the generations. Keep it consistent always, so the new body on the refference image is actually our ${charName}'s body. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
     }
   }
 
@@ -175,6 +175,7 @@ function buildPrompt(cfg, task) {
     },
     IDENTITY: {
       source: 'Attached reference = the SAME person: same face, eyes, lips, nose, proportions, hair colour and hairline. Copy the face and hair exactly.',
+      body_consistency: 'IMPORTANT: Keep the body of the character ABSOLUTELY unchanged during the generations. Keep it consistent always.',
       isolation: 'Use the attached reference ONLY for the face/head. Take NOTHING else from it — the pose, location, lighting, camera and outfit come entirely from SHOT and WARDROBE above.',
     },
     // ONE tight realism block (no six overlapping ones fighting each other).
