@@ -34,6 +34,14 @@ const SCRAPER_DIR = path.join(__dirname, 'pinterest_scraper');
 const SCRAPER_PORT = 5077;
 const SCRAPER_URL = `http://127.0.0.1:${SCRAPER_PORT}`;
 
+// YouTube Shorts scheduler. Each "character" has its OWN debug Chrome (a unique
+// --remote-debugging-port, logged into that character's channel) and its OWN
+// inbox folder where you drop the SlideSmith exports (mp4 + json). The UI drives
+// ytUpload.js per character; after scheduling, that character's files are removed
+// from its folder (--delete-after). Characters persist in yt_characters.json.
+const YT_CHARACTERS_FILE = path.join(__dirname, 'yt_characters.json');
+const YT_UPLOAD_SCRIPT = path.join(__dirname, 'ytUpload.js');
+
 // ---------------------------------------------------------------------------
 // Phone Screen Swap (POV) tool — source folders
 // ---------------------------------------------------------------------------
@@ -96,6 +104,28 @@ function pushState() {
     current: state.current,
     queue: queueView(),
   });
+}
+
+// ── YouTube scheduler: state + persistence ───────────────────────────────────
+const ytState = { running: false, characterId: null };
+let ytChild = null; // the spawned ytUpload.js process while a run is active
+
+function loadCharacters() {
+  try { return JSON.parse(fs.readFileSync(YT_CHARACTERS_FILE, 'utf8')); } catch { return []; }
+}
+function saveCharacters(list) {
+  fs.writeFileSync(YT_CHARACTERS_FILE, JSON.stringify(list, null, 2));
+}
+// How many not-yet-posted videos sit in a character's inbox folder.
+function countPending(folder) {
+  try { return fs.readdirSync(folder).filter(f => /\.(mp4|webm|mov)$/i.test(f)).length; }
+  catch { return 0; }
+}
+function ytCharactersView() {
+  return loadCharacters().map(c => ({ ...c, pending: countPending(c.folder), folderExists: fs.existsSync(c.folder) }));
+}
+function broadcastYt() {
+  broadcast('yt', { running: ytState.running, characterId: ytState.characterId, characters: ytCharactersView() });
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1003,6 +1033,13 @@ const server = http.createServer(async (req, res) => {
     return res.end(html);
   }
 
+  // YouTube Shorts scheduler UI (separate page, same server).
+  if (req.method === 'GET' && url.pathname === '/youtube') {
+    const html = fs.readFileSync(path.join(__dirname, 'public', 'youtube.html'));
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    return res.end(html);
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/status') {
     const chrome = await checkChrome();
     const debugFlags =
@@ -1270,6 +1307,106 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       return sendJson(res, 500, { error: 'Failed to process links.json: ' + err.message });
     }
+  }
+
+  // ── YouTube Shorts scheduler API ───────────────────────────────────────────
+  // List characters (+ pending count per folder + run state).
+  if (req.method === 'GET' && url.pathname === '/api/yt/characters') {
+    return sendJson(res, 200, { running: ytState.running, characterId: ytState.characterId, characters: ytCharactersView() });
+  }
+
+  // Create or update a character. Body: { id?, name, folder, port }.
+  if (req.method === 'POST' && url.pathname === '/api/yt/characters/save') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      const name = String(p.name || '').trim();
+      const folder = String(p.folder || '').trim();
+      const port = parseInt(p.port) || 9222;
+      if (!name) return sendJson(res, 400, { error: 'Name is required.' });
+      if (!folder) return sendJson(res, 400, { error: 'Folder path is required.' });
+      const list = loadCharacters();
+      if (list.some(x => x.port === port && x.id !== p.id)) {
+        return sendJson(res, 400, { error: `Port ${port} is already used by another character — each needs its own.` });
+      }
+      if (p.id) {
+        const c = list.find(x => x.id === p.id);
+        if (!c) return sendJson(res, 404, { error: 'Character not found.' });
+        Object.assign(c, { name, folder, port });
+      } else {
+        list.push({ id: 'c' + Date.now().toString(36), name, folder, port });
+      }
+      saveCharacters(list);
+      broadcastYt();
+      sendJson(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // Delete a character. Body: { id }.
+  if (req.method === 'POST' && url.pathname === '/api/yt/characters/remove') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let id; try { id = JSON.parse(body).id; } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      if (ytState.running && ytState.characterId === id) return sendJson(res, 409, { error: 'This character is currently running.' });
+      saveCharacters(loadCharacters().filter(x => x.id !== id));
+      broadcastYt();
+      sendJson(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // Run scheduling for one character. Body: { id, perDay?, start?, dryRun? }.
+  if (req.method === 'POST' && url.pathname === '/api/yt/schedule') {
+    if (ytState.running) return sendJson(res, 409, { error: 'A schedule run is already in progress.' });
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', async () => {
+      let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      const c = loadCharacters().find(x => x.id === p.id);
+      if (!c) return sendJson(res, 404, { error: 'Character not found.' });
+      if (!fs.existsSync(c.folder)) return sendJson(res, 400, { error: 'Folder does not exist: ' + c.folder });
+      if (countPending(c.folder) === 0) return sendJson(res, 400, { error: 'No videos in this character\'s folder.' });
+      // Confirm this character's debug Chrome is actually up on its port.
+      try {
+        const r = await fetch(`http://127.0.0.1:${c.port}/json/version`);
+        if (!r.ok) throw new Error('bad status');
+      } catch {
+        return sendJson(res, 400, { error: `No debug Chrome on port ${c.port}. Launch this character's Chrome (logged into its channel) first.` });
+      }
+      const perDay = Math.max(1, Math.min(15, parseInt(p.perDay) || 3));
+      const cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`];
+      if (p.start) cliArgs.push(`--start=${p.start}`);
+      if (p.dryRun) cliArgs.push('--dry-run'); else cliArgs.push('--delete-after');
+
+      ytState.running = true; ytState.characterId = c.id; broadcastYt();
+      log(`▶ YouTube: scheduling "${c.name}" (port ${c.port}, ${perDay}/day)${p.dryRun ? ' [DRY RUN]' : ''}…`);
+      sendJson(res, 200, { ok: true });
+
+      ytChild = spawn(process.execPath, cliArgs, { cwd: __dirname });
+      const pipe = (buf) => String(buf).split(/\r?\n/).forEach(l => l.trim() && log('  ' + l.trim()));
+      ytChild.stdout.on('data', pipe);
+      ytChild.stderr.on('data', pipe);
+      ytChild.on('close', (code) => {
+        log(`■ YouTube run for "${c.name}" finished (exit ${code}).`);
+        ytState.running = false; ytState.characterId = null; ytChild = null; broadcastYt();
+      });
+      ytChild.on('error', (e) => {
+        log(`✗ YouTube run failed to start: ${e.message}`);
+        ytState.running = false; ytState.characterId = null; ytChild = null; broadcastYt();
+      });
+    });
+    return;
+  }
+
+  // Stop the current YouTube run.
+  if (req.method === 'POST' && url.pathname === '/api/yt/stop') {
+    if (ytChild) { try { ytChild.kill(); } catch { /* already gone */ } }
+    ytState.running = false; ytState.characterId = null; broadcastYt();
+    log('YouTube run stopped.');
+    return sendJson(res, 200, { ok: true });
   }
 
   // Start processing the queue.

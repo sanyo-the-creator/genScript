@@ -12,3 +12,6 @@ pinterest_scraper/__pycache__/
 
 # Temp renamed screenshot copies for unique Flow asset names
 .upload_tmp/
+
+# YouTube scheduler: local per-user character config (ports + inbox folders)
+yt_characters.json
