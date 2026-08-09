@@ -56,6 +56,12 @@ const PHONE_POV_FOLDERS = {
 const SCREENSHOTS_ROOT = path.join(__dirname, 'upshift_screenshots');
 const IMG_RE = /\.(jpg|jpeg|png|webp)$/i;
 
+// Local SlideSmith photo-library manifest (source of the Gym Mirror body-swap pack).
+// __dirname = .../internalTools/genScript/genScript → sibling tool auto_slides/SlideSmith.
+const SLIDESMITH_MANIFEST = path.resolve(
+  __dirname, '..', '..', 'auto_slides', 'SlideSmith', 'public', 'photo-library', 'manifest.json'
+);
+
 // "streak60_student.PNG" -> "Streak 60 Student"
 function prettyName(fileName) {
   return fileName
@@ -1106,6 +1112,57 @@ const server = http.createServer(async (req, res) => {
     try {
       const files = fs.readdirSync(folder).filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f));
       return sendJson(res, 200, { files, folder: `${gender}_ref_pics` });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // Gym Mirror Pack (Body Swap): pull a photo pack from the local SlideSmith
+  // photo library (default "mirror"), cache its images into a local folder on
+  // disk, and return the file list so the existing ref-swap pipeline can upload
+  // and body-swap them exactly like men_ref_pics.
+  if (req.method === 'GET' && url.pathname === '/api/mirror-pics') {
+    const category = (url.searchParams.get('pack') || 'mirror').replace(/[^a-z0-9_-]/gi, '');
+    const folderName = `men_${category}_pics`;
+    try {
+      const manifest = JSON.parse(fs.readFileSync(SLIDESMITH_MANIFEST, 'utf8'));
+      const base = manifest.base;
+      const list = (manifest.categories && manifest.categories[category]) || [];
+      if (!list.length) return sendJson(res, 200, { files: [], folder: folderName });
+
+      const dir = path.join(__dirname, folderName);
+      fs.mkdirSync(dir, { recursive: true });
+
+      // Download any missing images (cached across runs). Small concurrency.
+      const missing = list.filter(name => {
+        const dest = path.join(dir, name);
+        return !fs.existsSync(dest) || fs.statSync(dest).size === 0;
+      });
+      if (missing.length) {
+        log(`Gym Mirror Pack "${category}": downloading ${missing.length}/${list.length} image(s) from SlideSmith library...`);
+        const CONCURRENCY = 8;
+        for (let i = 0; i < missing.length; i += CONCURRENCY) {
+          const batch = missing.slice(i, i + CONCURRENCY);
+          await Promise.all(batch.map(async name => {
+            try {
+              const resp = await fetch(base + category + '/' + name);
+              if (!resp.ok) { log(`  mirror pack: failed ${name} (${resp.status})`); return; }
+              const buf = Buffer.from(await resp.arrayBuffer());
+              fs.writeFileSync(path.join(dir, name), buf);
+            } catch (e) {
+              log(`  mirror pack: error ${name}: ${e.message || e}`);
+            }
+          }));
+        }
+      }
+
+      // Only report files that actually made it to disk.
+      const files = list.filter(name => {
+        const dest = path.join(dir, name);
+        return fs.existsSync(dest) && fs.statSync(dest).size > 0;
+      });
+      log(`Gym Mirror Pack "${category}": ${files.length} image(s) ready in ${folderName}/.`);
+      return sendJson(res, 200, { files, folder: folderName });
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
     }

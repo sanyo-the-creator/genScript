@@ -407,6 +407,13 @@ const PACKS = {
         physique: 'lean muscular athletic build',
         sweat: 'dry',
       } },
+    { title: '🪞 Gym Mirror Pack (Body Swap)', desc: 'Body-swaps your character into the SlideSmith “mirror” photo pack (gym mirror / physique checks). Same engine as Reference Image Swap — one output per pack image.',
+      config: {
+        isRefSwapPack: true,
+        mirrorSource: true,
+        physique: 'lean muscular athletic build',
+        sweat: 'dry',
+      } },
     // Each scene is a recipe read off one of the reference photos in
     // men_ref_pics/ — its light source & direction, colour cast, camera height,
     // pose and environment clutter. This teaches Flow the PHOTOGRAPHY, with no
@@ -816,14 +823,17 @@ async function addPack(p, bgRef) {
   const cfg = { ...packBaseDefaults(), ...p.config };
   if (p.config.isRefSwapPack) {
     try {
-      const res = await fetch(`/api/ref-pics?gender=${gender}`);
+      const endpoint = p.config.mirrorSource ? '/api/mirror-pics' : `/api/ref-pics?gender=${gender}`;
+      const res = await fetch(endpoint);
       const data = await res.json();
       if (!data.files || !data.files.length) {
-        alert(`No reference pictures found in folder ${gender}_ref_pics/`);
+        alert(p.config.mirrorSource
+          ? 'No images found in the SlideSmith “mirror” photo pack.'
+          : `No reference pictures found in folder ${gender}_ref_pics/`);
         return;
       }
       cfg.refPics = data.files;
-      cfg.folderName = `${gender}_ref_pics`;
+      cfg.folderName = data.folder || `${gender}_ref_pics`;
     } catch (e) {
       alert('Error fetching reference pictures: ' + (e.message || e));
       return;

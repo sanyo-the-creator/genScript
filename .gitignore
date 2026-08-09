@@ -13,6 +13,9 @@ pinterest_scraper/__pycache__/
 # Temp renamed screenshot copies for unique Flow asset names
 .upload_tmp/
 
+# Gym Mirror Pack: images cached locally from the SlideSmith photo library
+men_mirror_pics/
+
 # YouTube scheduler: local per-user character config (ports + inbox folders)
 yt_characters.json
 
