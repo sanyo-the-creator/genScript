@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const puppeteer = require('puppeteer-core');
+const clipTool = require('./clipTool');
 
 const PORT = 3000;
 const CHROME_DEBUG_URL = 'http://127.0.0.1:9222';
@@ -93,7 +94,16 @@ const LOG_HISTORY_MAX = 1000;  // ring-buffer cap
 function sseFrame(event, data) { return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`; }
 function broadcast(event, data) {
   const payload = sseFrame(event, data);
-  for (const res of sseClients) res.write(payload);
+  // A dead/closed SSE client (a tab that navigated away) makes res.write throw.
+  // If that throw escapes here — and broadcast() runs inside hot event handlers
+  // like child.stdout 'data' — it becomes an uncaught exception that kills the
+  // WHOLE server: every generation and every parallel YouTube run at once. So
+  // isolate each write and quietly drop any client that can no longer be written.
+  const dead = [];
+  for (const res of sseClients) {
+    try { res.write(payload); } catch { dead.push(res); }
+  }
+  if (dead.length) sseClients = sseClients.filter(c => !dead.includes(c));
 }
 function log(line) {
   const stamped = `[${new Date().toLocaleTimeString()}] ${line}`;
@@ -141,6 +151,11 @@ function ytCharactersView() {
 function broadcastYt() {
   broadcast('yt', ytSnapshot());
 }
+
+// ── Clip Combiner: live log + state broadcast (shares the SSE bus) ─────────────
+function clipsLog(line) { log(`[clips] ${line}`); }
+function broadcastClips() { broadcast('clips', clipTool.state()); }
+let clipGenBusy = false; // one generation pipeline at a time (ffmpeg is heavy)
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -1054,6 +1069,13 @@ const server = http.createServer(async (req, res) => {
     return res.end(html);
   }
 
+  // Clip Combiner UI (Shorts DB + upload footage + generate paired clips).
+  if (req.method === 'GET' && url.pathname === '/clips') {
+    const html = fs.readFileSync(path.join(__dirname, 'public', 'clips.html'));
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    return res.end(html);
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/status') {
     const chrome = await checkChrome();
     const debugFlags =
@@ -1152,6 +1174,7 @@ const server = http.createServer(async (req, res) => {
     // Send current snapshots to just this client (generation + YouTube state).
     res.write(sseFrame('state', { running: state.running, current: state.current, queue: queueView() }));
     res.write(sseFrame('yt', ytSnapshot()));
+    res.write(sseFrame('clips', clipTool.state()));
     req.on('close', () => { sseClients = sseClients.filter(c => c !== res); });
     return;
   }
@@ -1411,7 +1434,12 @@ const server = http.createServer(async (req, res) => {
       // Prefix every line with the character name so parallel runs stay readable
       // in the one shared log.
       const tag = `[${c.name}]`;
-      const pipe = (buf) => String(buf).split(/\r?\n/).forEach(l => l.trim() && log(`  ${tag} ${l.trim()}`));
+      const pipe = (buf) => {
+        // Never let a logging hiccup escape this event handler — an uncaught
+        // throw here would take down the server (and every other run with it).
+        try { String(buf).split(/\r?\n/).forEach(l => l.trim() && log(`  ${tag} ${l.trim()}`)); }
+        catch { /* ignore — one dropped log line must not kill the process */ }
+      };
       child.stdout.on('data', pipe);
       child.stderr.on('data', pipe);
       child.on('close', (code) => {
@@ -1463,7 +1491,107 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { ok: true });
   }
 
+  // ── Clip Combiner API ───────────────────────────────────────────────────────
+  // Current state: Shorts DB size, uploaded videos (+ remaining pairings), output.
+  if (req.method === 'GET' && url.pathname === '/api/clips/state') {
+    return sendJson(res, 200, clipTool.state());
+  }
+
+  // Refresh the Shorts database from the prayerlock channel (yt-dlp scrape).
+  if (req.method === 'POST' && url.pathname === '/api/clips/refresh-shorts') {
+    clipsLog('Refreshing Shorts DB from prayerlock channel…');
+    clipTool.refreshShorts(clipsLog)
+      .then(r => { clipsLog(`Shorts DB: ${r.total} total (+${r.added} new, scanned ${r.scanned}).`); broadcastClips(); })
+      .catch(e => clipsLog('Refresh failed: ' + (e.message || e)));
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Upload one app-footage video. Body is the RAW file bytes; filename comes in
+  // the X-Filename header (avoids multipart parsing entirely).
+  if (req.method === 'POST' && url.pathname === '/api/clips/upload') {
+    const chunks = [];
+    let size = 0;
+    const MAX = 500 * 1024 * 1024; // 500 MB guardrail
+    req.on('data', c => { size += c.length; if (size <= MAX) chunks.push(c); });
+    req.on('end', () => {
+      if (size > MAX) return sendJson(res, 413, { error: 'File too large (max 500 MB).' });
+      if (!chunks.length) return sendJson(res, 400, { error: 'Empty upload.' });
+      try {
+        const name = decodeURIComponent(req.headers['x-filename'] || 'video.mp4');
+        const entry = clipTool.addUpload(Buffer.concat(chunks), name);
+        clipsLog(`Uploaded footage: ${entry.name}`);
+        broadcastClips();
+        sendJson(res, 200, { ok: true, entry });
+      } catch (e) { sendJson(res, 500, { error: e.message || String(e) }); }
+    });
+    return;
+  }
+
+  // Remove an uploaded video (and forget its pairings). Body: { id }.
+  if (req.method === 'POST' && url.pathname === '/api/clips/remove-upload') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let id; try { id = JSON.parse(body).id; } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      clipTool.removeUpload(id);
+      clipsLog('Removed uploaded footage ' + id);
+      broadcastClips();
+      sendJson(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // Generate N clips for one uploaded video. Body: { uploadedId, count }.
+  if (req.method === 'POST' && url.pathname === '/api/clips/generate') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', async () => {
+      let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      const uploadedId = p.uploadedId;
+      const count = Math.max(1, Math.min(50, parseInt(p.count) || 1));
+      if (!uploadedId) return sendJson(res, 400, { error: 'Pick an uploaded video first.' });
+      if (clipGenBusy) return sendJson(res, 409, { error: 'A generation is already running.' });
+      clipGenBusy = true;
+      sendJson(res, 200, { ok: true, count });
+      // Fire-and-forget: progress streams over SSE ('clips' + log).
+      (async () => {
+        let made = 0;
+        for (let i = 0; i < count; i++) {
+          try {
+            clipsLog(`Generating clip ${i + 1}/${count}…`);
+            const r = await clipTool.generateOne(uploadedId, clipsLog);
+            made++;
+            clipsLog(`✓ ${r.mp4} (Short ${r.shortId})`);
+            broadcastClips();
+          } catch (e) {
+            clipsLog('✗ ' + (e.message || e));
+            break; // out of Shorts, or a tool error — stop the batch
+          }
+        }
+        clipsLog(`Done. ${made} clip(s) written to generated_clips/.`);
+        clipGenBusy = false;
+        broadcastClips();
+      })();
+    });
+    return;
+  }
+
   res.writeHead(404); res.end('Not found');
+});
+
+// ── Last-resort crash guards ──────────────────────────────────────────────────
+// This one process runs image generation AND every parallel YouTube scheduler.
+// Without these, a single stray rejection/exception (e.g. a Puppeteer "detached
+// Frame" from a Chrome that navigated under us) would terminate the process and
+// kill ALL of them together. Keep the process alive and just log instead — each
+// activity already has its own try/catch to recover locally.
+process.on('unhandledRejection', (reason) => {
+  try { log(`⚠️ Unhandled rejection (ignored, server kept alive): ${reason && reason.message ? reason.message : reason}`); }
+  catch { console.error('unhandledRejection', reason); }
+});
+process.on('uncaughtException', (err) => {
+  try { log(`⚠️ Uncaught exception (ignored, server kept alive): ${err && err.message ? err.message : err}`); }
+  catch { console.error('uncaughtException', err); }
 });
 
 server.listen(PORT, () => {

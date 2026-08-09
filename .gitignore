@@ -15,3 +15,9 @@ pinterest_scraper/__pycache__/
 
 # YouTube scheduler: local per-user character config (ports + inbox folders)
 yt_characters.json
+
+# Clip Combiner: local data, uploaded footage, generated output & temp
+prayerlock_shorts.json
+uploaded_videos/
+generated_clips/
+.clip_tmp/
