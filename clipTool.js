@@ -136,8 +136,25 @@ function saveUploads(list) {
   fs.writeFileSync(UPLOADS_INDEX, JSON.stringify(list, null, 2));
 }
 
+// Turn a filename into a safe, readable folder segment.
+function sanitize(s) {
+  return String(s || '').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9-_]+/g, '_')
+    .replace(/^_+|_+$/g, '').slice(0, 40);
+}
+// Each uploaded video gets its OWN output subfolder so its generated clips never
+// mix with another's. Stored on the entry; falls back for legacy entries.
+function uploadFolder(entry) { return entry.folder || `${sanitize(entry.name) || 'footage'}_${entry.id}`; }
+function outputDirFor(entry) {
+  const dir = path.join(OUTPUT_DIR, uploadFolder(entry));
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function clipsIn(dir) {
+  try { return fs.readdirSync(dir).filter(f => f.endsWith('.mp4')); } catch { return []; }
+}
+
 // Persist a freshly-uploaded video's bytes to disk and register it. `origName`
-// is the browser filename (used only for a friendly label + extension).
+// is the browser filename (used for a friendly label, its folder, + extension).
 function addUpload(buffer, origName) {
   ensureDirs();
   const ext = (path.extname(origName || '').toLowerCase().match(/\.(mp4|mov|webm|m4v)$/) || ['.mp4'])[0];
@@ -145,7 +162,8 @@ function addUpload(buffer, origName) {
   const file = `${id}${ext}`;
   fs.writeFileSync(path.join(UPLOADS_DIR, file), buffer);
   const list = loadUploads();
-  const entry = { id, name: origName || file, file, addedAt: new Date().toISOString() };
+  const entry = { id, name: origName || file, file, folder: `${sanitize(origName) || 'footage'}_${id}`, addedAt: new Date().toISOString() };
+  outputDirFor(entry); // create its output folder up front
   list.push(entry);
   saveUploads(list);
   return entry;
@@ -165,16 +183,6 @@ function removeUpload(id) {
     }
     if (touched) saveShortsDB(key, db);
   }
-}
-
-// ── Generated clips ───────────────────────────────────────────────────────────
-function listGenerated() {
-  try {
-    return fs.readdirSync(OUTPUT_DIR)
-      .filter(f => f.endsWith('.mp4'))
-      .map(f => ({ file: f, mtime: fs.statSync(path.join(OUTPUT_DIR, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-  } catch { return []; }
 }
 
 async function hasAudio(file) {
@@ -227,8 +235,9 @@ async function generateOne(uploadedId, sourceKey, onLine) {
   const seg1 = path.join(TMP_DIR, `seg1_${stamp}.mp4`);
   const seg2 = path.join(TMP_DIR, `seg2_${stamp}.mp4`);
   const base = `clip_${stamp}_${src.key}_${short.id}`;
-  const outMp4 = path.join(OUTPUT_DIR, `${base}.mp4`);
-  const outJson = path.join(OUTPUT_DIR, `${base}.json`);
+  const outDir = outputDirFor(up); // this footage's own subfolder
+  const outMp4 = path.join(outDir, `${base}.mp4`);
+  const outJson = path.join(outDir, `${base}.json`);
 
   try {
     onLine && onLine(`Downloading ${src.label} Short ${short.id} …`);
@@ -266,7 +275,7 @@ async function generateOne(uploadedId, sourceKey, onLine) {
     short.usedWith.push(uploadedId);
     saveShortsDB(src.key, db);
 
-    return { base, mp4: `${base}.mp4`, source: src.key, shortId: short.id, uploadedId };
+    return { base, mp4: `${base}.mp4`, folder: uploadFolder(up), source: src.key, shortId: short.id, uploadedId };
   } finally {
     for (const f of [shortDl, seg1, seg2]) { try { fs.unlinkSync(f); } catch {} }
   }
@@ -278,12 +287,16 @@ function state() {
     const db = loadShortsDB(s.key);
     return { key: s.key, label: s.label, headSeconds: s.headSeconds, channelUrl: s.channelUrl, total: db.shorts.length, updatedAt: db.updatedAt };
   });
+  let generatedTotal = 0;
   const uploads = loadUploads().map(u => {
     const remaining = {};
     for (const s of Object.keys(SOURCES)) remaining[s] = remainingForUpload(s, u.id);
-    return { ...u, remaining };
+    const folder = uploadFolder(u);
+    const clips = clipsIn(path.join(OUTPUT_DIR, folder));
+    generatedTotal += clips.length;
+    return { ...u, folder, folderPath: path.join(OUTPUT_DIR, folder), clips: clips.length, remaining };
   });
-  return { sources, uploads, generated: listGenerated().map(g => g.file), outputDir: OUTPUT_DIR };
+  return { sources, uploads, generatedTotal, outputDir: OUTPUT_DIR };
 }
 
 module.exports = {

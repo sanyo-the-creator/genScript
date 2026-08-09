@@ -105,9 +105,8 @@
 
       <div class="card">
         <h2>Output → ytUpload</h2>
-        <p class="muted">Each clip is written as <code>name.mp4</code> + <code>name.json</code> (title & description = <em>Level Up Your Life…</em>) into:</p>
-        <div class="muted" style="word-break:break-all"><code id="outDir">generated_clips/</code></div>
-        <p class="muted stat" style="margin-top:10px"><b id="genCount">0</b> clips generated</p>
+        <p class="muted">Every uploaded video gets its <strong>own subfolder</strong> under <code id="outDir">generated_clips/</code>. Each clip is <code>name.mp4</code> + <code>name.json</code> (title & description = <em>Level Up Your Life…</em>). Point a character's YouTube scheduler at one footage folder.</p>
+        <p class="muted stat" style="margin-top:10px"><b id="genCount">0</b> clips generated across <span id="folderCount">0</span> folder(s)</p>
         <div id="genlist" class="genlist"></div>
       </div>
     </div>
@@ -146,8 +145,10 @@ function render() {
     </div>`).join('');
 
   $('outDir').textContent = st.outputDir || 'generated_clips/';
-  $('genCount').textContent = (st.generated || []).length;
-  $('genlist').innerHTML = (st.generated || []).slice(0, 200).map(f => `<div>${f}</div>`).join('');
+  $('genCount').textContent = st.generatedTotal || 0;
+  const withClips = (st.uploads || []).filter(u => u.clips > 0);
+  $('folderCount').textContent = withClips.length;
+  $('genlist').innerHTML = withClips.map(u => `<div title="${u.folderPath || ''}">📁 ${u.folder} — <b>${u.clips}</b> clip(s)</div>`).join('') || '<div class="muted">none yet</div>';
 
   // uploads list — show remaining for EVERY source, highlighting the selected one
   const box = $('uploads');
@@ -159,8 +160,9 @@ function render() {
       const on = s.key === selectedSource && n > 0 ? ' on' : '';
       return `<span class="pill${on}">${s.label}: ${n}</span>`;
     }).join('');
+    const made = u.clips ? `<span class="pill">📁 ${u.clips} made</span>` : '';
     return `<div class="up${sel2}" data-id="${u.id}">
-      <div><div class="nm">${u.name}</div><div class="rem">${pills}</div></div>
+      <div><div class="nm">${u.name}</div><div class="rem">${pills}${made}</div></div>
       <button class="danger" data-del="${u.id}">✕</button>
     </div>`;
   }).join('');
