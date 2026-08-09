@@ -29,10 +29,13 @@
 //   --dry-run            do everything EXCEPT the final "Schedule" click — for a
 //                        first run to confirm the selectors match your Studio UI
 //
-// NOTE ON TIMEZONE: the times below are typed straight into Studio's schedule
-// picker, so they are in whatever timezone your channel is set to. For
-// "viral in the USA", set the channel's timezone to US Eastern in
-// Studio → Settings → General, and keep these slots as ET clock times.
+// NOTE ON TIMEZONE: YouTube's schedule picker has NO timezone field — it always
+// interprets the time you type in the BROWSER's timezone (= the OS timezone of
+// the machine running this debug Chrome). To target a US audience regardless of
+// where this machine lives, the slots below are TARGET-timezone clock times and
+// the script converts them to this machine's local wall-clock before typing.
+// The target zone defaults to US Eastern; override with --tz=Area/City (IANA).
+// So "19:00" always publishes at 7pm ET even if this PC is on Bratislava time.
 //
 // NOTE ON FRAGILITY: YouTube Studio's DOM changes over time. Selectors here are
 // written defensively (multiple fallbacks, verified waits) but the FIRST run
@@ -63,6 +66,9 @@ const DEFAULT_SLOTS = [
 
 // Recommended pace, not a target: 1–3 Shorts/day, spaced, beats volume. 10/day
 // is spammy and hurts reach. This is the DEFAULT; --per-day overrides it.
+// Target publish timezone the slots above are written in. The picker types in
+// this machine's local zone, so we convert TARGET→local before typing.
+const DEFAULT_TARGET_TZ = 'America/New_York'; // US Eastern (viral-in-USA default)
 const DEFAULT_PER_DAY = 3;
 const HARD_DAILY_MAX = 15; // YouTube's own rough daily upload ceiling — never exceed.
 const LEDGER_NAME = '.ytupload-done.json';
@@ -77,12 +83,14 @@ function parseArgs(argv) {
   const args = {
     dir: null, start: null, perDay: DEFAULT_PER_DAY, slots: DEFAULT_SLOTS,
     dryRun: false, noCheck: false, deleteAfter: false, port: envPort,
+    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
     else if (a === '--no-check') args.noCheck = true; // skip reading the channel's existing schedule
     else if (a === '--delete-after') args.deleteAfter = true; // remove mp4+json from the folder once scheduled
     else if (a.startsWith('--start=')) args.start = a.slice(8);
+    else if (a.startsWith('--tz=')) args.tz = a.slice(5).trim() || DEFAULT_TARGET_TZ; // IANA target zone the slots are written in
     else if (a.startsWith('--port=')) args.port = Number(a.slice(7)) || envPort;
     else if (a.startsWith('--per-day=')) args.perDay = Math.max(1, Math.min(HARD_DAILY_MAX, Number(a.slice(10)) || DEFAULT_PER_DAY));
     else if (a.startsWith('--slots=')) args.slots = a.slice(8).split(',').map((s) => s.trim()).filter(Boolean);
@@ -120,6 +128,48 @@ function collectItems(dir) {
 // ── Schedule planner ─────────────────────────────────────────────────────────
 function pad(n) { return String(n).padStart(2, '0'); }
 
+// ── Timezone helpers ─────────────────────────────────────────────────────────
+// The picker interprets typed times in THIS machine's local zone, but our slots
+// are written in a TARGET zone (e.g. US Eastern). These convert a target-zone
+// wall time into the absolute instant it represents, so the rest of the code can
+// render that instant back in local (= picker) time for typing.
+
+// How far ahead of UTC `tz` is at the given instant, in ms.
+function tzOffsetMs(instant, tz) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const p = {};
+  for (const part of dtf.formatToParts(instant)) p[part.type] = part.value;
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return asUTC - instant.getTime();
+}
+
+// A wall-clock time (Y-M-D h:m) in `tz` → the absolute Date it represents.
+// Applies the offset twice so DST-boundary days settle correctly.
+function zonedWallToInstant(y, mo, d, h, mi, tz) {
+  const guess = Date.UTC(y, mo - 1, d, h, mi, 0);
+  let inst = new Date(guess - tzOffsetMs(new Date(guess), tz));
+  inst = new Date(guess - tzOffsetMs(inst, tz));
+  return inst;
+}
+
+// Calendar-day key + "HH:MM" of an instant AS SEEN in `tz` (for slot matching).
+function tzParts(instant, tz) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+  const p = {};
+  for (const part of dtf.formatToParts(instant)) p[part.type] = part.value;
+  return {
+    dayKey: `${p.year}-${p.month}-${p.day}`, hhmm: `${p.hour}:${p.minute}`,
+    y: +p.year, mo: +p.month, d: +p.day,
+  };
+}
+
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function dayKey(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function labelFor(when) {
@@ -134,41 +184,50 @@ function labelFor(when) {
 // the channel — those slots are skipped AND counted toward the per-day cap, so
 // re-runs pack into the gaps instead of doubling up. Only future slots are used.
 // Returns [{ item, date, dateLabel, timeLabel, hh, mm }].
-function planSchedule(items, startDateStr, perDay, slots, existing = []) {
-  // Group existing schedule by day → set of "HH:MM" strings, and a per-day count.
-  const takenByDay = {};   // dayKey → Set of "HH:MM"
-  const countByDay = {};   // dayKey → number already scheduled that day
+function planSchedule(items, startDateStr, perDay, slots, existing = [], targetTz = DEFAULT_TARGET_TZ) {
+  // Everything here is reckoned in the TARGET zone (slots, per-day, collisions),
+  // then each chosen instant is labelled in local (picker) time for typing.
+  const takenByDay = {};   // target-tz dayKey → Set of "HH:MM"
+  const countByDay = {};   // target-tz dayKey → number already scheduled that day
   for (const d of existing) {
-    const k = dayKey(d);
-    (takenByDay[k] ||= new Set()).add(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
+    const { dayKey: k, hhmm } = tzParts(d, targetTz);
+    (takenByDay[k] ||= new Set()).add(hhmm);
     countByDay[k] = (countByDay[k] || 0) + 1;
   }
 
   const now = Date.now();
-  // Default start = TODAY. Past slots today are skipped below (when <= now), so
-  // "start today if it's not too late" falls out naturally; if every slot today
-  // has passed, it rolls to tomorrow on its own.
-  let day = startDateStr ? startOfDay(new Date(`${startDateStr}T00:00:00`)) : startOfDay(new Date(now));
+  // Anchor at noon (target tz) of the start day so +24h day-stepping stays on the
+  // right calendar day across DST. Default start = TODAY in the target zone; past
+  // slots are skipped below, so it rolls forward on its own if today is spent.
+  let anchor;
+  if (startDateStr) {
+    const [yy, mm, dd] = startDateStr.split('-').map(Number);
+    anchor = zonedWallToInstant(yy, mm, dd, 12, 0, targetTz);
+  } else {
+    const t = tzParts(new Date(now), targetTz);
+    anchor = zonedWallToInstant(t.y, t.mo, t.d, 12, 0, targetTz);
+  }
+
   const plan = [];
   let i = 0;
   let safety = 0;
   while (i < items.length && safety++ < 400) { // 400-day guard against a full calendar
-    const k = dayKey(day);
+    const { dayKey: k, y, mo, d } = tzParts(anchor, targetTz);
     const taken = takenByDay[k] || new Set();
     let placedToday = countByDay[k] || 0; // existing count already eats into the cap
     for (const slot of slots) {
       if (i >= items.length || placedToday >= perDay) break;
       if (taken.has(slot)) continue; // slot already occupied on the channel
       const [hh, mm] = slot.split(':').map(Number);
-      const when = new Date(day);
-      when.setHours(hh, mm, 0, 0);
+      const when = zonedWallToInstant(y, mo, d, hh, mm, targetTz); // target-tz slot → instant
       if (when.getTime() <= now) continue; // never schedule in the past
+      // labelFor renders in LOCAL time — exactly what the picker expects us to type.
       plan.push({ item: items[i], date: when, ...labelFor(when), hh, mm });
       taken.add(slot);
       placedToday++;
       i++;
     }
-    day = new Date(day.getTime() + 86400_000); // next day
+    anchor = new Date(anchor.getTime() + 86400_000); // next day
   }
   return plan;
 }
@@ -547,13 +606,14 @@ async function uploadOne(page, entry, dryRun) {
     }
   }
 
-  const plan = planSchedule(items, args.start, args.perDay, args.slots, existing);
+  const plan = planSchedule(items, args.start, args.perDay, args.slots, existing, args.tz);
   if (!plan.length) { console.log('Nothing to schedule after honouring the per-day cap / existing schedule.'); process.exit(0); }
 
   console.log('════════════════════════════════════════════════════');
   console.log(` Folder     : ${args.dir}`);
   console.log(` Videos     : ${items.length} to schedule${skipped ? ` (${skipped} already done, skipped)` : ''}`);
   console.log(` Per day    : ${args.perDay}  (best slots first: ${args.slots.slice(0, args.perDay).join(', ')})`);
+  console.log(` Slots zone : ${args.tz}  →  typed in local ${Intl.DateTimeFormat().resolvedOptions().timeZone} (picker) time`);
   console.log(` Existing   : ${existing.length} already scheduled (packed around them)`);
   console.log(` First day  : ${plan[0].dateLabel}`);
   console.log(` Last day   : ${plan[plan.length - 1].dateLabel}`);

@@ -120,14 +120,14 @@ function addLog(line) {
   if (atBottom) consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
-let running = false, runningId = null;
+let runSet = new Set(); // ids of characters currently scheduling (parallel)
 
 function chromeCmd(port) {
   return `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=${port} --user-data-dir="%USERPROFILE%\\yt-profile-${port}"`;
 }
 
 function charCard(c) {
-  const isRun = running && runningId === c.id;
+  const isRun = runSet.has(c.id);
   const folderBadge = c.folderExists
     ? `<span class="badge good">${c.pending} video${c.pending===1?'':'s'} ready</span>`
     : `<span class="badge bad">folder not found</span>`;
@@ -149,23 +149,28 @@ function charCard(c) {
       <label style="margin:0;">start</label>
       <input type="date" class="cStart" style="width:150px;" />
       <label style="margin:0; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="cDry" style="width:auto;" /> dry-run</label>
-      <button class="primary cRun" ${running ? 'disabled' : ''}>▶ Schedule</button>
+      <button class="primary cRun" ${isRun ? 'disabled' : ''}>${isRun ? '● scheduling…' : '▶ Schedule'}</button>
+      ${isRun ? '<button class="danger cStop">■ Stop</button>' : ''}
       <button class="ghost cEdit">Edit</button>
       <button class="danger cDel" ${isRun ? 'disabled' : ''}>Delete</button>
     </div>`;
   el.querySelector('.cRun').onclick = () => runChar(c.id, el);
   el.querySelector('.cEdit').onclick = () => editChar(c);
   el.querySelector('.cDel').onclick = () => delChar(c.id);
+  const stop = el.querySelector('.cStop');
+  if (stop) stop.onclick = () => fetch('/api/yt/stop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id: c.id }) });
   return el;
 }
 
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
 
 function render(data) {
-  running = data.running; runningId = data.characterId;
-  $('runState').textContent = running ? '● running…' : '○ idle';
-  $('runState').style.color = running ? 'var(--good)' : 'var(--dim)';
-  $('stopBtn').disabled = !running;
+  runSet = new Set(data.runningIds || []);
+  const n = runSet.size;
+  $('runState').textContent = n ? `● ${n} scheduling…` : '○ idle';
+  $('runState').style.color = n ? 'var(--good)' : 'var(--dim)';
+  $('stopBtn').disabled = n === 0;
+  $('stopBtn').textContent = n > 1 ? `Stop all (${n})` : 'Stop run';
   const list = $('charList');
   list.innerHTML = '';
   if (!data.characters.length) { list.innerHTML = '<p class="muted">No characters yet — add one below.</p>'; return; }

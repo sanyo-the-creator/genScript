@@ -83,13 +83,23 @@ let queue = [];       // [{ id, count, label, config, status, done, total }]
 let nextId = 1;
 let sseClients = [];
 
+// Persistent log history so navigating between the Flow generator and the
+// YouTube pages (a full page reload → new SSE connection) never loses the log.
+// On every new SSE connection we replay this buffer, so both pages always show
+// the same running log — exactly like a single shared console.
+const logHistory = [];        // stamped lines
+const LOG_HISTORY_MAX = 1000;  // ring-buffer cap
+
+function sseFrame(event, data) { return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`; }
 function broadcast(event, data) {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const payload = sseFrame(event, data);
   for (const res of sseClients) res.write(payload);
 }
 function log(line) {
   const stamped = `[${new Date().toLocaleTimeString()}] ${line}`;
   console.log(stamped);
+  logHistory.push(stamped);
+  if (logHistory.length > LOG_HISTORY_MAX) logHistory.shift();
   broadcast('log', { line: stamped });
 }
 function queueView() {
@@ -107,8 +117,12 @@ function pushState() {
 }
 
 // ── YouTube scheduler: state + persistence ───────────────────────────────────
-const ytState = { running: false, characterId: null };
-let ytChild = null; // the spawned ytUpload.js process while a run is active
+// Multiple characters can schedule AT THE SAME TIME — each has its own debug
+// Chrome (unique port), so their ytUpload.js processes don't collide. We track
+// every live run in a map keyed by character id.
+const ytRuns = new Map(); // characterId -> { child, name, port }
+function ytRunningIds() { return [...ytRuns.keys()]; }
+function ytSnapshot() { return { runningIds: ytRunningIds(), characters: ytCharactersView() }; }
 
 function loadCharacters() {
   try { return JSON.parse(fs.readFileSync(YT_CHARACTERS_FILE, 'utf8')); } catch { return []; }
@@ -125,7 +139,7 @@ function ytCharactersView() {
   return loadCharacters().map(c => ({ ...c, pending: countPending(c.folder), folderExists: fs.existsSync(c.folder) }));
 }
 function broadcastYt() {
-  broadcast('yt', { running: ytState.running, characterId: ytState.characterId, characters: ytCharactersView() });
+  broadcast('yt', ytSnapshot());
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1132,7 +1146,12 @@ const server = http.createServer(async (req, res) => {
     });
     res.write('\n');
     sseClients.push(res);
-    pushState();
+    // Replay the shared log history so a freshly-loaded page (after navigating
+    // between tools) shows the full running log instead of starting blank.
+    for (const line of logHistory) res.write(sseFrame('log', { line }));
+    // Send current snapshots to just this client (generation + YouTube state).
+    res.write(sseFrame('state', { running: state.running, current: state.current, queue: queueView() }));
+    res.write(sseFrame('yt', ytSnapshot()));
     req.on('close', () => { sseClients = sseClients.filter(c => c !== res); });
     return;
   }
@@ -1312,7 +1331,7 @@ const server = http.createServer(async (req, res) => {
   // ── YouTube Shorts scheduler API ───────────────────────────────────────────
   // List characters (+ pending count per folder + run state).
   if (req.method === 'GET' && url.pathname === '/api/yt/characters') {
-    return sendJson(res, 200, { running: ytState.running, characterId: ytState.characterId, characters: ytCharactersView() });
+    return sendJson(res, 200, ytSnapshot());
   }
 
   // Create or update a character. Body: { id?, name, folder, port }.
@@ -1350,7 +1369,7 @@ const server = http.createServer(async (req, res) => {
     req.on('data', c => (body += c));
     req.on('end', () => {
       let id; try { id = JSON.parse(body).id; } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
-      if (ytState.running && ytState.characterId === id) return sendJson(res, 409, { error: 'This character is currently running.' });
+      if (ytRuns.has(id)) return sendJson(res, 409, { error: 'This character is currently running.' });
       saveCharacters(loadCharacters().filter(x => x.id !== id));
       broadcastYt();
       sendJson(res, 200, { ok: true });
@@ -1358,15 +1377,16 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Run scheduling for one character. Body: { id, perDay?, start?, dryRun? }.
+  // Run scheduling for one character. Body: { id, perDay?, start?, dryRun?, tz? }.
+  // Parallel-friendly: many characters can run at once (each on its own port).
   if (req.method === 'POST' && url.pathname === '/api/yt/schedule') {
-    if (ytState.running) return sendJson(res, 409, { error: 'A schedule run is already in progress.' });
     let body = '';
     req.on('data', c => (body += c));
     req.on('end', async () => {
       let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
       const c = loadCharacters().find(x => x.id === p.id);
       if (!c) return sendJson(res, 404, { error: 'Character not found.' });
+      if (ytRuns.has(c.id)) return sendJson(res, 409, { error: `"${c.name}" is already scheduling.` });
       if (!fs.existsSync(c.folder)) return sendJson(res, 400, { error: 'Folder does not exist: ' + c.folder });
       if (countPending(c.folder) === 0) return sendJson(res, 400, { error: 'No videos in this character\'s folder.' });
       // Confirm this character's debug Chrome is actually up on its port.
@@ -1379,34 +1399,51 @@ const server = http.createServer(async (req, res) => {
       const perDay = Math.max(1, Math.min(15, parseInt(p.perDay) || 3));
       const cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`];
       if (p.start) cliArgs.push(`--start=${p.start}`);
+      if (p.tz) cliArgs.push(`--tz=${p.tz}`); // target publish timezone (default US Eastern)
       if (p.dryRun) cliArgs.push('--dry-run'); else cliArgs.push('--delete-after');
 
-      ytState.running = true; ytState.characterId = c.id; broadcastYt();
+      const child = spawn(process.execPath, cliArgs, { cwd: __dirname });
+      ytRuns.set(c.id, { child, name: c.name, port: c.port });
+      broadcastYt();
       log(`▶ YouTube: scheduling "${c.name}" (port ${c.port}, ${perDay}/day)${p.dryRun ? ' [DRY RUN]' : ''}…`);
       sendJson(res, 200, { ok: true });
 
-      ytChild = spawn(process.execPath, cliArgs, { cwd: __dirname });
-      const pipe = (buf) => String(buf).split(/\r?\n/).forEach(l => l.trim() && log('  ' + l.trim()));
-      ytChild.stdout.on('data', pipe);
-      ytChild.stderr.on('data', pipe);
-      ytChild.on('close', (code) => {
+      // Prefix every line with the character name so parallel runs stay readable
+      // in the one shared log.
+      const tag = `[${c.name}]`;
+      const pipe = (buf) => String(buf).split(/\r?\n/).forEach(l => l.trim() && log(`  ${tag} ${l.trim()}`));
+      child.stdout.on('data', pipe);
+      child.stderr.on('data', pipe);
+      child.on('close', (code) => {
         log(`■ YouTube run for "${c.name}" finished (exit ${code}).`);
-        ytState.running = false; ytState.characterId = null; ytChild = null; broadcastYt();
+        ytRuns.delete(c.id); broadcastYt();
       });
-      ytChild.on('error', (e) => {
-        log(`✗ YouTube run failed to start: ${e.message}`);
-        ytState.running = false; ytState.characterId = null; ytChild = null; broadcastYt();
+      child.on('error', (e) => {
+        log(`✗ YouTube run for "${c.name}" failed to start: ${e.message}`);
+        ytRuns.delete(c.id); broadcastYt();
       });
     });
     return;
   }
 
-  // Stop the current YouTube run.
+  // Stop a YouTube run. Body: { id } stops that character; empty body stops all.
   if (req.method === 'POST' && url.pathname === '/api/yt/stop') {
-    if (ytChild) { try { ytChild.kill(); } catch { /* already gone */ } }
-    ytState.running = false; ytState.characterId = null; broadcastYt();
-    log('YouTube run stopped.');
-    return sendJson(res, 200, { ok: true });
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let id = null;
+      try { id = JSON.parse(body || '{}').id || null; } catch { /* stop all */ }
+      const targets = id ? (ytRuns.has(id) ? [id] : []) : ytRunningIds();
+      for (const rid of targets) {
+        const run = ytRuns.get(rid);
+        if (run) { try { run.child.kill(); } catch { /* already gone */ } }
+        log(`YouTube run for "${run ? run.name : rid}" stopped.`);
+      }
+      if (!targets.length) log('No matching YouTube run to stop.');
+      broadcastYt();
+      sendJson(res, 200, { ok: true, stopped: targets.length });
+    });
+    return;
   }
 
   // Start processing the queue.
