@@ -1554,13 +1554,20 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, clipTool.state());
   }
 
-  // Refresh the Shorts database from the prayerlock channel (yt-dlp scrape).
+  // Refresh a source's Shorts database (yt-dlp scrape). Body: { source }.
   if (req.method === 'POST' && url.pathname === '/api/clips/refresh-shorts') {
-    clipsLog('Refreshing Shorts DB from prayerlock channel…');
-    clipTool.refreshShorts(clipsLog)
-      .then(r => { clipsLog(`Shorts DB: ${r.total} total (+${r.added} new, scanned ${r.scanned}).`); broadcastClips(); })
-      .catch(e => clipsLog('Refresh failed: ' + (e.message || e)));
-    return sendJson(res, 200, { ok: true });
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let source; try { source = JSON.parse(body || '{}').source; } catch { source = undefined; }
+      const src = clipTool.SOURCES[source] || clipTool.SOURCES.prayerlock;
+      clipsLog(`Refreshing Shorts DB from ${src.label} channel…`);
+      clipTool.refreshShorts(src.key, clipsLog)
+        .then(r => { clipsLog(`${src.label} DB: ${r.total} total (+${r.added} new, scanned ${r.scanned}).`); broadcastClips(); })
+        .catch(e => clipsLog('Refresh failed: ' + (e.message || e)));
+      sendJson(res, 200, { ok: true });
+    });
+    return;
   }
 
   // Upload one app-footage video. Body is the RAW file bytes; filename comes in
@@ -1598,13 +1605,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Generate N clips for one uploaded video. Body: { uploadedId, count }.
+  // Generate N clips for one uploaded video from a chosen source.
+  // Body: { uploadedId, count, source }.
   if (req.method === 'POST' && url.pathname === '/api/clips/generate') {
     let body = '';
     req.on('data', c => (body += c));
     req.on('end', async () => {
       let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
       const uploadedId = p.uploadedId;
+      const src = clipTool.SOURCES[p.source] || clipTool.SOURCES.prayerlock;
       const count = Math.max(1, Math.min(50, parseInt(p.count) || 1));
       if (!uploadedId) return sendJson(res, 400, { error: 'Pick an uploaded video first.' });
       if (clipGenBusy) return sendJson(res, 409, { error: 'A generation is already running.' });
@@ -1613,12 +1622,13 @@ const server = http.createServer(async (req, res) => {
       // Fire-and-forget: progress streams over SSE ('clips' + log).
       (async () => {
         let made = 0;
+        clipsLog(`Source: ${src.label} — ${src.headSeconds}s head + your video.`);
         for (let i = 0; i < count; i++) {
           try {
             clipsLog(`Generating clip ${i + 1}/${count}…`);
-            const r = await clipTool.generateOne(uploadedId, clipsLog);
+            const r = await clipTool.generateOne(uploadedId, src.key, clipsLog);
             made++;
-            clipsLog(`✓ ${r.mp4} (Short ${r.shortId})`);
+            clipsLog(`✓ ${r.mp4} (${src.label} Short ${r.shortId})`);
             broadcastClips();
           } catch (e) {
             clipsLog('✗ ' + (e.message || e));

@@ -1,11 +1,18 @@
-// clipTool.js — "Clip Combiner": build a database of prayerlock Shorts, upload
-// your own app-footage videos, and generate YouTube-ready clips that stitch the
-// first 3 seconds of a Short in front of one of your uploaded videos.
+// clipTool.js — "Clip Combiner": build databases of Shorts links from one or
+// more source channels, upload your own app-footage videos, and generate
+// YouTube-ready clips that stitch the head of a Short in front of one of your
+// uploaded videos.
+//
+// SOURCES (each source has its own DB + its own head length):
+//   • prayerlock  → first 3 seconds of the Short
+//   • zackdfilms  → first 10 seconds of the Short
 //
 // Each generated clip is a (Short, uploaded-video) PAIR. Once a Short has been
 // combined with a given uploaded video, that exact pairing is recorded and never
 // produced again — but the same Short can still be paired with a DIFFERENT
-// uploaded video (the Shorts "count separately" per uploaded video).
+// uploaded video (Shorts "count separately" per uploaded video). Pairings are
+// tracked per source, so an uploaded video can draw fresh Shorts from each
+// source independently.
 //
 // Output is an mp4 + json sidecar pair per clip, dropped in generated_clips/,
 // in exactly the shape ytUpload.js expects: { title, description, tags }. Point
@@ -18,21 +25,35 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
+// ── Sources ────────────────────────────────────────────────────────────────
+// Add another channel here (key, url, its own db file, head length) and both
+// the API and the UI pick it up automatically.
+const SOURCES = {
+  prayerlock: {
+    key: 'prayerlock', label: 'Prayer Lock',
+    channelUrl: 'https://www.youtube.com/@prayerlock/shorts',
+    dbFile: 'prayerlock_shorts.json', headSeconds: 3,
+  },
+  zackdfilms: {
+    key: 'zackdfilms', label: 'Zack D. Films',
+    channelUrl: 'https://www.youtube.com/@zackdfilms/shorts',
+    dbFile: 'zackdfilms_shorts.json', headSeconds: 10,
+  },
+};
+const DEFAULT_SOURCE = 'prayerlock';
+function getSource(key) { return SOURCES[key] || SOURCES[DEFAULT_SOURCE]; }
+
 // ── Paths ────────────────────────────────────────────────────────────────────
 const ROOT = __dirname;
-const SHORTS_DB = path.join(ROOT, 'prayerlock_shorts.json');
 const UPLOADS_DIR = path.join(ROOT, 'uploaded_videos');
 const UPLOADS_INDEX = path.join(UPLOADS_DIR, 'index.json');
 const OUTPUT_DIR = path.join(ROOT, 'generated_clips');
 const TMP_DIR = path.join(ROOT, '.clip_tmp');
 
-const CHANNEL_SHORTS_URL = 'https://www.youtube.com/@prayerlock/shorts';
-
 // The fixed marketing copy every generated clip carries (title + description).
 const CLIP_TEXT = 'Level Up Your Life with "Upshift: #1 Productivity App"';
 const CLIP_TAGS = ['Upshift', 'productivity', 'selfimprovement', 'motivation', 'discipline', 'shorts'];
 
-const SHORT_HEAD_SECONDS = 3; // how much of the Short to keep, from its start
 const OUT_W = 1080, OUT_H = 1920, OUT_FPS = 30; // vertical Shorts canvas
 
 function ensureDirs() {
@@ -64,24 +85,28 @@ function run(cmd, args, onLine) {
   });
 }
 
-// ── Shorts database ───────────────────────────────────────────────────────────
-function loadShortsDB() {
-  try { return JSON.parse(fs.readFileSync(SHORTS_DB, 'utf8')); }
-  catch { return { channelUrl: CHANNEL_SHORTS_URL, updatedAt: null, shorts: [] }; }
+// ── Shorts database (per source) ──────────────────────────────────────────────
+function dbPath(sourceKey) { return path.join(ROOT, getSource(sourceKey).dbFile); }
+function loadShortsDB(sourceKey) {
+  const src = getSource(sourceKey);
+  try { return JSON.parse(fs.readFileSync(dbPath(sourceKey), 'utf8')); }
+  catch { return { source: src.key, channelUrl: src.channelUrl, updatedAt: null, shorts: [] }; }
 }
-function saveShortsDB(db) {
-  fs.writeFileSync(SHORTS_DB, JSON.stringify(db, null, 2));
+function saveShortsDB(sourceKey, db) {
+  fs.writeFileSync(dbPath(sourceKey), JSON.stringify(db, null, 2));
 }
 
-// Scrape the channel's Shorts tab with yt-dlp (flat, no downloads) and merge any
-// new video ids into the DB. Existing entries (and their usedWith history) stay.
-async function refreshShorts(onLine) {
+// Scrape a source's Shorts tab with yt-dlp (flat, no downloads) and merge any
+// new video ids into that source's DB. Existing entries (and their usedWith
+// history) stay.
+async function refreshShorts(sourceKey, onLine) {
+  const src = getSource(sourceKey);
   const raw = await run('yt-dlp', [
     '--flat-playlist', '--no-warnings',
-    '--print', '%(id)s', CHANNEL_SHORTS_URL,
+    '--print', '%(id)s', src.channelUrl,
   ], onLine);
   const ids = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  const db = loadShortsDB();
+  const db = loadShortsDB(sourceKey);
   const known = new Set(db.shorts.map(s => s.id));
   let added = 0;
   for (const id of ids) {
@@ -90,13 +115,16 @@ async function refreshShorts(onLine) {
     known.add(id); added++;
   }
   db.updatedAt = new Date().toISOString();
-  saveShortsDB(db);
-  return { total: db.shorts.length, added, scanned: ids.length };
+  saveShortsDB(sourceKey, db);
+  return { source: src.key, total: db.shorts.length, added, scanned: ids.length };
 }
 
 // First Short not yet paired with this uploaded video.
 function pickUnusedShort(db, uploadedId) {
   return db.shorts.find(s => !s.usedWith.includes(uploadedId)) || null;
+}
+function remainingForUpload(sourceKey, uploadedId) {
+  return loadShortsDB(sourceKey).shorts.filter(s => !s.usedWith.includes(uploadedId)).length;
 }
 
 // ── Uploaded (app-footage) videos ─────────────────────────────────────────────
@@ -128,15 +156,15 @@ function removeUpload(id) {
   const e = list.find(u => u.id === id);
   if (e) { try { fs.unlinkSync(path.join(UPLOADS_DIR, e.file)); } catch {} }
   saveUploads(list.filter(u => u.id !== id));
-  // Also forget this pairing from every Short so counts stay honest.
-  const db = loadShortsDB();
-  for (const s of db.shorts) s.usedWith = s.usedWith.filter(x => x !== id);
-  saveShortsDB(db);
-}
-
-// How many fresh pairings remain for a given uploaded video.
-function remainingForUpload(db, uploadedId) {
-  return db.shorts.filter(s => !s.usedWith.includes(uploadedId)).length;
+  // Forget this pairing from every Short in EVERY source so counts stay honest.
+  for (const key of Object.keys(SOURCES)) {
+    const db = loadShortsDB(key);
+    let touched = false;
+    for (const s of db.shorts) {
+      if (s.usedWith.includes(id)) { s.usedWith = s.usedWith.filter(x => x !== id); touched = true; }
+    }
+    if (touched) saveShortsDB(key, db);
+  }
 }
 
 // ── Generated clips ───────────────────────────────────────────────────────────
@@ -179,29 +207,31 @@ async function normalize(input, outFile, { start, duration }, onLine) {
   await run('ffmpeg', args, onLine);
 }
 
-// Build ONE clip: [first 3s of Short] + [full uploaded video]. Returns the pair.
-async function generateOne(uploadedId, onLine) {
+// Build ONE clip for a given source: [first N seconds of a Short] + [full
+// uploaded video], where N is the source's headSeconds. Returns the pair.
+async function generateOne(uploadedId, sourceKey, onLine) {
   ensureDirs();
+  const src = getSource(sourceKey);
   const uploads = loadUploads();
   const up = uploads.find(u => u.id === uploadedId);
   if (!up) throw new Error('Uploaded video not found: ' + uploadedId);
   const upPath = path.join(UPLOADS_DIR, up.file);
   if (!fs.existsSync(upPath)) throw new Error('Uploaded file missing on disk: ' + up.file);
 
-  const db = loadShortsDB();
+  const db = loadShortsDB(src.key);
   const short = pickUnusedShort(db, uploadedId);
-  if (!short) throw new Error(`No unused Shorts left for "${up.name}". Refresh the Shorts DB.`);
+  if (!short) throw new Error(`No unused ${src.label} Shorts left for "${up.name}". Refresh that source.`);
 
   const stamp = Date.now();
   const shortDl = path.join(TMP_DIR, `short_${stamp}.mp4`);
   const seg1 = path.join(TMP_DIR, `seg1_${stamp}.mp4`);
   const seg2 = path.join(TMP_DIR, `seg2_${stamp}.mp4`);
-  const base = `clip_${stamp}_${short.id}`;
+  const base = `clip_${stamp}_${src.key}_${short.id}`;
   const outMp4 = path.join(OUTPUT_DIR, `${base}.mp4`);
   const outJson = path.join(OUTPUT_DIR, `${base}.json`);
 
   try {
-    onLine && onLine(`Downloading Short ${short.id} …`);
+    onLine && onLine(`Downloading ${src.label} Short ${short.id} …`);
     await run('yt-dlp', [
       // Player-client choice is a QUALITY decision, not just a reachability one.
       // The plain "android" client only exposes the 360p muxed format (18); the
@@ -215,8 +245,8 @@ async function generateOne(uploadedId, onLine) {
       '--no-warnings', '--merge-output-format', 'mp4', '-o', shortDl, short.url,
     ], onLine);
 
-    onLine && onLine('Trimming Short head + normalizing segments …');
-    await normalize(shortDl, seg1, { start: 0, duration: SHORT_HEAD_SECONDS }, onLine);
+    onLine && onLine(`Trimming Short head (${src.headSeconds}s) + normalizing segments …`);
+    await normalize(shortDl, seg1, { start: 0, duration: src.headSeconds }, onLine);
     await normalize(upPath, seg2, {}, onLine);
 
     onLine && onLine('Stitching final clip …');
@@ -234,9 +264,9 @@ async function generateOne(uploadedId, onLine) {
 
     // Record the pairing so it never repeats for THIS uploaded video.
     short.usedWith.push(uploadedId);
-    saveShortsDB(db);
+    saveShortsDB(src.key, db);
 
-    return { base, mp4: `${base}.mp4`, shortId: short.id, uploadedId };
+    return { base, mp4: `${base}.mp4`, source: src.key, shortId: short.id, uploadedId };
   } finally {
     for (const f of [shortDl, seg1, seg2]) { try { fs.unlinkSync(f); } catch {} }
   }
@@ -244,20 +274,20 @@ async function generateOne(uploadedId, onLine) {
 
 // Aggregate view for the UI.
 function state() {
-  const db = loadShortsDB();
-  const uploads = loadUploads().map(u => ({
-    ...u, remaining: remainingForUpload(db, u.id),
-  }));
-  return {
-    shorts: { total: db.shorts.length, updatedAt: db.updatedAt, channelUrl: db.channelUrl },
-    uploads,
-    generated: listGenerated().map(g => g.file),
-    outputDir: OUTPUT_DIR,
-  };
+  const sources = Object.values(SOURCES).map(s => {
+    const db = loadShortsDB(s.key);
+    return { key: s.key, label: s.label, headSeconds: s.headSeconds, channelUrl: s.channelUrl, total: db.shorts.length, updatedAt: db.updatedAt };
+  });
+  const uploads = loadUploads().map(u => {
+    const remaining = {};
+    for (const s of Object.keys(SOURCES)) remaining[s] = remainingForUpload(s, u.id);
+    return { ...u, remaining };
+  });
+  return { sources, uploads, generated: listGenerated().map(g => g.file), outputDir: OUTPUT_DIR };
 }
 
 module.exports = {
-  CLIP_TEXT, OUTPUT_DIR, ensureDirs,
+  CLIP_TEXT, OUTPUT_DIR, SOURCES, ensureDirs,
   refreshShorts, loadShortsDB,
   loadUploads, addUpload, removeUpload,
   generateOne, state,

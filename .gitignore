@@ -20,7 +20,7 @@ men_mirror_pics/
 yt_characters.json
 
 # Clip Combiner: local data, uploaded footage, generated output & temp
-prayerlock_shorts.json
+*_shorts.json
 uploaded_videos/
 generated_clips/
 .clip_tmp/

@@ -30,21 +30,25 @@
   button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 8px 14px; }
   button.primary { background: var(--accent2); border-color: var(--accent2); color: white; font-weight: 600; }
   button.danger { background: #3a1f22; border-color: #6b2b30; color: #ffb4b4; }
+  button.small { padding: 6px 10px; font-size: 12px; }
   button:disabled { opacity: .45; cursor: not-allowed; }
   .muted { color: var(--dim); font-size: 12px; }
-  .stat { display: flex; gap: 20px; margin: 4px 0 8px; }
-  .stat b { font-size: 22px; font-weight: 700; display: block; }
-  .console { background: #07090c; border: 1px solid var(--line); border-radius: 8px; height: 360px; overflow-y: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; color: #b9c6d3; }
+  .stat b { font-size: 20px; font-weight: 700; }
+  .console { background: #07090c; border: 1px solid var(--line); border-radius: 8px; height: 340px; overflow-y: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; color: #b9c6d3; }
   .up { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel2); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .up.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent2) inset; }
   .up .nm { font-weight: 600; word-break: break-all; }
   .up .rem { font-size: 12px; color: var(--dim); }
-  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--dim); }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--dim); margin-right: 4px; }
   .pill.on { background: var(--chipOn); color: #cfe0ff; }
+  .src { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel2); }
+  .src-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .src .lbl { font-weight: 600; }
+  .src .len { font-size: 11px; color: var(--accent); }
   .drop { border: 1.5px dashed var(--line); border-radius: 10px; padding: 20px; text-align: center; color: var(--dim); cursor: pointer; }
   .drop.hot { border-color: var(--accent); color: var(--text); background: var(--panel2); }
   code { background: #0a0c0f; padding: 1px 5px; border-radius: 4px; color: #c8d3df; }
-  .genlist { max-height: 200px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 11.5px; color: #b9c6d3; }
+  .genlist { max-height: 180px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 11.5px; color: #b9c6d3; margin-top: 8px; }
   .genlist div { padding: 2px 0; border-bottom: 1px solid #1a1f27; word-break: break-all; }
 </style>
 </head>
@@ -60,7 +64,7 @@
     <div>
       <div class="card">
         <h2>1 · App-footage videos</h2>
-        <p class="muted">Upload your own videos. Each generated clip = the first 3s of a prayerlock Short, then one of these videos right after. A Short is never reused with the <em>same</em> uploaded video twice.</p>
+        <p class="muted">Upload your own videos. Each generated clip = the head of a source Short, then one of these videos right after. A Short is never reused with the <em>same</em> uploaded video twice (tracked per source).</p>
         <div id="drop" class="drop">⬆️ Click or drop a video here to upload<br><span class="muted">.mp4 / .mov / .webm — up to 500 MB</span></div>
         <input id="file" type="file" accept="video/*" style="display:none" />
         <div id="uploads" style="margin-top:14px"></div>
@@ -68,12 +72,14 @@
 
       <div class="card">
         <h2>2 · Generate clips</h2>
-        <div class="row">
+        <label>Source (decides how much of the Short is used)</label>
+        <select id="source"></select>
+        <div class="row" style="margin-top:12px">
           <div>
             <label>Selected footage</label>
             <input id="selName" type="text" readonly placeholder="Pick a video above" />
           </div>
-          <div style="max-width:120px">
+          <div style="max-width:110px">
             <label>How many</label>
             <input id="count" type="number" min="1" max="50" value="5" />
           </div>
@@ -90,21 +96,18 @@
       </div>
     </div>
 
-    <!-- RIGHT: shorts DB + output -->
+    <!-- RIGHT: shorts DBs + output -->
     <div>
       <div class="card">
-        <h2>Shorts database</h2>
-        <div class="stat"><div><b id="shortsTotal">0</b><span class="muted">Shorts in DB</span></div></div>
-        <p class="muted">Source: <code>@prayerlock/shorts</code><br>Updated: <span id="shortsUpdated">never</span></p>
-        <button id="refreshBtn" class="primary" style="width:100%; margin-top:8px">🔄 Refresh Shorts DB</button>
+        <h2>Shorts databases</h2>
+        <div id="sources"></div>
       </div>
 
       <div class="card">
         <h2>Output → ytUpload</h2>
         <p class="muted">Each clip is written as <code>name.mp4</code> + <code>name.json</code> (title & description = <em>Level Up Your Life…</em>) into:</p>
         <div class="muted" style="word-break:break-all"><code id="outDir">generated_clips/</code></div>
-        <p class="muted" style="margin-top:10px">Point a character's YouTube scheduler run at that folder to auto-schedule them.</p>
-        <div class="stat"><div><b id="genCount">0</b><span class="muted">clips generated</span></div></div>
+        <p class="muted stat" style="margin-top:10px"><b id="genCount">0</b> clips generated</p>
         <div id="genlist" class="genlist"></div>
       </div>
     </div>
@@ -112,7 +115,8 @@
 
 <script>
 let selectedUpload = null;
-let st = { shorts: {}, uploads: [], generated: [] };
+let selectedSource = localStorage.getItem('clipSource') || 'prayerlock';
+let st = { sources: [], uploads: [], generated: [] };
 
 const $ = id => document.getElementById(id);
 function logLine(line) {
@@ -120,37 +124,70 @@ function logLine(line) {
   c.textContent += line + '\n';
   c.scrollTop = c.scrollHeight;
 }
+function srcByKey(k) { return st.sources.find(s => s.key === k) || st.sources[0] || {}; }
 
 function render() {
-  $('shortsTotal').textContent = st.shorts.total || 0;
-  $('shortsUpdated').textContent = st.shorts.updatedAt ? new Date(st.shorts.updatedAt).toLocaleString() : 'never';
+  // source <select>
+  const sel = $('source');
+  if (sel.options.length !== st.sources.length) {
+    sel.innerHTML = st.sources.map(s => `<option value="${s.key}">${s.label} — first ${s.headSeconds}s</option>`).join('');
+  }
+  if (st.sources.length && !st.sources.find(s => s.key === selectedSource)) selectedSource = st.sources[0].key;
+  sel.value = selectedSource;
+
+  // shorts DB cards (one per source, each with its own refresh)
+  $('sources').innerHTML = st.sources.map(s => `
+    <div class="src">
+      <div class="src-top">
+        <div><span class="lbl">${s.label}</span> <span class="len">first ${s.headSeconds}s</span><br>
+          <span class="muted"><b class="stat">${s.total}</b> Shorts · updated ${s.updatedAt ? new Date(s.updatedAt).toLocaleString() : 'never'}</span></div>
+        <button class="primary small" data-refresh="${s.key}">🔄 Refresh</button>
+      </div>
+    </div>`).join('');
+
   $('outDir').textContent = st.outputDir || 'generated_clips/';
   $('genCount').textContent = (st.generated || []).length;
   $('genlist').innerHTML = (st.generated || []).slice(0, 200).map(f => `<div>${f}</div>`).join('');
 
-  // uploads list
+  // uploads list — show remaining for EVERY source, highlighting the selected one
   const box = $('uploads');
   if (!st.uploads.length) { box.innerHTML = '<p class="muted">No footage uploaded yet.</p>'; }
   else box.innerHTML = st.uploads.map(u => {
-    const sel = u.id === selectedUpload ? ' sel' : '';
-    const pill = u.remaining > 0 ? `<span class="pill on">${u.remaining} Shorts left</span>` : `<span class="pill">none left</span>`;
-    return `<div class="up${sel}" data-id="${u.id}">
-      <div><div class="nm">${u.name}</div><div class="rem">${pill}</div></div>
+    const sel2 = u.id === selectedUpload ? ' sel' : '';
+    const pills = st.sources.map(s => {
+      const n = (u.remaining && u.remaining[s.key]) || 0;
+      const on = s.key === selectedSource && n > 0 ? ' on' : '';
+      return `<span class="pill${on}">${s.label}: ${n}</span>`;
+    }).join('');
+    return `<div class="up${sel2}" data-id="${u.id}">
+      <div><div class="nm">${u.name}</div><div class="rem">${pills}</div></div>
       <button class="danger" data-del="${u.id}">✕</button>
     </div>`;
   }).join('');
 
-  // keep selection valid
   if (selectedUpload && !st.uploads.find(u => u.id === selectedUpload)) selectedUpload = null;
   const selU = st.uploads.find(u => u.id === selectedUpload);
   $('selName').value = selU ? selU.name : '';
+  const remain = selU && selU.remaining ? (selU.remaining[selectedSource] || 0) : 0;
+  const s = srcByKey(selectedSource);
   $('genHint').textContent = selU
-    ? (selU.remaining > 0 ? `${selU.remaining} fresh Short pairings available for this video.` : 'No unused Shorts left for this video — refresh the DB.')
-    : 'Select a video, then choose how many clips to generate.';
-  $('genBtn').disabled = !selU || selU.remaining === 0;
+    ? (remain > 0 ? `${remain} fresh ${s.label} Shorts available — each clip = first ${s.headSeconds}s + this video.`
+                  : `No unused ${s.label} Shorts left for this video — refresh that source.`)
+    : 'Select a video and a source, then choose how many clips to generate.';
+  $('genBtn').disabled = !selU || remain === 0;
 }
 
 // ── events ────────────────────────────────────────────────────────────────────
+$('source').addEventListener('change', e => { selectedSource = e.target.value; localStorage.setItem('clipSource', selectedSource); render(); });
+
+$('sources').addEventListener('click', async e => {
+  const key = e.target.getAttribute('data-refresh');
+  if (!key) return;
+  e.target.disabled = true;
+  await fetch('/api/clips/refresh-shorts', { method: 'POST', body: JSON.stringify({ source: key }) });
+  setTimeout(() => { e.target.disabled = false; }, 3000);
+});
+
 $('uploads').addEventListener('click', async e => {
   const del = e.target.getAttribute('data-del');
   if (del) {
@@ -162,19 +199,13 @@ $('uploads').addEventListener('click', async e => {
   if (card) { selectedUpload = card.getAttribute('data-id'); render(); }
 });
 
-$('refreshBtn').addEventListener('click', async () => {
-  $('refreshBtn').disabled = true;
-  await fetch('/api/clips/refresh-shorts', { method: 'POST' });
-  setTimeout(() => { $('refreshBtn').disabled = false; }, 3000);
-});
-
 $('genBtn').addEventListener('click', async () => {
   const count = parseInt($('count').value) || 1;
   $('genBtn').disabled = true;
-  const r = await fetch('/api/clips/generate', { method: 'POST', body: JSON.stringify({ uploadedId: selectedUpload, count }) });
+  const r = await fetch('/api/clips/generate', { method: 'POST', body: JSON.stringify({ uploadedId: selectedUpload, count, source: selectedSource }) });
   const j = await r.json();
-  if (!r.ok) { logLine('Error: ' + (j.error || 'failed')); }
-  setTimeout(() => render(), 500);
+  if (!r.ok) logLine('Error: ' + (j.error || 'failed'));
+  setTimeout(render, 500);
 });
 
 // upload wiring (drag/drop + click), raw-bytes POST with X-Filename
@@ -204,7 +235,6 @@ const es = new EventSource('/api/events');
 es.addEventListener('clips', e => { st = JSON.parse(e.data); render(); });
 es.addEventListener('log', e => { const l = JSON.parse(e.data).line; if (l.includes('[clips]')) logLine(l); });
 
-// initial pull (in case SSE snapshot is delayed)
 fetch('/api/clips/state').then(r => r.json()).then(s => { st = s; render(); });
 render();
 </script>
