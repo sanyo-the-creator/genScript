@@ -203,11 +203,16 @@ async function generateOne(uploadedId, onLine) {
   try {
     onLine && onLine(`Downloading Short ${short.id} …`);
     await run('yt-dlp', [
-      // The default "tv" player client is currently rejected by YouTube
-      // ("page needs to be reloaded"); the android client still serves Shorts.
-      '--extractor-args', 'youtube:player_client=android',
-      '-f', 'bestvideo*+bestaudio/best/best', '--no-warnings',
-      '--merge-output-format', 'mp4', '-o', shortDl, short.url,
+      // Player-client choice is a QUALITY decision, not just a reachability one.
+      // The plain "android" client only exposes the 360p muxed format (18); the
+      // default/tv/mweb clients are currently rejected ("page needs to be
+      // reloaded"); but "android_vr" returns the full DASH ladder up to the
+      // source's native 1080x1920. So we use android_vr and pick the best 1080p
+      // H.264 video + m4a audio (cleanest to concat), with graceful fallbacks.
+      '--extractor-args', 'youtube:player_client=android_vr',
+      '-f', 'bv*[vcodec^=avc1]+ba[ext=m4a]/bv*+ba/b',
+      '-S', 'res,vcodec:h264,br', // prefer highest res, then H.264, then bitrate
+      '--no-warnings', '--merge-output-format', 'mp4', '-o', shortDl, short.url,
     ], onLine);
 
     onLine && onLine('Trimming Short head + normalizing segments …');

@@ -28,6 +28,8 @@
 //   --slots=07:00,12:30  override the daily time slots (Studio's channel timezone)
 //   --dry-run            do everything EXCEPT the final "Schedule" click — for a
 //                        first run to confirm the selectors match your Studio UI
+//   --no-thumbnail       skip setting the video's first frame as a custom
+//                        thumbnail (thumbnails are set automatically by default)
 //
 // NOTE ON TIMEZONE: YouTube's schedule picker has NO timezone field — it always
 // interprets the time you type in the BROWSER's timezone (= the OS timezone of
@@ -43,9 +45,26 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { execFile } = require('child_process');
 const puppeteer = require('puppeteer-core');
 
 const CHROME_DEBUG_URL = 'http://127.0.0.1:9222';
+
+// Extract the VERY FIRST frame of a video to a temp .jpg (for use as the custom
+// thumbnail). Returns the jpg path, or null if ffmpeg isn't available / fails —
+// callers treat the thumbnail as best-effort and never fail the upload over it.
+function extractFirstFrame(videoPath) {
+  return new Promise((resolve) => {
+    const out = path.join(os.tmpdir(), `ytthumb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`);
+    // -ss 0 + -frames:v 1 grabs the first decodable frame; -q:v 2 = high quality.
+    execFile('ffmpeg', ['-y', '-ss', '0', '-i', videoPath, '-frames:v', '1', '-q:v', '2', out],
+      { windowsHide: true }, (err) => {
+        if (err) { console.warn(`   ! Could not extract first frame for thumbnail (${err.message.split('\n')[0]}).`); return resolve(null); }
+        resolve(fs.existsSync(out) ? out : null);
+      });
+  });
+}
 
 // Viral-in-USA daily slots (channel-timezone clock times), ordered BEST-FIRST so
 // a low --per-day automatically uses the strongest US windows. Rough ET peaks
@@ -83,10 +102,11 @@ function parseArgs(argv) {
   const args = {
     dir: null, start: null, perDay: DEFAULT_PER_DAY, slots: DEFAULT_SLOTS,
     dryRun: false, noCheck: false, deleteAfter: false, port: envPort,
-    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ,
+    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ, thumbnail: true,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--no-thumbnail') args.thumbnail = false; // don't set the first frame as the custom thumbnail
     else if (a === '--no-check') args.noCheck = true; // skip reading the channel's existing schedule
     else if (a === '--delete-after') args.deleteAfter = true; // remove mp4+json from the folder once scheduled
     else if (a.startsWith('--start=')) args.start = a.slice(8);
@@ -366,7 +386,7 @@ function pageVisibleTextboxes() {
 }
 
 // ── One upload ───────────────────────────────────────────────────────────────
-async function uploadOne(page, entry, dryRun) {
+async function uploadOne(page, entry, dryRun, setThumb = true) {
   const { item, hh, mm, date } = entry;
   const { title, description, tags } = item.meta;
   console.log(`\n▶ ${item.key}`);
@@ -453,6 +473,37 @@ async function uploadOne(page, entry, dryRun) {
       if (tagInput) {
         await tagInput.click();
         for (const t of tags.slice(0, 15)) { await page.keyboard.type(t, { delay: 5 }); await page.keyboard.press('Enter'); }
+      }
+    }
+  }
+
+  // 6b) Custom thumbnail = the video's FIRST frame. Best-effort: if the channel
+  // has no custom-thumbnail privilege (unverified) or the tile isn't found, we
+  // warn and carry on — the upload must never fail just because of a thumbnail.
+  if (setThumb) {
+    const thumbPath = await extractFirstFrame(item.video);
+    if (thumbPath) {
+      try {
+        // The thumbnail picker owns its OWN hidden file <input> (accepts images),
+        // distinct from the video input. Match by accept=image, scoped to the
+        // thumbnail editor when possible.
+        const thumbInput = await waitForElement(page, () =>
+          document.querySelector('ytcp-thumbnails-compact-editor input[type="file"]') ||
+          document.querySelector('#file-loader') ||
+          Array.from(document.querySelectorAll('input[type="file"]')).find((i) => /image/i.test(i.accept || '')) ||
+          null,
+          { timeout: 8000, interval: 400 });
+        if (thumbInput) {
+          await thumbInput.uploadFile(thumbPath);
+          await sleep(2500); // let Studio ingest + render the custom thumbnail
+          console.log('   • custom thumbnail (first frame) uploaded.');
+        } else {
+          console.warn('   ! Thumbnail uploader not found (channel may lack custom-thumbnail access) — skipping.');
+        }
+      } catch (e) {
+        console.warn(`   ! Thumbnail upload failed (${(e.message || e).toString().split('\n')[0]}) — skipping.`);
+      } finally {
+        try { fs.unlinkSync(thumbPath); } catch {}
       }
     }
   }
@@ -626,7 +677,7 @@ async function uploadOne(page, entry, dryRun) {
   let ok = 0, failed = 0;
   for (const entry of plan) {
     try {
-      const result = await uploadOne(page, entry, args.dryRun);
+      const result = await uploadOne(page, entry, args.dryRun, args.thumbnail);
       if (result === 'dry-run') {
         console.log('\nDry run complete for the first video. Watch the Studio window — if the date/time/title look right, re-run without --dry-run.');
         break;
