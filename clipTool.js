@@ -68,6 +68,9 @@ const SOURCES = {
       'https://www.youtube.com/@angelawhite_05/shorts',
     ],
     dbFile: 'quitporn_shorts.json', headOptions: [3, 6], headSeconds: 3,
+    // Pick Shorts randomly across the whole multi-channel pool (not in scrape
+    // order) so a batch mixes accounts instead of draining one at a time.
+    random: true,
   },
 };
 const DEFAULT_SOURCE = 'prayerlock';
@@ -190,8 +193,11 @@ async function refreshShorts(sourceKey, onLine) {
 // First Short not yet paired with this uploaded video. Shorts flagged `failed`
 // (e.g. age-restricted / undownloadable — see generateOne) are skipped so a bad
 // pick never blocks the batch or gets retried on later runs.
-function pickUnusedShort(db, uploadedId) {
-  return db.shorts.find(s => !s.failed && !s.usedWith.includes(uploadedId)) || null;
+function pickUnusedShort(db, uploadedId, random) {
+  const eligible = db.shorts.filter(s => !s.failed && !s.usedWith.includes(uploadedId));
+  if (!eligible.length) return null;
+  // Random draw mixes channels within a batch; otherwise keep scrape order.
+  return random ? eligible[Math.floor(Math.random() * eligible.length)] : eligible[0];
 }
 function remainingForUpload(sourceKey, uploadedId) {
   return loadShortsDB(sourceKey).shorts.filter(s => !s.failed && !s.usedWith.includes(uploadedId)).length;
@@ -321,7 +327,7 @@ async function generateOne(uploadedId, sourceKey, onLine, headOverride) {
   // can total it up.
   let skipped = 0;
   for (;;) {
-    const short = pickUnusedShort(db, uploadedId);
+    const short = pickUnusedShort(db, uploadedId, src.random);
     if (!short) throw new Error(`No unused ${src.label} Shorts left for "${up.name}". Refresh that source.`);
 
     const stamp = Date.now();
