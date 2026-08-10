@@ -20,6 +20,7 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const puppeteer = require('puppeteer-core');
@@ -521,23 +522,29 @@ async function uploadAllRefImages(page, folderName, files) {
 
   if (state.stopRequested) return;
 
-  if (toUpload.length === 0) {
+  // Dedupe: if the existing-asset scan threw mid-loop, the catch appends the
+  // FULL file list on top of the few names already collected — producing
+  // duplicates (and an inflated count) that would re-upload the same images.
+  // Collapse to a unique set so every reference picture is uploaded exactly once.
+  const uploadList = [...new Set(toUpload)];
+
+  if (uploadList.length === 0) {
     log('All reference pictures already exist in the library. Skipping upload phase.\n');
     return;
   }
 
-  log(`=== Pre-uploading ${toUpload.length} new reference picture(s) from "${folderName}" ===`);
+  log(`=== Pre-uploading ${uploadList.length} new reference picture(s) from "${folderName}" ===`);
 
-  for (let i = 0; i < toUpload.length; i++) {
+  for (let i = 0; i < uploadList.length; i++) {
     if (state.stopRequested) {
       log('Stop requested — aborting pre-upload.');
       return;
     }
-    const fileName = toUpload[i];
+    const fileName = uploadList[i];
     const filePath = path.join(__dirname, folderName || 'men_ref_pics', fileName);
     if (!fs.existsSync(filePath)) continue;
 
-    log(`Pre-uploading [${i + 1}/${toUpload.length}]: ${fileName}...`);
+    log(`Pre-uploading [${i + 1}/${uploadList.length}]: ${fileName}...`);
     try {
       let fileInput = await page.$('input[type="file"]');
       if (!fileInput) {
@@ -1059,6 +1066,55 @@ async function checkChrome() {
   }
 }
 
+// ── Auto-launch a character's debug Chrome ────────────────────────────────────
+// So a logged-in character never needs the copy-paste cmd: on Schedule we can
+// start its dedicated debug Chrome (persistent per-port profile that keeps the
+// Google login) and open studio.youtube.com, exactly what ytUpload.js expects.
+const CHROME_EXE_CANDIDATES = [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+];
+function findChromeExe() {
+  for (const p of CHROME_EXE_CANDIDATES) {
+    try { if (p && fs.existsSync(p)) return p; } catch { /* ignore */ }
+  }
+  return null;
+}
+// The per-port profile MUST match the one the UI's launch command shows, so the
+// auto-launch reuses the same (already logged-in) profile.
+function ytProfileDir(port) {
+  return path.join(process.env.USERPROFILE || os.homedir(), `yt-profile-${port}`);
+}
+async function isDebugChromeUp(port) {
+  try { const r = await fetch(`http://127.0.0.1:${port}/json/version`); return r.ok; }
+  catch { return false; }
+}
+// Spawn debug Chrome for `port` (opening `openUrl`) and wait until its debug
+// endpoint answers. Resolves once reachable; rejects if Chrome is missing or the
+// port never comes up.
+async function launchDebugChrome(port, openUrl) {
+  const exe = findChromeExe();
+  if (!exe) throw new Error('Chrome not found in the usual install locations — launch it manually with the command on the card.');
+  const args = [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${ytProfileDir(port)}`,
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--no-first-run', '--no-default-browser-check',
+  ];
+  if (openUrl) args.push(openUrl);
+  const child = spawn(exe, args, { detached: true, stdio: 'ignore' });
+  child.on('error', () => { /* surfaced by the readiness poll below */ });
+  child.unref();
+  for (let i = 0; i < 40; i++) { // up to ~20s
+    if (await isDebugChromeUp(port)) return true;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error(`Launched Chrome but debug port ${port} never became reachable. Is another Chrome using that profile? Fully quit Chrome and retry.`);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
@@ -1469,12 +1525,20 @@ const server = http.createServer(async (req, res) => {
       if (ytRuns.has(c.id)) return sendJson(res, 409, { error: `"${c.name}" is already scheduling.` });
       if (!fs.existsSync(c.folder)) return sendJson(res, 400, { error: 'Folder does not exist: ' + c.folder });
       if (countPending(c.folder) === 0) return sendJson(res, 400, { error: 'No videos in this character\'s folder.' });
-      // Confirm this character's debug Chrome is actually up on its port.
-      try {
-        const r = await fetch(`http://127.0.0.1:${c.port}/json/version`);
-        if (!r.ok) throw new Error('bad status');
-      } catch {
-        return sendJson(res, 400, { error: `No debug Chrome on port ${c.port}. Launch this character's Chrome (logged into its channel) first.` });
+      // Confirm this character's debug Chrome is up on its port — and, when the
+      // character is already logged in, auto-launch it (no cmd copy needed).
+      if (!(await isDebugChromeUp(c.port))) {
+        if (p.autoLaunch) {
+          try {
+            log(`▶ YouTube: launching debug Chrome for "${c.name}" on port ${c.port} → studio.youtube.com…`);
+            await launchDebugChrome(c.port, 'https://studio.youtube.com');
+            log(`  Chrome ready on port ${c.port}.`);
+          } catch (e) {
+            return sendJson(res, 400, { error: e.message || 'Failed to auto-launch Chrome.' });
+          }
+        } else {
+          return sendJson(res, 400, { error: `No debug Chrome on port ${c.port}. Tick "already logged in" to auto-launch it, or launch this character's Chrome manually first.` });
+        }
       }
       const perDay = Math.max(1, Math.min(15, parseInt(p.perDay) || 3));
       const cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`];
@@ -1614,6 +1678,10 @@ const server = http.createServer(async (req, res) => {
       let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
       const uploadedId = p.uploadedId;
       const src = clipTool.SOURCES[p.source] || clipTool.SOURCES.prayerlock;
+      // For sources that offer a choice (e.g. "Quit 🌽" → 3s/6s) honor the
+      // requested head; otherwise the source's fixed head is used.
+      const head = (src.headOptions && src.headOptions.includes(parseInt(p.headSeconds)))
+        ? parseInt(p.headSeconds) : src.headSeconds;
       const count = Math.max(1, Math.min(50, parseInt(p.count) || 1));
       if (!uploadedId) return sendJson(res, 400, { error: 'Pick an uploaded video first.' });
       if (clipGenBusy) return sendJson(res, 409, { error: 'A generation is already running.' });
@@ -1622,11 +1690,11 @@ const server = http.createServer(async (req, res) => {
       // Fire-and-forget: progress streams over SSE ('clips' + log).
       (async () => {
         let made = 0;
-        clipsLog(`Source: ${src.label} — ${src.headSeconds}s head + your video.`);
+        clipsLog(`Source: ${src.label} — ${head}s head + your video.`);
         for (let i = 0; i < count; i++) {
           try {
             clipsLog(`Generating clip ${i + 1}/${count}…`);
-            const r = await clipTool.generateOne(uploadedId, src.key, clipsLog);
+            const r = await clipTool.generateOne(uploadedId, src.key, clipsLog, head);
             made++;
             clipsLog(`✓ ${r.mp4} (${src.label} Short ${r.shortId})`);
             broadcastClips();

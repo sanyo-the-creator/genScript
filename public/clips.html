@@ -49,6 +49,9 @@
   .drop.hot { border-color: var(--accent); color: var(--text); background: var(--panel2); }
   code { background: #0a0c0f; padding: 1px 5px; border-radius: 4px; color: #c8d3df; }
   .genlist { max-height: 180px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 11.5px; color: #b9c6d3; margin-top: 8px; }
+  .modes { display: flex; gap: 10px; margin-bottom: 4px; }
+  .modeBtn { flex: 1; padding: 12px 10px; font-weight: 600; border: 1px solid var(--line); background: var(--panel2); color: var(--dim); }
+  .modeBtn.on { border-color: var(--accent); background: var(--chipOn); color: #eaf1ff; }
   .genlist div { padding: 2px 0; border-bottom: 1px solid #1a1f27; word-break: break-all; }
 </style>
 </head>
@@ -72,8 +75,26 @@
 
       <div class="card">
         <h2>2 · Generate clips</h2>
-        <label>Source (decides how much of the Short is used)</label>
-        <select id="source"></select>
+
+        <label>Campaign</label>
+        <div id="modeToggle" class="modes">
+          <button type="button" class="modeBtn" data-mode="habit">📈 Habit Tracker</button>
+          <button type="button" class="modeBtn" data-mode="quit">🌽 Quit Porn</button>
+        </div>
+
+        <!-- Habit Tracker: pick one of the two habit sources (fixed head each). -->
+        <div id="habitControls">
+          <label>Source (decides how much of the Short is used)</label>
+          <select id="source"></select>
+        </div>
+
+        <!-- Quit Porn: one combined pool, choose the head length per run. -->
+        <div id="quitControls" style="display:none">
+          <label>Clip length (how much of the Short is used)</label>
+          <select id="quitHead"></select>
+          <p class="muted" id="quitNote" style="margin-top:8px"></p>
+        </div>
+
         <div class="row" style="margin-top:12px">
           <div>
             <label>Selected footage</label>
@@ -105,7 +126,7 @@
 
       <div class="card">
         <h2>Output → ytUpload</h2>
-        <p class="muted">Every uploaded video gets its <strong>own subfolder</strong> under <code id="outDir">generated_clips/</code>. Each clip is <code>name.mp4</code> + <code>name.json</code> (title & description = <em>Level Up Your Life…</em>). Point a character's YouTube scheduler at one footage folder.</p>
+        <p class="muted">Clips are saved to <code>&lt;footage&gt;_&lt;length&gt;s</code> subfolders under <code id="outDir">generated_clips/</code> (separate per footage <em>and</em> per clip length). Each clip is <code>name.mp4</code> + <code>name.json</code>; title & description follow the campaign (<em>Level Up Your Life…</em> for Habit Tracker, <em>Quit 🌽…</em> for Quit Porn). Point a character's YouTube scheduler at one footage folder.</p>
         <p class="muted stat" style="margin-top:10px"><b id="genCount">0</b> clips generated across <span id="folderCount">0</span> folder(s)</p>
         <div id="genlist" class="genlist"></div>
       </div>
@@ -114,7 +135,9 @@
 
 <script>
 let selectedUpload = null;
-let selectedSource = localStorage.getItem('clipSource') || 'prayerlock';
+let selectedMode = localStorage.getItem('clipMode') || 'habit';
+let selectedSource = localStorage.getItem('clipSource') || 'prayerlock'; // habit source
+let quitHead = parseInt(localStorage.getItem('clipQuitHead')) || 3;
 let st = { sources: [], uploads: [], generated: [] };
 
 const $ = id => document.getElementById(id);
@@ -124,40 +147,72 @@ function logLine(line) {
   c.scrollTop = c.scrollHeight;
 }
 function srcByKey(k) { return st.sources.find(s => s.key === k) || st.sources[0] || {}; }
+function habitSources() { return st.sources.filter(s => (s.mode || 'habit') === 'habit'); }
+function quitSource() { return st.sources.find(s => s.mode === 'quit'); }
+// The source + head length the current campaign will actually generate with.
+function effSource() { return selectedMode === 'quit' ? (quitSource() || {}) : srcByKey(selectedSource); }
+function effHead() { return selectedMode === 'quit' ? quitHead : (effSource().headSeconds || 0); }
 
 function render() {
-  // source <select>
+  // campaign toggle
+  document.querySelectorAll('.modeBtn').forEach(b =>
+    b.classList.toggle('on', b.getAttribute('data-mode') === selectedMode));
+  $('habitControls').style.display = selectedMode === 'quit' ? 'none' : '';
+  $('quitControls').style.display = selectedMode === 'quit' ? '' : 'none';
+
+  // habit source <select> (only the habit-mode sources)
+  const habits = habitSources();
   const sel = $('source');
-  if (sel.options.length !== st.sources.length) {
-    sel.innerHTML = st.sources.map(s => `<option value="${s.key}">${s.label} — first ${s.headSeconds}s</option>`).join('');
+  if (sel.options.length !== habits.length) {
+    sel.innerHTML = habits.map(s => `<option value="${s.key}">${s.label} — first ${s.headSeconds}s</option>`).join('');
   }
-  if (st.sources.length && !st.sources.find(s => s.key === selectedSource)) selectedSource = st.sources[0].key;
+  if (habits.length && !habits.find(s => s.key === selectedSource)) selectedSource = habits[0].key;
   sel.value = selectedSource;
 
+  // quit head <select> (3s / 6s) + note
+  const q = quitSource();
+  const headSel = $('quitHead');
+  const opts = (q && q.headOptions) || [3, 6];
+  if (headSel.options.length !== opts.length) {
+    headSel.innerHTML = opts.map(n => `<option value="${n}">first ${n}s</option>`).join('');
+  }
+  if (!opts.includes(quitHead)) quitHead = opts[0];
+  headSel.value = String(quitHead);
+  if (q) $('quitNote').innerHTML = `Combined pool of <b>${q.channels}</b> channel(s). Title = <em>Quit 🌽 with "Upshift: #1 Productivity App"</em>.`;
+
   // shorts DB cards (one per source, each with its own refresh)
-  $('sources').innerHTML = st.sources.map(s => `
+  $('sources').innerHTML = st.sources.map(s => {
+    const len = s.mode === 'quit'
+      ? `combined ${s.channels} ch · ${(s.headOptions || []).join('/')}s`
+      : `first ${s.headSeconds}s`;
+    return `
     <div class="src">
       <div class="src-top">
-        <div><span class="lbl">${s.label}</span> <span class="len">first ${s.headSeconds}s</span><br>
+        <div><span class="lbl">${s.label}</span> <span class="len">${len}</span><br>
           <span class="muted"><b class="stat">${s.total}</b> Shorts · updated ${s.updatedAt ? new Date(s.updatedAt).toLocaleString() : 'never'}</span></div>
         <button class="primary small" data-refresh="${s.key}">🔄 Refresh</button>
       </div>
-    </div>`).join('');
+    </div>`; }).join('');
 
   $('outDir').textContent = st.outputDir || 'generated_clips/';
   $('genCount').textContent = st.generatedTotal || 0;
-  const withClips = (st.uploads || []).filter(u => u.clips > 0);
-  $('folderCount').textContent = withClips.length;
-  $('genlist').innerHTML = withClips.map(u => `<div title="${u.folderPath || ''}">📁 ${u.folder} — <b>${u.clips}</b> clip(s)</div>`).join('') || '<div class="muted">none yet</div>';
+  // Each footage×length folder is listed separately now.
+  const allFolders = [];
+  (st.uploads || []).forEach(u => (u.folders || []).forEach(f => allFolders.push(f)));
+  $('folderCount').textContent = allFolders.length;
+  $('genlist').innerHTML = allFolders.map(f => `<div title="${f.path || ''}">📁 ${f.name} — <b>${f.clips}</b> clip(s)</div>`).join('') || '<div class="muted">none yet</div>';
 
-  // uploads list — show remaining for EVERY source, highlighting the selected one
+  // uploads list — show remaining for the sources in the CURRENT campaign,
+  // highlighting the one that will be used.
+  const effKey = effSource().key;
+  const campaignSources = selectedMode === 'quit' ? [quitSource()].filter(Boolean) : habitSources();
   const box = $('uploads');
   if (!st.uploads.length) { box.innerHTML = '<p class="muted">No footage uploaded yet.</p>'; }
   else box.innerHTML = st.uploads.map(u => {
     const sel2 = u.id === selectedUpload ? ' sel' : '';
-    const pills = st.sources.map(s => {
+    const pills = campaignSources.map(s => {
       const n = (u.remaining && u.remaining[s.key]) || 0;
-      const on = s.key === selectedSource && n > 0 ? ' on' : '';
+      const on = s.key === effKey && n > 0 ? ' on' : '';
       return `<span class="pill${on}">${s.label}: ${n}</span>`;
     }).join('');
     const made = u.clips ? `<span class="pill">📁 ${u.clips} made</span>` : '';
@@ -170,17 +225,24 @@ function render() {
   if (selectedUpload && !st.uploads.find(u => u.id === selectedUpload)) selectedUpload = null;
   const selU = st.uploads.find(u => u.id === selectedUpload);
   $('selName').value = selU ? selU.name : '';
-  const remain = selU && selU.remaining ? (selU.remaining[selectedSource] || 0) : 0;
-  const s = srcByKey(selectedSource);
+  const s = effSource();
+  const remain = selU && selU.remaining ? (selU.remaining[s.key] || 0) : 0;
+  const head = effHead();
   $('genHint').textContent = selU
-    ? (remain > 0 ? `${remain} fresh ${s.label} Shorts available — each clip = first ${s.headSeconds}s + this video.`
+    ? (remain > 0 ? `${remain} fresh ${s.label} Shorts available — each clip = first ${head}s + this video.`
                   : `No unused ${s.label} Shorts left for this video — refresh that source.`)
-    : 'Select a video and a source, then choose how many clips to generate.';
+    : 'Select a video and a campaign, then choose how many clips to generate.';
   $('genBtn').disabled = !selU || remain === 0;
 }
 
 // ── events ────────────────────────────────────────────────────────────────────
+$('modeToggle').addEventListener('click', e => {
+  const m = e.target.getAttribute('data-mode');
+  if (!m) return;
+  selectedMode = m; localStorage.setItem('clipMode', m); render();
+});
 $('source').addEventListener('change', e => { selectedSource = e.target.value; localStorage.setItem('clipSource', selectedSource); render(); });
+$('quitHead').addEventListener('change', e => { quitHead = parseInt(e.target.value) || 3; localStorage.setItem('clipQuitHead', quitHead); render(); });
 
 $('sources').addEventListener('click', async e => {
   const key = e.target.getAttribute('data-refresh');
@@ -204,7 +266,7 @@ $('uploads').addEventListener('click', async e => {
 $('genBtn').addEventListener('click', async () => {
   const count = parseInt($('count').value) || 1;
   $('genBtn').disabled = true;
-  const r = await fetch('/api/clips/generate', { method: 'POST', body: JSON.stringify({ uploadedId: selectedUpload, count, source: selectedSource }) });
+  const r = await fetch('/api/clips/generate', { method: 'POST', body: JSON.stringify({ uploadedId: selectedUpload, count, source: effSource().key, headSeconds: effHead() }) });
   const j = await r.json();
   if (!r.ok) logLine('Error: ' + (j.error || 'failed'));
   setTimeout(render, 500);

@@ -102,8 +102,11 @@
         <h2>How it works</h2>
         <p class="muted">
           Each character has its own debug Chrome (unique port, logged into that channel) and its own inbox folder.
-          Launch the character's Chrome with the command shown on its card, log into its channel, open
-          <a class="link" href="https://studio.youtube.com" target="_blank">studio.youtube.com</a>, then hit <b>Schedule</b>.
+          <b>First time:</b> launch the character's Chrome with the command on its card and log into its channel once —
+          the per-port profile keeps that login.
+          <b>After that:</b> tick <b>already logged in</b> and just hit <b>Schedule</b> — it auto-launches that
+          character's Chrome (if not already open) and opens
+          <a class="link" href="https://studio.youtube.com" target="_blank">studio.youtube.com</a> for you.
           Videos are scheduled at fixed viral-US times, 3/day by default, starting today, packing around whatever's
           already scheduled — and removed from the folder once scheduled.
         </p>
@@ -125,6 +128,11 @@ let runSet = new Set(); // ids of characters currently scheduling (parallel)
 function chromeCmd(port) {
   return `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=${port} --user-data-dir="%USERPROFILE%\\yt-profile-${port}"`;
 }
+
+// Remember per-character whether "already logged in" is ticked, so auto-launch
+// is a one-time setup, not a click-every-time chore.
+function loggedPref(id) { return localStorage.getItem('ytLogged_' + id) === '1'; }
+function setLoggedPref(id, on) { localStorage.setItem('ytLogged_' + id, on ? '1' : '0'); }
 
 function charCard(c) {
   const isRun = runSet.has(c.id);
@@ -148,6 +156,7 @@ function charCard(c) {
       <input type="number" value="3" min="1" max="15" style="width:64px;" class="cPerDay" />
       <label style="margin:0;">start</label>
       <input type="date" class="cStart" style="width:150px;" />
+      <label style="margin:0; display:flex; align-items:center; gap:4px;" title="If this profile is already signed into its Google/YouTube channel, Schedule will auto-launch its debug Chrome (no cmd needed) and open Studio for you."><input type="checkbox" class="cLogged" style="width:auto;" ${loggedPref(c.id) ? 'checked' : ''} /> already logged in</label>
       <label style="margin:0; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="cDry" style="width:auto;" /> dry-run</label>
       <button class="primary cRun" ${isRun ? 'disabled' : ''}>${isRun ? '● scheduling…' : '▶ Schedule'}</button>
       ${isRun ? '<button class="danger cStop">■ Stop</button>' : ''}
@@ -155,6 +164,7 @@ function charCard(c) {
       <button class="danger cDel" ${isRun ? 'disabled' : ''}>Delete</button>
     </div>`;
   el.querySelector('.cRun').onclick = () => runChar(c.id, el);
+  el.querySelector('.cLogged').onchange = (e) => setLoggedPref(c.id, e.target.checked);
   el.querySelector('.cEdit').onclick = () => editChar(c);
   el.querySelector('.cDel').onclick = () => delChar(c.id);
   const stop = el.querySelector('.cStop');
@@ -186,9 +196,11 @@ async function runChar(id, el) {
   const perDay = el.querySelector('.cPerDay').value;
   const start = el.querySelector('.cStart').value;
   const dryRun = el.querySelector('.cDry').checked;
+  const autoLaunch = el.querySelector('.cLogged').checked;
+  if (autoLaunch) addLog('… launching this character\'s Chrome (if not already open) and opening Studio…');
   const r = await fetch('/api/yt/schedule', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ id, perDay, start: start || undefined, dryRun })
+    body: JSON.stringify({ id, perDay, start: start || undefined, dryRun, autoLaunch })
   });
   const d = await r.json();
   if (!r.ok) { addLog('✗ ' + (d.error || 'failed to start')); alert(d.error || 'Failed to start'); }
