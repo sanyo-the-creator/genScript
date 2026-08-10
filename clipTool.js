@@ -187,12 +187,14 @@ async function refreshShorts(sourceKey, onLine) {
   return { source: src.key, total: db.shorts.length, added, scanned };
 }
 
-// First Short not yet paired with this uploaded video.
+// First Short not yet paired with this uploaded video. Shorts flagged `failed`
+// (e.g. age-restricted / undownloadable — see generateOne) are skipped so a bad
+// pick never blocks the batch or gets retried on later runs.
 function pickUnusedShort(db, uploadedId) {
-  return db.shorts.find(s => !s.usedWith.includes(uploadedId)) || null;
+  return db.shorts.find(s => !s.failed && !s.usedWith.includes(uploadedId)) || null;
 }
 function remainingForUpload(sourceKey, uploadedId) {
-  return loadShortsDB(sourceKey).shorts.filter(s => !s.usedWith.includes(uploadedId)).length;
+  return loadShortsDB(sourceKey).shorts.filter(s => !s.failed && !s.usedWith.includes(uploadedId)).length;
 }
 
 // ── Uploaded (app-footage) videos ─────────────────────────────────────────────
@@ -310,58 +312,78 @@ async function generateOne(uploadedId, sourceKey, onLine, headOverride) {
   if (!fs.existsSync(upPath)) throw new Error('Uploaded file missing on disk: ' + up.file);
 
   const db = loadShortsDB(src.key);
-  const short = pickUnusedShort(db, uploadedId);
-  if (!short) throw new Error(`No unused ${src.label} Shorts left for "${up.name}". Refresh that source.`);
-
-  const stamp = Date.now();
-  const shortDl = path.join(TMP_DIR, `short_${stamp}.mp4`);
-  const seg1 = path.join(TMP_DIR, `seg1_${stamp}.mp4`);
-  const seg2 = path.join(TMP_DIR, `seg2_${stamp}.mp4`);
-  const base = `clip_${stamp}_${src.key}_${head}s_${short.id}`;
   const outDir = outputDirFor(up, head); // this footage's own per-length subfolder
-  const outMp4 = path.join(outDir, `${base}.mp4`);
-  const outJson = path.join(outDir, `${base}.json`);
 
-  try {
-    onLine && onLine(`Downloading ${src.label} Short ${short.id} …`);
-    await run('yt-dlp', [
-      // Player-client choice is a QUALITY decision, not just a reachability one.
-      // The plain "android" client only exposes the 360p muxed format (18); the
-      // default/tv/mweb clients are currently rejected ("page needs to be
-      // reloaded"); but "android_vr" returns the full DASH ladder up to the
-      // source's native 1080x1920. So we use android_vr and pick the best 1080p
-      // H.264 video + m4a audio (cleanest to concat), with graceful fallbacks.
-      '--extractor-args', 'youtube:player_client=android_vr',
-      '-f', 'bv*[vcodec^=avc1]+ba[ext=m4a]/bv*+ba/b',
-      '-S', 'res,vcodec:h264,br', // prefer highest res, then H.264, then bitrate
-      '--no-warnings', '--merge-output-format', 'mp4', '-o', shortDl, short.url,
-    ], onLine);
+  // A Short can be undownloadable (age-restricted needs a signed-in cookie,
+  // deleted/private, geo-blocked…). Rather than let one bad pick zero out the
+  // whole batch, flag it `failed` and move on to the next unused Short. `skipped`
+  // reports how many we burned through before landing a good one, so the caller
+  // can total it up.
+  let skipped = 0;
+  for (;;) {
+    const short = pickUnusedShort(db, uploadedId);
+    if (!short) throw new Error(`No unused ${src.label} Shorts left for "${up.name}". Refresh that source.`);
 
-    onLine && onLine(`Trimming Short head (${head}s) + normalizing segments …`);
-    await normalize(shortDl, seg1, { start: 0, duration: head }, onLine);
-    await normalize(upPath, seg2, {}, onLine);
+    const stamp = Date.now();
+    const shortDl = path.join(TMP_DIR, `short_${stamp}.mp4`);
+    const seg1 = path.join(TMP_DIR, `seg1_${stamp}.mp4`);
+    const seg2 = path.join(TMP_DIR, `seg2_${stamp}.mp4`);
+    const base = `clip_${stamp}_${src.key}_${head}s_${short.id}`;
+    const outMp4 = path.join(outDir, `${base}.mp4`);
+    const outJson = path.join(outDir, `${base}.json`);
 
-    onLine && onLine('Stitching final clip …');
-    await run('ffmpeg', [
-      '-y', '-i', seg1, '-i', seg2,
-      '-filter_complex', '[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]',
-      '-map', '[v]', '-map', '[a]',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-      '-c:a', 'aac', '-ar', '44100', '-ac', '2', outMp4,
-    ], onLine);
+    try {
+      onLine && onLine(`Downloading ${src.label} Short ${short.id} …`);
+      try {
+        await run('yt-dlp', [
+          // Player-client choice is a QUALITY decision, not just a reachability one.
+          // The plain "android" client only exposes the 360p muxed format (18); the
+          // default/tv/mweb clients are currently rejected ("page needs to be
+          // reloaded"); but "android_vr" returns the full DASH ladder up to the
+          // source's native 1080x1920. So we use android_vr and pick the best 1080p
+          // H.264 video + m4a audio (cleanest to concat), with graceful fallbacks.
+          '--extractor-args', 'youtube:player_client=android_vr',
+          '-f', 'bv*[vcodec^=avc1]+ba[ext=m4a]/bv*+ba/b',
+          '-S', 'res,vcodec:h264,br', // prefer highest res, then H.264, then bitrate
+          '--no-warnings', '--merge-output-format', 'mp4', '-o', shortDl, short.url,
+        ], onLine);
+      } catch (dlErr) {
+        // Download-only failure → this Short is a dud. Flag it (so it's never
+        // re-picked, this run or later), skip, and try the next one.
+        short.failed = true;
+        short.failedReason = String(dlErr && dlErr.message || dlErr).slice(0, 300);
+        saveShortsDB(src.key, db);
+        skipped++;
+        onLine && onLine(`⤼ Skipped ${src.label} Short ${short.id} (download failed) — trying another…`);
+        continue;
+      }
 
-    const text = textForSource(src);
-    fs.writeFileSync(outJson, JSON.stringify({
-      title: text, description: text, tags: tagsForSource(src),
-    }, null, 2));
+      onLine && onLine(`Trimming Short head (${head}s) + normalizing segments …`);
+      await normalize(shortDl, seg1, { start: 0, duration: head }, onLine);
+      await normalize(upPath, seg2, {}, onLine);
 
-    // Record the pairing so it never repeats for THIS uploaded video.
-    short.usedWith.push(uploadedId);
-    saveShortsDB(src.key, db);
+      onLine && onLine('Stitching final clip …');
+      await run('ffmpeg', [
+        '-y', '-i', seg1, '-i', seg2,
+        '-filter_complex', '[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]',
+        '-map', '[v]', '-map', '[a]',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-c:a', 'aac', '-ar', '44100', '-ac', '2', outMp4,
+      ], onLine);
 
-    return { base, mp4: `${base}.mp4`, folder: outputFolderName(up, head), source: src.key, head, shortId: short.id, uploadedId };
-  } finally {
-    for (const f of [shortDl, seg1, seg2]) { try { fs.unlinkSync(f); } catch {} }
+      const text = textForSource(src);
+      fs.writeFileSync(outJson, JSON.stringify({
+        title: text, description: text, tags: tagsForSource(src),
+      }, null, 2));
+
+      // Record the pairing so it never repeats for THIS uploaded video.
+      short.usedWith.push(uploadedId);
+      saveShortsDB(src.key, db);
+
+      return { base, mp4: `${base}.mp4`, folder: outputFolderName(up, head), source: src.key, head, shortId: short.id, uploadedId, skipped };
+    } finally {
+      for (const f of [shortDl, seg1, seg2]) { try { fs.unlinkSync(f); } catch {} }
+    }
   }
 }
 

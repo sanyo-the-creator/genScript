@@ -1689,13 +1689,14 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true, count });
       // Fire-and-forget: progress streams over SSE ('clips' + log).
       (async () => {
-        let made = 0;
+        let made = 0, skipped = 0;
         clipsLog(`Source: ${src.label} — ${head}s head + your video.`);
         for (let i = 0; i < count; i++) {
           try {
             clipsLog(`Generating clip ${i + 1}/${count}…`);
             const r = await clipTool.generateOne(uploadedId, src.key, clipsLog, head);
             made++;
+            skipped += r.skipped || 0; // undownloadable Shorts burned to land this one
             clipsLog(`✓ ${r.mp4} (${src.label} Short ${r.shortId})`);
             broadcastClips();
           } catch (e) {
@@ -1703,7 +1704,8 @@ const server = http.createServer(async (req, res) => {
             break; // out of Shorts, or a tool error — stop the batch
           }
         }
-        clipsLog(`Done. ${made} clip(s) written to generated_clips/.`);
+        const skipNote = skipped ? ` (skipped ${skipped} undownloadable Short${skipped === 1 ? '' : 's'})` : '';
+        clipsLog(`Done. ${made} clip(s) written to generated_clips/.${skipNote}`);
         clipGenBusy = false;
         broadcastClips();
       })();
