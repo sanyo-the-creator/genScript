@@ -1114,6 +1114,21 @@ async function launchDebugChrome(port, openUrl) {
   }
   throw new Error(`Launched Chrome but debug port ${port} never became reachable. Is another Chrome using that profile? Fully quit Chrome and retry.`);
 }
+// Cleanly close the debug Chrome running on `port` (the one we auto-launched for
+// a character). Connects over CDP and calls browser.close(), which quits the
+// whole window and frees the port + profile lock for the next run. Best-effort:
+// if it isn't reachable (already gone), we just log and move on.
+async function closeDebugChrome(port) {
+  if (!(await isDebugChromeUp(port))) return false;
+  try {
+    const browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, defaultViewport: null });
+    await browser.close();
+    return true;
+  } catch (e) {
+    log(`  Could not close Chrome on port ${port}: ${e.message || e}`);
+    return false;
+  }
+}
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -1527,11 +1542,15 @@ const server = http.createServer(async (req, res) => {
       if (countPending(c.folder) === 0) return sendJson(res, 400, { error: 'No videos in this character\'s folder.' });
       // Confirm this character's debug Chrome is up on its port — and, when the
       // character is already logged in, auto-launch it (no cmd copy needed).
+      // Track whether WE launched it, so we only close what we opened when the
+      // run ends (a Chrome the user opened by hand is left untouched).
+      let launchedByUs = false;
       if (!(await isDebugChromeUp(c.port))) {
         if (p.autoLaunch) {
           try {
             log(`▶ YouTube: launching debug Chrome for "${c.name}" on port ${c.port} → studio.youtube.com…`);
             await launchDebugChrome(c.port, 'https://studio.youtube.com');
+            launchedByUs = true;
             log(`  Chrome ready on port ${c.port}.`);
           } catch (e) {
             return sendJson(res, 400, { error: e.message || 'Failed to auto-launch Chrome.' });
@@ -1541,7 +1560,10 @@ const server = http.createServer(async (req, res) => {
         }
       }
       const perDay = Math.max(1, Math.min(15, parseInt(p.perDay) || 3));
-      const cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`];
+      // Thumbnails are skipped: Studio's custom-thumbnail tile isn't reliably
+      // found (and these channels may lack the privilege), so setting it only
+      // slows each upload and logs a warning. Always run --no-thumbnail.
+      const cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`, '--no-thumbnail'];
       if (p.start) cliArgs.push(`--start=${p.start}`);
       if (p.tz) cliArgs.push(`--tz=${p.tz}`); // target publish timezone (default US Eastern)
       if (p.dryRun) cliArgs.push('--dry-run'); else cliArgs.push('--delete-after');
@@ -1563,9 +1585,17 @@ const server = http.createServer(async (req, res) => {
       };
       child.stdout.on('data', pipe);
       child.stderr.on('data', pipe);
-      child.on('close', (code) => {
+      child.on('close', async (code) => {
         log(`■ YouTube run for "${c.name}" finished (exit ${code}).`);
         ytRuns.delete(c.id); broadcastYt();
+        // The run is over (whether it completed, hit a limit, or failed) — if we
+        // auto-launched this character's Chrome, close it now so the window goes
+        // away and its port/profile is freed for the next run.
+        if (launchedByUs) {
+          log(`  Closing the debug Chrome we opened for "${c.name}" (port ${c.port})…`);
+          const closed = await closeDebugChrome(c.port);
+          if (closed) log(`  Closed Chrome on port ${c.port}.`);
+        }
       });
       child.on('error', (e) => {
         log(`✗ YouTube run for "${c.name}" failed to start: ${e.message}`);

@@ -82,15 +82,11 @@ const MODE_TEXT = {
   quit: 'Quit 🌽 with "Upshift: #1 Productivity App"',
 };
 function textForSource(src) { return MODE_TEXT[src.mode] || MODE_TEXT.habit; }
-// Per-campaign tags. Habit Tracker leans into the productivity/self-improvement
-// audience; Quit 🌽 baits the target viewer (people the recommender should push
-// this to) so the clip lands in front of the right feed.
-const MODE_TAGS = {
-  habit: ['Upshift', 'productivity', 'selfimprovement', 'motivation', 'discipline', 'shorts'],
-  quit: ['hot girls', 'sexy', 'boobs', 'twerk', 'lesbian kissing', 'bikini', 'onlyfans',
-         'sophie rain', 'angela white', 'viral', 'trending', 'shorts'],
-};
-function tagsForSource(src) { return MODE_TAGS[src.mode] || MODE_TAGS.habit; }
+// Generic tags every clip carries — the same neutral Upshift/productivity set
+// the character videos get in the scheduler (SlideSmith's videoMeta tags). No
+// per-campaign / bait tag lists anymore: one generic set regardless of source.
+const GENERIC_TAGS = ['Upshift', 'productivity', 'selfimprovement', 'motivation', 'discipline', 'shorts'];
+function tagsForSource(_src) { return GENERIC_TAGS; }
 // The head length actually used for a run: honor an explicit choice when the
 // source offers options, otherwise fall back to the source's fixed head.
 function resolveHead(src, requested) {
@@ -106,10 +102,10 @@ const UPLOADS_INDEX = path.join(UPLOADS_DIR, 'index.json');
 const OUTPUT_DIR = path.join(ROOT, 'generated_clips');
 const TMP_DIR = path.join(ROOT, '.clip_tmp');
 
-// Legacy aliases (the original single-campaign copy). New code uses MODE_TEXT /
-// MODE_TAGS keyed on the source's mode.
+// Legacy aliases (the original single-campaign copy). New code uses MODE_TEXT
+// keyed on the source's mode, and GENERIC_TAGS for every clip.
 const CLIP_TEXT = MODE_TEXT.habit;
-const CLIP_TAGS = MODE_TAGS.habit;
+const CLIP_TAGS = GENERIC_TAGS;
 
 const OUT_W = 1080, OUT_H = 1920, OUT_FPS = 30; // vertical Shorts canvas
 

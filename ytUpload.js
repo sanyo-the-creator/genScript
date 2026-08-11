@@ -385,6 +385,22 @@ function pageVisibleTextboxes() {
   return Array.from(document.querySelectorAll('#textbox')).filter((b) => b.offsetParent !== null);
 }
 
+// Detect YouTube's "Daily upload limit reached" banner. When a channel hits its
+// per-day cap, Studio shows a red-triangle notice ("Daily upload limit reached —
+// Upload more videos daily after a one-time verification or wait 24 hours.") and
+// blocks further uploads. There's no point hammering the UI once this shows, so
+// callers stop the whole batch and close the tab. Matched on the distinctive
+// phrase text anywhere in the visible DOM (best-effort; returns false on error).
+async function isUploadLimitReached(page) {
+  try {
+    return await page.evaluate(() => {
+      const t = (document.body?.innerText || '');
+      return /daily upload limit reached/i.test(t) ||
+             /upload more videos daily after a one-time verification/i.test(t);
+    });
+  } catch { return false; }
+}
+
 // ── One upload ───────────────────────────────────────────────────────────────
 async function uploadOne(page, entry, dryRun, setThumb = true) {
   const { item, hh, mm, date } = entry;
@@ -396,6 +412,9 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   // 1) Open the upload dialog. Go to the dashboard, click Create → Upload videos.
   await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle2' }).catch(() => {});
   await sleep(1500);
+
+  // If the daily-limit banner is already up on the dashboard, don't even start.
+  if (await isUploadLimitReached(page)) return 'limit-reached';
 
   // Create button: confirmed to be a <ytcp-button> whose text is exactly
   // "Create" (its inner <button> carries aria-label="Create"). Give the cold
@@ -424,6 +443,12 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   if (!fileInput) throw new Error('Could not find the file <input> in the upload dialog.');
   await fileInput.uploadFile(item.video);
   console.log('   • file handed to Studio, waiting for the details form…');
+
+  // Guard: YouTube may block the upload with a "Daily upload limit reached" banner
+  // once the channel hits its per-day ceiling. Give it a moment to render, then
+  // bail out of the ENTIRE batch (there's no point trying more today).
+  await sleep(1500);
+  if (await isUploadLimitReached(page)) return 'limit-reached';
 
   // 3) Wait for the details form. Confirmed: title + description are both visible
   // `#textbox` contenteditables — [0] title (arrives PREFILLED from the filename,
@@ -680,6 +705,12 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
       const result = await uploadOne(page, entry, args.dryRun, args.thumbnail);
       if (result === 'dry-run') {
         console.log('\nDry run complete for the first video. Watch the Studio window — if the date/time/title look right, re-run without --dry-run.');
+        break;
+      }
+      if (result === 'limit-reached') {
+        console.warn('\n⚠  Daily upload limit reached — YouTube is blocking further uploads on this channel.');
+        console.warn('   Stopping the batch and closing the page. Try again after a one-time verification or in ~24 hours.');
+        try { await page.close(); } catch { /* already gone */ }
         break;
       }
       ledger[entry.item.key] = { scheduledAt: result, title: entry.item.meta.title };
