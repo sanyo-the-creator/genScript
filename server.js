@@ -27,7 +27,46 @@ const puppeteer = require('puppeteer-core');
 const clipTool = require('./clipTool');
 
 const PORT = 3000;
-const CHROME_DEBUG_URL = 'http://127.0.0.1:9222';
+const DEFAULT_FLOW_PORT = 9222;
+
+// ── Flow accounts (parallel debug Chromes) ────────────────────────────────────
+// Each account is one debug Chrome on its OWN --remote-debugging-port, logged
+// into its OWN Google Flow account, with its OWN persistent profile dir (so the
+// login sticks). Batches are tagged with a port and run in parallel — one worker
+// per account. Accounts persist in flow_accounts.json.
+const FLOW_ACCOUNTS_FILE = path.join(__dirname, 'flow_accounts.json');
+
+// Per-port profile dir. The original port keeps the old name so an existing
+// login is not lost; extra ports get their own dir.
+function profileDirFor(port) {
+  return port === DEFAULT_FLOW_PORT ? 'chrome-debug-profile' : `chrome-debug-profile-${port}`;
+}
+function loadAccounts() {
+  try {
+    const list = JSON.parse(fs.readFileSync(FLOW_ACCOUNTS_FILE, 'utf8'));
+    if (Array.isArray(list) && list.length) return list;
+  } catch { }
+  return [{ id: 'a' + DEFAULT_FLOW_PORT, name: 'Account 1', port: DEFAULT_FLOW_PORT }];
+}
+function saveAccounts(list) {
+  fs.writeFileSync(FLOW_ACCOUNTS_FILE, JSON.stringify(list, null, 2));
+}
+function accountName(port) {
+  const a = loadAccounts().find(x => x.port === port);
+  return a ? a.name : `Port ${port}`;
+}
+// Build the copy-paste launch command for one port (both OSes).
+function debugCommandsFor(port) {
+  const dir = profileDirFor(port);
+  const flags = `--remote-debugging-port=${port} --user-data-dir=%DIR% ` +
+    '--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding';
+  return {
+    mac: '/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome ' +
+      flags.replace('%DIR%', `"$HOME/${dir}"`),
+    windows: '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ' +
+      flags.replace('%DIR%', `"%USERPROFILE%\\${dir}"`),
+  };
+}
 
 // Bundled internal tool: the Pinterest Scraper (Flask app on port 5077),
 // living inside this project. We launch it on demand so it's reachable
@@ -85,8 +124,12 @@ function prettyName(fileName) {
 const state = {
   running: false,
   stopRequested: false,
-  current: '',
+  currents: {},              // port -> "what this account is doing right now"
+  runningPorts: new Set(),   // ports with a live worker
 };
+function currentSummary() {
+  return Object.values(state.currents).filter(Boolean).join('   |   ');
+}
 let queue = [];       // [{ id, count, label, config, status, done, total }]
 let nextId = 1;
 let sseClients = [];
@@ -123,12 +166,14 @@ function queueView() {
   return queue.map(b => ({
     id: b.id, count: b.count, label: b.label,
     status: b.status, done: b.done, total: b.total, ok: b.ok || 0,
+    port: b.port || DEFAULT_FLOW_PORT, account: accountName(b.port || DEFAULT_FLOW_PORT),
   }));
 }
 function pushState() {
   broadcast('state', {
     running: state.running,
-    current: state.current,
+    current: currentSummary(),
+    currents: { ...state.currents },
     queue: queueView(),
   });
 }
@@ -928,123 +973,158 @@ async function recoverPage(page) {
   }
 }
 
-// Process the queue until it drains or Stop is pressed. Batches added while
-// this is running are picked up automatically.
-async function runQueue() {
+// Start one worker per account (port) that has pending batches. Idempotent per
+// port, so it can be called again to pick up a newly-added account mid-run
+// without disturbing workers that are already going.
+function startRunners() {
+  state.stopRequested = false;
+  const pendingPorts = [...new Set(
+    queue.filter(b => b.status === 'pending').map(b => b.port || DEFAULT_FLOW_PORT)
+  )];
+  let spawned = 0;
+  for (const port of pendingPorts) {
+    if (state.runningPorts.has(port)) continue; // already has a live worker
+    spawned++;
+    runWorkerForPort(port).catch(e => log(`[${accountName(port)}] Error: ${e.message || e}`));
+  }
+  return spawned;
+}
+
+// Drain this account's pending batches (only batches tagged with `port`) until
+// they run out or Stop is pressed. Runs concurrently with other accounts'
+// workers — each drives its own debug Chrome, so they don't collide.
+async function runWorkerForPort(port) {
+  if (state.runningPorts.has(port)) return;
+  const tag = accountName(port);
+  const plog = m => log(`[${tag}] ${m}`);
+
   let browser;
   try {
     // protocolTimeout caps how long any single CDP call may hang before it
     // throws. 90s is enough for a slow-but-alive picker, while still failing a
     // truly frozen call fast so the loop can soft-recover and move on.
-    browser = await puppeteer.connect({ browserURL: CHROME_DEBUG_URL, defaultViewport: null, protocolTimeout: 90000 });
+    browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, defaultViewport: null, protocolTimeout: 90000 });
   } catch (e) {
-    log('Could not connect to Chrome on port 9222. Launch Chrome with the debug command shown in the panel, then try again.');
-    state.running = false; pushState(); return;
+    plog(`Could not connect to Chrome on port ${port}. Launch this account's debug Chrome with its command in the panel, then try again.`);
+    return;
   }
   const pages = await browser.pages();
   const page = pages.find(p => p.url().includes('labs.google')) || pages[0];
   if (!page) {
-    log('No Flow tab found. Open your Flow project in the debug Chrome window.');
-    state.running = false; pushState(); browser.disconnect(); return;
+    plog('No Flow tab found. Open this account\'s Flow project in its debug Chrome window.');
+    browser.disconnect();
+    return;
   }
+
+  state.runningPorts.add(port);
+  state.running = true;
   try {
     await page.bringToFront();
   } catch (e) { }
 
-  while (!state.stopRequested) {
-    const batch = queue.find(b => b.status === 'pending');
-    if (!batch) break;
+  try {
+    while (!state.stopRequested) {
+      const batch = queue.find(b => b.status === 'pending' && (b.port || DEFAULT_FLOW_PORT) === port);
+      if (!batch) break;
 
-    batch.status = 'running';
-    if (batch.config.projectUrl) {
-      log(`Autonomous Navigation: Loading project ${batch.config.projectUrl}...`);
-      try {
-        await page.goto(batch.config.projectUrl, { waitUntil: 'domcontentloaded' });
-        log('Waiting for Google Flow workspace editor to load...');
-        await page.waitForSelector('[data-slate-editor="true"]', { timeout: 30000 }).catch(() => { });
-        await sleep(6000); // Buffer for react assets and library initialization
-      } catch (err) {
-        log(`Failed to navigate to project URL: ${err.message || err}`);
-      }
-    }
-    const tasks = buildTasks(batch.config);
-    batch.total = tasks.length;
-    batch.done = 0;
-    batch.ok = 0;
-    pushState();
-    log(`\n=== Batch #${batch.id} (${batch.label}) — ${tasks.length} generation(s) ===`);
-
-    // Pre-upload phase: upload reference pictures into Google Flow asset library if needed
-    if (Array.isArray(batch.config.refPics) && batch.config.refPics.length) {
-      await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics);
-    } else if (batch.config.isScreenSwap && tasks.length) {
-      // Pre-upload the chosen screenshot + the ENTIRE POV folder (not just this
-      // batch's random subset) so the library stabilises after the first batch
-      // and attach-by-name stops missing (which was causing duplicate uploads).
-      await uploadAllRefImages(page, tasks[0].ssFolder, [tasks[0].ssFile]);
-      let allPov = [];
-      try { allPov = fs.readdirSync(path.join(__dirname, tasks[0].povFolder)).filter(f => IMG_RE.test(f)); } catch { }
-      if (!allPov.length) allPov = [...new Set(tasks.map(t => t.povFile))];
-      if (!state.stopRequested) await uploadAllRefImages(page, tasks[0].povFolder, allPov);
-    }
-
-    let consecutiveFails = 0;
-    for (const task of tasks) {
-      if (state.stopRequested) break;
-      state.current = `Batch #${batch.id}: ${task.env} + ${task.pose}`;
-      pushState();
-      log(`Generating: ${task.env} + ${task.pose}`);
-
-      // Keep the Flow tab foreground — a backgrounded/occluded tab gets throttled
-      // and CDP evaluates can hang.
-      try { await page.bringToFront(); } catch { }
-
-      // Guard each generation: a stuck renderer or timed-out CDP call must not
-      // kill the queue.
-      let ok = false;
-      try {
-        ok = await withTimeout(generateOne(page, batch.config, task), 120000, 'generation');
-      } catch (e) {
-        if (e.message === 'STOP_REQUESTED' || state.stopRequested) {
-          log('Stop requested — aborting batch immediately.');
-          break;
+      batch.status = 'running';
+      if (batch.config.projectUrl) {
+        plog(`Autonomous Navigation: Loading project ${batch.config.projectUrl}...`);
+        try {
+          await page.goto(batch.config.projectUrl, { waitUntil: 'domcontentloaded' });
+          plog('Waiting for Google Flow workspace editor to load...');
+          await page.waitForSelector('[data-slate-editor="true"]', { timeout: 30000 }).catch(() => { });
+          await sleep(6000); // Buffer for react assets and library initialization
+        } catch (err) {
+          plog(`Failed to navigate to project URL: ${err.message || err}`);
         }
-        log('Generation failed: ' + (e.message || e));
       }
-      batch.done += 1;
-      if (ok) { batch.ok += 1; consecutiveFails = 0; }
-      else {
-        consecutiveFails += 1;
-        log(`⚠️ This one did NOT generate (${batch.ok}/${batch.done} actually created so far in this batch).`);
-        // Light recovery first (close pickers/toasts). Only fully reload after a
-        // few fails in a row, to avoid a reload-cascade that freezes everything.
-        if (consecutiveFails >= 3) { await recoverPage(page); consecutiveFails = 0; }
-        else await softRecover(page);
-      }
+      const tasks = buildTasks(batch.config);
+      batch.total = tasks.length;
+      batch.done = 0;
+      batch.ok = 0;
       pushState();
+      plog(`\n=== Batch #${batch.id} (${batch.label}) — ${tasks.length} generation(s) ===`);
 
-      // Wait with jitter between generations (mild mitigation for rate flags).
-      const base = Math.max(0, batch.config.waitSeconds) * 1000;
-      const jitter = Math.max(0, batch.config.jitterSeconds) * 1000;
-      const waitMs = base + Math.floor(Math.random() * (jitter + 1));
-      log(`Waiting ${(waitMs / 1000).toFixed(0)}s before next generation...`);
-      const deadline = Date.now() + waitMs;
-      while (Date.now() < deadline) {
-        if (state.stopRequested) break;
-        await sleep(500);
+      // Pre-upload phase: upload reference pictures into Google Flow asset library if needed
+      if (Array.isArray(batch.config.refPics) && batch.config.refPics.length) {
+        await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics);
+      } else if (batch.config.isScreenSwap && tasks.length) {
+        // Pre-upload the chosen screenshot + the ENTIRE POV folder (not just this
+        // batch's random subset) so the library stabilises after the first batch
+        // and attach-by-name stops missing (which was causing duplicate uploads).
+        await uploadAllRefImages(page, tasks[0].ssFolder, [tasks[0].ssFile]);
+        let allPov = [];
+        try { allPov = fs.readdirSync(path.join(__dirname, tasks[0].povFolder)).filter(f => IMG_RE.test(f)); } catch { }
+        if (!allPov.length) allPov = [...new Set(tasks.map(t => t.povFile))];
+        if (!state.stopRequested) await uploadAllRefImages(page, tasks[0].povFolder, allPov);
       }
+
+      let consecutiveFails = 0;
+      for (const task of tasks) {
+        if (state.stopRequested) break;
+        state.currents[port] = `[${tag}] Batch #${batch.id}: ${task.env} + ${task.pose}`;
+        pushState();
+        plog(`Generating: ${task.env} + ${task.pose}`);
+
+        // Keep the Flow tab foreground — a backgrounded/occluded tab gets throttled
+        // and CDP evaluates can hang.
+        try { await page.bringToFront(); } catch { }
+
+        // Guard each generation: a stuck renderer or timed-out CDP call must not
+        // kill the queue.
+        let ok = false;
+        try {
+          ok = await withTimeout(generateOne(page, batch.config, task), 120000, 'generation');
+        } catch (e) {
+          if (e.message === 'STOP_REQUESTED' || state.stopRequested) {
+            plog('Stop requested — aborting batch immediately.');
+            break;
+          }
+          plog('Generation failed: ' + (e.message || e));
+        }
+        batch.done += 1;
+        if (ok) { batch.ok += 1; consecutiveFails = 0; }
+        else {
+          consecutiveFails += 1;
+          plog(`⚠️ This one did NOT generate (${batch.ok}/${batch.done} actually created so far in this batch).`);
+          // Light recovery first (close pickers/toasts). Only fully reload after a
+          // few fails in a row, to avoid a reload-cascade that freezes everything.
+          if (consecutiveFails >= 3) { await recoverPage(page); consecutiveFails = 0; }
+          else await softRecover(page);
+        }
+        pushState();
+
+        // Wait with jitter between generations (mild mitigation for rate flags).
+        const base = Math.max(0, batch.config.waitSeconds) * 1000;
+        const jitter = Math.max(0, batch.config.jitterSeconds) * 1000;
+        const waitMs = base + Math.floor(Math.random() * (jitter + 1));
+        plog(`Waiting ${(waitMs / 1000).toFixed(0)}s before next generation...`);
+        const deadline = Date.now() + waitMs;
+        while (Date.now() < deadline) {
+          if (state.stopRequested) break;
+          await sleep(500);
+        }
+      }
+
+      batch.status = state.stopRequested ? 'stopped' : 'done';
+      pushState();
+      plog(`Batch #${batch.id} ${batch.status} — ✅ ${batch.ok || 0}/${batch.total} images actually generated.`);
     }
-
-    batch.status = state.stopRequested ? 'stopped' : 'done';
+  } finally {
+    try { browser.disconnect(); } catch { }
+    state.runningPorts.delete(port);
+    delete state.currents[port];
+    if (state.runningPorts.size === 0) {
+      state.running = false;
+      const wasStopped = state.stopRequested;
+      state.stopRequested = false;
+      log(wasStopped ? 'Stopped.' : 'Queue complete — idle.');
+    } else {
+      plog('Account idle — no more batches for it.');
+    }
     pushState();
-    log(`Batch #${batch.id} ${batch.status} — ✅ ${batch.ok || 0}/${batch.total} images actually generated.`);
   }
-
-  browser.disconnect();
-  state.running = false;
-  state.current = '';
-  pushState();
-  log(state.stopRequested ? 'Stopped.' : 'Queue complete — idle.');
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,9 +1135,9 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
-async function checkChrome() {
+async function checkChrome(port = DEFAULT_FLOW_PORT) {
   try {
-    const r = await fetch(`${CHROME_DEBUG_URL}/json/version`);
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`);
     if (!r.ok) return { connected: false };
     const v = await r.json();
     return { connected: true, browser: v.Browser || 'Chrome' };
@@ -1154,24 +1234,75 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/status') {
-    const chrome = await checkChrome();
-    const debugFlags =
-      '--remote-debugging-port=9222 --user-data-dir=%DIR% ' +
-      '--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding';
-    const debugCommands = {
-      mac: '/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome ' +
-        debugFlags.replace('%DIR%', '"$HOME/chrome-debug-profile"'),
-      windows: '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ' +
-        debugFlags.replace('%DIR%', '"%USERPROFILE%\\chrome-debug-profile"'),
-    };
+    const chrome = await checkChrome(DEFAULT_FLOW_PORT);
+    const debugCommands = debugCommandsFor(DEFAULT_FLOW_PORT);
     return sendJson(res, 200, {
       chrome,
       running: state.running,
-      current: state.current,
+      current: currentSummary(),
+      currents: { ...state.currents },
       queue: queueView(),
       debugCommands,
       debugCommand: debugCommands.mac, // back-compat
     });
+  }
+
+  // Accounts: list every debug Chrome the user has configured, each with its
+  // own launch command (per OS) and live connection status.
+  if (req.method === 'GET' && url.pathname === '/api/accounts') {
+    const accounts = await Promise.all(loadAccounts().map(async a => ({
+      ...a,
+      commands: debugCommandsFor(a.port),
+      connected: (await checkChrome(a.port)).connected,
+    })));
+    return sendJson(res, 200, { accounts });
+  }
+
+  // Add or update an account. Body: { id?, name, port }.
+  if (req.method === 'POST' && url.pathname === '/api/accounts/save') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      const name = String(p.name || '').trim();
+      const port = parseInt(p.port);
+      if (!name) return sendJson(res, 400, { error: 'Name is required.' });
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+        return sendJson(res, 400, { error: 'Port must be a number between 1024 and 65535.' });
+      }
+      const list = loadAccounts();
+      if (list.some(x => x.port === port && x.id !== p.id)) {
+        return sendJson(res, 400, { error: `Port ${port} is already used by another account — each needs its own.` });
+      }
+      if (p.id) {
+        const c = list.find(x => x.id === p.id);
+        if (!c) return sendJson(res, 404, { error: 'Account not found.' });
+        Object.assign(c, { name, port });
+      } else {
+        list.push({ id: 'a' + Date.now().toString(36), name, port });
+      }
+      saveAccounts(list);
+      sendJson(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // Delete an account. Body: { id }. Cannot remove the last one.
+  if (req.method === 'POST' && url.pathname === '/api/accounts/remove') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let id; try { id = JSON.parse(body).id; } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      const list = loadAccounts();
+      const gone = list.find(x => x.id === id);
+      if (!gone) return sendJson(res, 404, { error: 'Account not found.' });
+      if (state.runningPorts.has(gone.port)) return sendJson(res, 409, { error: 'That account is currently running — stop it first.' });
+      const next = list.filter(x => x.id !== id);
+      if (!next.length) return sendJson(res, 400, { error: 'Keep at least one account.' });
+      saveAccounts(next);
+      sendJson(res, 200, { ok: true });
+    });
+    return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/ref-pics') {
@@ -1300,7 +1431,7 @@ const server = http.createServer(async (req, res) => {
     // between tools) shows the full running log instead of starting blank.
     for (const line of logHistory) res.write(sseFrame('log', { line }));
     // Send current snapshots to just this client (generation + YouTube state).
-    res.write(sseFrame('state', { running: state.running, current: state.current, queue: queueView() }));
+    res.write(sseFrame('state', { running: state.running, current: currentSummary(), currents: { ...state.currents }, queue: queueView() }));
     res.write(sseFrame('yt', ytSnapshot()));
     res.write(sseFrame('clips', clipTool.state()));
     req.on('close', () => { sseClients = sseClients.filter(c => c !== res); });
@@ -1322,17 +1453,21 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'Pick at least one environment and one pose.' });
       }
       cfg.count = Math.max(0, parseInt(payload.count) || 0);
+      let port = parseInt(payload.port) || DEFAULT_FLOW_PORT;
+      // Only accept a port that maps to a known account; otherwise fall back.
+      if (!loadAccounts().some(a => a.port === port)) port = DEFAULT_FLOW_PORT;
       const batch = {
         id: nextId++,
         count: cfg.count,
         label: payload.label || `Batch ${nextId}`,
         config: cfg,
+        port,
         status: 'pending',
         done: 0,
         total: 0,
       };
       queue.push(batch);
-      log(`Queued batch #${batch.id}: ${batch.label} (${batch.count || 'all combos'} gens).`);
+      log(`Queued batch #${batch.id}: ${batch.label} (${batch.count || 'all combos'} gens) → ${accountName(port)}.`);
       pushState();
       sendJson(res, 200, { ok: true, id: batch.id });
     });
@@ -1625,15 +1760,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Start processing the queue.
+  // Start processing the queue. Spawns one worker per account (port) that has
+  // pending batches; safe to call again mid-run to pick up newly-added accounts.
   if (req.method === 'POST' && url.pathname === '/api/start') {
-    if (state.running) return sendJson(res, 409, { error: 'Already running' });
     if (!queue.some(b => b.status === 'pending')) return sendJson(res, 400, { error: 'Queue is empty — add a batch first.' });
-    state.running = true;
-    state.stopRequested = false;
-    sendJson(res, 200, { ok: true });
-    runQueue().catch(e => { log('Error: ' + e.message); state.running = false; pushState(); });
-    return;
+    const spawned = startRunners();
+    if (!spawned && state.running) return sendJson(res, 409, { error: 'Already running every account that has pending batches.' });
+    pushState();
+    return sendJson(res, 200, { ok: true, spawned });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/stop') {

@@ -106,14 +106,19 @@
           <button data-os="windows" class="active">🪟 Windows</button>
           <button data-os="mac">🍎 macOS</button>
         </div>
+        <div class="grow"></div>
+        <button id="testConn" title="Re-check which debug Chromes are reachable">↻ Test connections</button>
       </div>
-      <p class="muted" id="connHint">Fully quit Chrome, then run this in the terminal to launch the debug window. Log into Flow and open your project in it.</p>
-      <div class="cmdbox" id="cmd"></div>
-      <div class="flex" style="margin-top:10px">
-        <button id="copyCmd">Copy command</button>
-        <button id="testConn">Test connection</button>
-        <span id="connText" class="muted"></span>
+      <p class="muted" id="connHint">Each account is its own debug Chrome on its own port + profile, logged into a different Google Flow account. Fully quit Chrome first (or launch each into its own profile), run the command for each account, then log into Flow and open the project in that window.</p>
+
+      <div id="accountsList"></div>
+
+      <div class="flex" style="margin-top:10px; align-items:flex-end; gap:8px">
+        <div class="grow"><label style="margin-top:0">Account name</label><input type="text" id="acctName" placeholder="e.g. Account 2" /></div>
+        <div style="width:110px"><label style="margin-top:0">Debug port</label><input type="number" id="acctPort" placeholder="9223" min="1024" max="65535" /></div>
+        <button id="addAcctBtn" class="primary" style="align-self:flex-end">➕ Add account</button>
       </div>
+      <p class="note">Give each Google Flow account its own port (9222, 9223, 9224…). Batches you queue can be assigned to a specific account, and all accounts run in parallel.</p>
     </div>
 
     <div class="card">
@@ -248,9 +253,12 @@
   <div>
     <div class="card sticky">
       <h2>Queue</h2>
-      <div class="flex">
-        <div style="width:130px"><label style="margin-top:0">Images in batch</label><input type="number" id="count" value="10" min="0" /></div>
-        <button id="addBatchBtn" class="primary grow" style="align-self:flex-end">➕ Add batch to queue</button>
+      <div class="flex" style="align-items:flex-end; gap:8px">
+        <div style="width:120px"><label style="margin-top:0">Images in batch</label><input type="number" id="count" value="10" min="0" /></div>
+        <div class="grow"><label style="margin-top:0">Run on account</label><select id="batchAccount"></select></div>
+      </div>
+      <div class="flex" style="margin-top:8px">
+        <button id="addBatchBtn" class="primary grow">➕ Add batch to queue</button>
       </div>
       <p class="note">Snapshots the settings on the left as one batch. Change the settings, add another batch, and so on. Batches run top-to-bottom — you can add more even while it's running. Count 0 = one of every environment×pose combo.</p>
 
@@ -845,7 +853,7 @@ async function addPack(p, bgRef) {
   const label = `${p.title.replace(/^[^\s]+\s/, '')} — ` + (cfg.refPics ? `${targetCount}× (${totalPics} ref pics in folder)` : `${targetCount}×`) + (cfg.backgroundRef ? ` · 🖼 ${cfg.backgroundRef}` : '');
   const r = await fetch('/api/queue/add', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count: targetCount, label, config: cfg }),
+    body: JSON.stringify({ count: targetCount, label, config: cfg, port: selectedPort() }),
   });
   if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to queue pack'); }
 }
@@ -935,7 +943,7 @@ document.getElementById('ssQueueBtn').onclick = async () => {
   const label = `🖼️ Screen Swap: ${shot.label} → ${povState.gender.toUpperCase()} · ${target}× (${povState.povRefs.length} POV photos)`;
   const r = await fetch('/api/queue/add', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count: target, label, config: cfg }),
+    body: JSON.stringify({ count: target, label, config: cfg, port: selectedPort() }),
   });
   if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to queue screen swap'); }
 };
@@ -950,7 +958,9 @@ function addLog(line) {
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 function setRunningUI(running) {
-  document.getElementById('startBtn').disabled = running;
+  // Start stays enabled while running so you can launch a newly-added account's
+  // batches without stopping the accounts that are already going.
+  document.getElementById('startBtn').disabled = false;
   document.getElementById('stopBtn').disabled = !running;
 }
 function renderQueue(q, running) {
@@ -965,6 +975,7 @@ function renderQueue(q, running) {
     div.innerHTML = `
       <div class="top">
         <span class="lbl"><b>#${b.id}</b> ${b.label}</span>
+        ${b.account ? `<span class="badge" title="Runs on this account" style="background:var(--panel2)">👤 ${b.account}</span>` : ''}
         <span class="badge ${b.status}">${b.status}</span>
         ${canRemove ? `<button class="rm" title="Remove">✕</button>` : ''}
       </div>
@@ -991,45 +1002,101 @@ document.getElementById('addBatchBtn').onclick = async () => {
   const count = parseInt(val('count')) || 0;
   const r = await fetch('/api/queue/add', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ count, label: buildLabel(cfg, count), config: cfg }),
+    body: JSON.stringify({ count, label: buildLabel(cfg, count), config: cfg, port: selectedPort() }),
   });
   if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to add batch'); }
 };
 document.getElementById('clearBtn').onclick = () => fetch('/api/queue/clear', { method:'POST' });
 
-// --- status / connection ---
+// --- accounts / connection ---
 let osChoice = localStorage.getItem('osChoice') || (/Mac/i.test(navigator.platform) ? 'mac' : 'windows');
-let debugCommands = {};
-function renderCmd() {
-  const cmd = debugCommands[osChoice] || debugCommands.mac || '';
-  document.getElementById('cmd').textContent = cmd;
-  [...document.querySelectorAll('#osSeg button')].forEach(b => b.classList.toggle('active', b.dataset.os === osChoice));
+let accounts = [];   // [{ id, name, port, commands:{mac,windows}, connected }]
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// Which port newly-queued batches get assigned to (from the Queue selector).
+function selectedPort() {
+  const sel = document.getElementById('batchAccount');
+  return parseInt(sel && sel.value) || 9222;
+}
+
+function renderAccounts() {
+  // Connect Chrome card: one block per account.
+  const el = document.getElementById('accountsList');
+  el.innerHTML = accounts.map(a => {
+    const cmd = (a.commands && a.commands[osChoice]) || (a.commands && a.commands.mac) || '';
+    const dot = a.connected ? 'var(--good)' : 'var(--bad)';
+    const txt = a.connected ? '✓ reachable' : '✗ not running';
+    return `<div class="acct" data-id="${a.id}" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px">
+      <div class="flex" style="align-items:center;gap:8px;margin-bottom:6px">
+        <span class="status-dot" style="background:${dot}"></span>
+        <b>${esc(a.name)}</b>
+        <span class="muted" style="font-size:12px">port ${a.port} · ${txt}</span>
+        <div class="grow"></div>
+        <button class="copyAcct">Copy command</button>
+        ${accounts.length > 1 ? `<button class="rmAcct danger" title="Remove account">✕</button>` : ''}
+      </div>
+      <div class="cmdbox acctCmd">${esc(cmd)}</div>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.acct').forEach(row => {
+    const id = row.dataset.id;
+    const a = accounts.find(x => x.id === id);
+    row.querySelector('.copyAcct').onclick = (e) => {
+      navigator.clipboard.writeText(row.querySelector('.acctCmd').textContent);
+      const b = e.currentTarget; b.textContent = 'Copied!'; setTimeout(() => b.textContent = 'Copy command', 1200);
+    };
+    const rm = row.querySelector('.rmAcct');
+    if (rm) rm.onclick = async () => {
+      if (!confirm(`Remove account "${a.name}" (port ${a.port})? Its Chrome profile stays on disk.`)) return;
+      const r = await fetch('/api/accounts/remove', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+      if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to remove'); return; }
+      refreshAccounts();
+    };
+  });
   document.getElementById('connHint').textContent = osChoice === 'windows'
-    ? 'Fully quit Chrome, then run this in PowerShell / Command Prompt to launch the debug window. Log into Flow and open your project in it.'
-    : 'Fully quit Chrome, then run this in Terminal to launch the debug window. Log into Flow and open your project in it.';
+    ? 'Each account is its own debug Chrome (own port + profile) logged into a different Google Flow account. Run each command in PowerShell / Command Prompt, then log into Flow and open the project in that window.'
+    : 'Each account is its own debug Chrome (own port + profile) logged into a different Google Flow account. Run each command in Terminal, then log into Flow and open the project in that window.';
+
+  // Header pill: connected count.
+  const conn = accounts.filter(a => a.connected).length;
+  const dot = conn ? 'var(--good)' : 'var(--bad)';
+  document.getElementById('connPill').innerHTML =
+    `<span class="status-dot" style="background:${dot}"></span>${conn}/${accounts.length} Chrome${accounts.length===1?'':'s'} connected`;
+
+  // Queue selector: keep the current choice if still present.
+  const sel = document.getElementById('batchAccount');
+  const prev = sel.value;
+  sel.innerHTML = accounts.map(a =>
+    `<option value="${a.port}">${esc(a.name)} (port ${a.port})${a.connected ? ' ✓' : ''}</option>`).join('');
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+
+async function refreshAccounts() {
+  try {
+    const r = await fetch('/api/accounts'); const s = await r.json();
+    accounts = s.accounts || [];
+    renderAccounts();
+  } catch {}
 }
 document.getElementById('osSeg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   osChoice = b.dataset.os;
   localStorage.setItem('osChoice', osChoice);
-  renderCmd();
+  [...document.querySelectorAll('#osSeg button')].forEach(x => x.classList.toggle('active', x.dataset.os === osChoice));
+  renderAccounts();
 });
-async function refreshStatus() {
-  try {
-    const r = await fetch('/api/status'); const s = await r.json();
-    debugCommands = s.debugCommands || { mac: s.debugCommand, windows: s.debugCommand };
-    renderCmd();
-    const dot = s.chrome.connected ? 'var(--good)' : 'var(--bad)';
-    const txt = s.chrome.connected ? ('Connected · ' + (s.chrome.browser||'Chrome')) : 'Not connected';
-    document.getElementById('connPill').innerHTML = `<span class="status-dot" style="background:${dot}"></span>${txt}`;
-    document.getElementById('connText').textContent = s.chrome.connected ? '✓ Chrome debug port reachable' : '✗ launch Chrome with the command above';
-  } catch {}
-}
-document.getElementById('testConn').onclick = refreshStatus;
-document.getElementById('copyCmd').onclick = () => {
-  navigator.clipboard.writeText(document.getElementById('cmd').textContent);
-  document.getElementById('copyCmd').textContent = 'Copied!';
-  setTimeout(()=>document.getElementById('copyCmd').textContent='Copy command', 1200);
+document.getElementById('testConn').onclick = refreshAccounts;
+document.getElementById('addAcctBtn').onclick = async () => {
+  const name = document.getElementById('acctName').value.trim();
+  const port = parseInt(document.getElementById('acctPort').value);
+  if (!name) { alert('Give the account a name.'); return; }
+  if (!port) { alert('Give the account a debug port (e.g. 9223).'); return; }
+  const r = await fetch('/api/accounts/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, port }) });
+  if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to add account'); return; }
+  document.getElementById('acctName').value = '';
+  document.getElementById('acctPort').value = '';
+  refreshAccounts();
 };
 
 document.getElementById('startBtn').onclick = async () => {
@@ -1068,8 +1135,9 @@ document.getElementById('openScraperBtn').onclick = async (e) => {
   }
 };
 
-refreshStatus();
-setInterval(refreshStatus, 5000);
+[...document.querySelectorAll('#osSeg button')].forEach(x => x.classList.toggle('active', x.dataset.os === osChoice));
+refreshAccounts();
+setInterval(refreshAccounts, 5000);
 </script>
 </body>
 </html>
