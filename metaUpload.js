@@ -104,8 +104,21 @@ const DEFAULT_SLOTS = DEFAULT_REEL_SLOTS;
 const DEFAULT_TARGET_TZ = 'America/New_York'; // US Eastern (viral-in-USA default)
 const DEFAULT_PER_DAY = 3;
 const HARD_DAILY_MAX = 25; // sane ceiling; Meta throttles spammy posting.
-const PLATFORM = 'meta'; // which side of the shared ledger this script owns
-const HOME_URL = 'https://business.facebook.com/latest/home';
+// Ledger track + composer URL. Both are overridden in main() from CLI flags so
+// an Instagram-only pass (its own business/asset context) posts to the IG
+// composer and records under its own ledger track, independent of the FB pass.
+let PLATFORM = 'meta'; // which side of the shared ledger this script owns
+let COMPOSER_URL = 'https://business.facebook.com/latest/composer';
+let HOME_URL = 'https://business.facebook.com/latest/home';
+
+// Append ?asset_id=&business_id= so Business Suite opens the composer/home in the
+// RIGHT context (a specific Instagram profile or Page in a specific business).
+function withContext(baseUrl, assetId, businessId) {
+  const q = [];
+  if (assetId) q.push(`asset_id=${encodeURIComponent(assetId)}`);
+  if (businessId) q.push(`business_id=${encodeURIComponent(businessId)}`);
+  return q.length ? `${baseUrl}?${q.join('&')}` : baseUrl;
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -124,11 +137,22 @@ function parseArgs(argv) {
     dryRun: false, noCheck: false, deleteAfter: false, port: envPort,
     tz: process.env.META_TARGET_TZ || DEFAULT_TARGET_TZ,
     targets: ['fb', 'ig'],
+    // When the FB Page and IG live in SEPARATE Meta businesses (not linked for
+    // cross-post), you post to each from ITS OWN Business-Suite context. These
+    // pin the composer to a specific asset/business (e.g. the Instagram profile):
+    //   --asset-id=1190669380804844 --business-id=2524798384669244
+    // And --ledger names a separate ledger track so an IG-only pass isn't blocked
+    // by items already marked done for the FB pass (default 'meta' = FB/back-compat).
+    assetId: null, businessId: null, ledger: 'meta', assetName: null,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
     else if (a === '--no-check') args.noCheck = true;
     else if (a === '--delete-after') args.deleteAfter = true;
+    else if (a.startsWith('--asset-id=')) args.assetId = a.slice(11).trim() || null;
+    else if (a.startsWith('--business-id=')) args.businessId = a.slice(14).trim() || null;
+    else if (a.startsWith('--ledger=')) args.ledger = a.slice(9).trim() || 'meta';
+    else if (a.startsWith('--asset-name=')) args.assetName = a.slice(13).trim() || null;
     else if (a.startsWith('--start=')) args.start = a.slice(8);
     else if (a.startsWith('--tz=')) args.tz = a.slice(5).trim() || DEFAULT_TARGET_TZ;
     else if (a.startsWith('--port=')) args.port = Number(a.slice(7)) || envPort;
@@ -462,6 +486,44 @@ async function selectTargets(page, targets) {
   if (wantIg) await setSurface('Instagram', true);
 }
 
+// Switch Business Suite's ACTIVE business/asset via the top-left switcher. Deep-
+// linking the composer with ?business_id= does NOT work (renders a blank page) —
+// Business Suite only changes the active business through this UI action, which
+// sets the session. Call this once before scheduling so every composer nav lands
+// in the right context (e.g. the standalone Instagram profile). `name` is the
+// text shown in the switcher row (e.g. "upshift.productivity"). Best-effort.
+async function switchContext(page, name) {
+  await page.goto('https://business.facebook.com/latest/home', { waitUntil: 'networkidle2' }).catch(() => {});
+  await sleep(4000);
+  // open the switcher (top-left button)
+  await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top < 120 && r.left < 380; };
+    const b = Array.from(document.querySelectorAll('div[role="button"],[aria-haspopup],button')).filter(vis)
+      .find((x) => /upshift|business asset|switch|productivity/i.test((x.getAttribute('aria-label') || x.textContent || '')));
+    if (b) b.click();
+  });
+  await sleep(1800);
+  // type the asset name into the search box
+  const typed = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const inp = Array.from(document.querySelectorAll('input')).filter(vis).find((i) => /search for a business asset/i.test(i.placeholder || ''));
+    if (inp) { inp.focus(); return true; }
+    return false;
+  });
+  if (typed) { await page.keyboard.type(name, { delay: 30 }); await sleep(2200); }
+  // click the matching asset row
+  const picked = await page.evaluate((nm) => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const re = new RegExp(nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const row = Array.from(document.querySelectorAll('div[role="button"],[role="option"],[role="radio"],li,a')).filter(vis)
+      .find((x) => re.test(x.textContent || '') || /instagram profile/i.test(x.textContent || ''));
+    if (row) { row.click(); return (row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 50); }
+    return null;
+  }, name);
+  await sleep(4000);
+  return { picked, url: page.url() };
+}
+
 // ── One post ─────────────────────────────────────────────────────────────────
 async function uploadOne(page, entry, dryRun, targets) {
   const { item } = entry;
@@ -472,7 +534,7 @@ async function uploadOne(page, entry, dryRun, targets) {
 
   // 1) Open a fresh composer. The home page has a "Create post" entry; there's
   // also a direct composer route that avoids the calendar. Try direct first.
-  await page.goto('https://business.facebook.com/latest/composer', { waitUntil: 'networkidle2' }).catch(() => {});
+  await page.goto(COMPOSER_URL, { waitUntil: 'networkidle2' }).catch(() => {});
   await sleep(2500);
 
   // If the direct route didn't land on a composer, click "Create post" from home.
@@ -647,6 +709,14 @@ async function uploadOne(page, entry, dryRun, targets) {
   }
   if (!fs.existsSync(args.dir)) { console.error(`Folder not found: ${args.dir}`); process.exit(1); }
 
+  // Apply context/ledger overrides (e.g. an IG-only pass in its own business).
+  PLATFORM = args.ledger; // 'meta' (FB, default/back-compat) or e.g. 'meta-ig'
+  COMPOSER_URL = withContext('https://business.facebook.com/latest/composer', args.assetId, args.businessId);
+  HOME_URL = withContext('https://business.facebook.com/latest/home', args.assetId, args.businessId);
+  if (args.assetId || args.businessId) {
+    console.log(`Context: asset_id=${args.assetId || '-'} business_id=${args.businessId || '-'}  ledger track="${PLATFORM}"`);
+  }
+
   const ledger = ledgerStore.loadLedger(args.dir);
   const allItems = collectItems(args.dir);
   // Skip only items already scheduled ON META — an item on YouTube but not Meta
@@ -670,6 +740,15 @@ async function uploadOne(page, entry, dryRun, targets) {
   }
   await page.bringToFront();
   page.on('dialog', async (d) => { try { await d.accept(); } catch { /* ignore */ } });
+
+  // If an asset name is given, switch Business Suite's active context to it first
+  // (deep-linking the composer with a foreign business_id renders blank). This is
+  // how an IG-only pass lands in the standalone Instagram profile's composer.
+  if (args.assetName) {
+    console.log(`Switching Business Suite context to "${args.assetName}"…`);
+    const sw = await switchContext(page, args.assetName);
+    console.log(`  selected: ${sw.picked || '(no row matched — check --asset-name)'}  →  ${sw.url}`);
+  }
 
   let existing = [];
   if (!args.noCheck) {
