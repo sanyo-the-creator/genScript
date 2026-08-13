@@ -48,8 +48,40 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 const puppeteer = require('puppeteer-core');
+// Shared cross-platform ledger (YouTube + Meta) — see scheduleLedger.js. We only
+// ever touch the 'youtube' side here; Meta writes its own side into the same file.
+const ledgerStore = require('./scheduleLedger');
 
 const CHROME_DEBUG_URL = 'http://127.0.0.1:9222';
+
+// YouTube Studio only exposes the custom-thumbnail tile in the DETAILS step when
+// the viewport is NARROW (phone width). In the wide desktop layout that tile is
+// gated behind channel verification and usually absent; at a phone-width viewport
+// the SAME desktop Studio renders its compact layout which shows a Thumbnail tile
+// that accepts an image upload right away — this is exactly DevTools' device
+// toolbar in "responsive" mode, which is where this trick was found.
+//
+// IMPORTANT: we emulate ONLY the viewport + touch, NOT the User-Agent. If we also
+// spoof a phone UA / Client Hints, YouTube serves the actual MOBILE Studio site
+// (the "Try out the YouTube Studio app / CONTINUE TO STUDIO" interstitial, a
+// stripped-down app with no Create→Upload flow), which breaks everything. Keeping
+// the real desktop UA means Studio stays the full desktop web app — same ytcp-*
+// components and selectors — just rendered at phone width so the thumbnail
+// appears. See mobileEmulate.js for the full-phone version used elsewhere.
+const MOBILE_VIEWPORT = {
+  width: 414, height: 896, deviceScaleFactor: 2, // iPhone XR-ish (the size the trick was verified at)
+  isMobile: true, hasTouch: true, isLandscape: false,
+};
+
+// Put a page into narrow phone-WIDTH mode (viewport + touch only; UA untouched).
+// Best-effort: if the page navigated/closed mid-apply we carry on. The viewport
+// override persists on the page across navigations, so applying it once makes
+// every Studio page render at phone width for the whole run.
+async function emulateMobile(page) {
+  try {
+    await page.setViewport(MOBILE_VIEWPORT);
+  } catch { /* best-effort */ }
+}
 
 // Extract the VERY FIRST frame of a video to a temp .jpg (for use as the custom
 // thumbnail). Returns the jpg path, or null if ffmpeg isn't available / fails —
@@ -90,7 +122,7 @@ const DEFAULT_SLOTS = [
 const DEFAULT_TARGET_TZ = 'America/New_York'; // US Eastern (viral-in-USA default)
 const DEFAULT_PER_DAY = 3;
 const HARD_DAILY_MAX = 15; // YouTube's own rough daily upload ceiling — never exceed.
-const LEDGER_NAME = '.ytupload-done.json';
+const PLATFORM = 'youtube'; // which side of the shared ledger this script owns
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -102,11 +134,12 @@ function parseArgs(argv) {
   const args = {
     dir: null, start: null, perDay: DEFAULT_PER_DAY, slots: DEFAULT_SLOTS,
     dryRun: false, noCheck: false, deleteAfter: false, port: envPort,
-    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ, thumbnail: true,
+    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ, thumbnail: true, mobile: true,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
     else if (a === '--no-thumbnail') args.thumbnail = false; // don't set the first frame as the custom thumbnail
+    else if (a === '--no-mobile') args.mobile = false; // drive Studio as desktop (thumbnail tile usually won't appear)
     else if (a === '--no-check') args.noCheck = true; // skip reading the channel's existing schedule
     else if (a === '--delete-after') args.deleteAfter = true; // remove mp4+json from the folder once scheduled
     else if (a.startsWith('--start=')) args.start = a.slice(8);
@@ -252,15 +285,9 @@ function planSchedule(items, startDateStr, perDay, slots, existing = [], targetT
   return plan;
 }
 
-// ── Ledger (skip already-done on re-run) ─────────────────────────────────────
-function loadLedger(dir) {
-  const p = path.join(dir, LEDGER_NAME);
-  if (!fs.existsSync(p)) return {};
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return {}; }
-}
-function saveLedger(dir, ledger) {
-  fs.writeFileSync(path.join(dir, LEDGER_NAME), JSON.stringify(ledger, null, 2));
-}
+// ── Ledger (shared with Meta; see scheduleLedger.js) ─────────────────────────
+// loadLedger/saveLedger/isScheduled/markScheduled/allRequiredDone come from the
+// shared module so YouTube and Meta never clobber each other's side.
 
 // ── Puppeteer DOM helpers (mirrors automate.js style) ────────────────────────
 async function findElement(page, fn, ...args) {
@@ -643,13 +670,15 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   }
   if (!fs.existsSync(args.dir)) { console.error(`Folder not found: ${args.dir}`); process.exit(1); }
 
-  const ledger = loadLedger(args.dir);
+  const ledger = ledgerStore.loadLedger(args.dir);
   const allItems = collectItems(args.dir);
-  const items = allItems.filter((it) => !ledger[it.key]);
+  // Skip only videos already scheduled ON YOUTUBE — a video that's on Meta but not
+  // YouTube still needs its YouTube run (and vice-versa in metaUpload.js).
+  const items = allItems.filter((it) => !ledgerStore.isScheduled(ledger, it.key, PLATFORM));
   const skipped = allItems.length - items.length;
 
   if (!items.length) {
-    console.log(`Nothing to do — all ${allItems.length} video(s) already in the ledger (${LEDGER_NAME}).`);
+    console.log(`Nothing to do — all ${allItems.length} video(s) already scheduled on YouTube (${ledgerStore.LEDGER_NAME}).`);
     process.exit(0);
   }
 
@@ -664,6 +693,21 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
     process.exit(1);
   }
   await page.bringToFront();
+
+  // Put Studio into PHONE mode so the custom-thumbnail tile appears in the
+  // Details step (see MOBILE_DEVICE note above). The override persists on this
+  // page across the per-upload navigations, and we re-apply it to any new tab
+  // Studio spawns. --no-mobile opts out (desktop layout, thumbnails usually off).
+  if (args.mobile) {
+    await emulateMobile(page);
+    browser.on('targetcreated', async (t) => {
+      if (t.type() !== 'page') return;
+      const pg = await t.page().catch(() => null);
+      if (pg) await emulateMobile(pg);
+    });
+    console.log(`Studio rendered at phone width (${MOBILE_VIEWPORT.width}px, touch) — enables custom thumbnails.`);
+  }
+
   // Auto-accept any beforeunload / confirm dialogs (e.g. "Discard changes?" when
   // navigating away from a half-filled upload) so goto() never hangs on them.
   page.on('dialog', async (d) => { try { await d.accept(); } catch { /* ignore */ } });
@@ -713,15 +757,18 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
         try { await page.close(); } catch { /* already gone */ }
         break;
       }
-      ledger[entry.item.key] = { scheduledAt: result, title: entry.item.meta.title };
-      saveLedger(args.dir, ledger); // persist after every success, so a crash mid-batch loses nothing
-      // With --delete-after, remove the scheduled video + its sidecar from the
-      // folder so each character's inbox only ever holds not-yet-posted clips.
-      if (args.deleteAfter) {
+      ledgerStore.markScheduled(args.dir, ledger, entry.item.key, PLATFORM, { scheduledAt: result, title: entry.item.meta.title });
+      // With --delete-after, remove the video + sidecar ONLY once it's been
+      // scheduled on every platform it's due on (video ⇒ YouTube AND Meta). If
+      // Meta hasn't taken it yet, we keep the file so the Meta run can still find
+      // it — the ledger already records that YouTube is done.
+      if (args.deleteAfter && ledgerStore.allRequiredDone(ledger, entry.item.key, entry.item.video)) {
         for (const f of [entry.item.video, entry.item.video.replace(/\.(mp4|webm|mov)$/i, '.json')]) {
           try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) { console.warn(`   ! could not delete ${path.basename(f)}: ${e.message}`); }
         }
-        console.log(`   🗑  removed ${entry.item.key} from the folder`);
+        console.log(`   🗑  removed ${entry.item.key} (done on all platforms)`);
+      } else if (args.deleteAfter) {
+        console.log(`   ⏳ kept ${entry.item.key} — still due on Meta before it can be removed`);
       }
       ok++;
       await sleep(2000); // breathe between uploads
@@ -734,6 +781,6 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
     }
   }
 
-  console.log(`\nDone. Scheduled ${ok}, failed ${failed}. Ledger: ${path.join(args.dir, LEDGER_NAME)}`);
+  console.log(`\nDone. Scheduled ${ok}, failed ${failed}. Ledger: ${ledgerStore.ledgerPath(args.dir)}`);
   // Connected to your existing Chrome — leave it running.
 })();
