@@ -216,14 +216,36 @@ async function uploadOne(page, entry, dryRun) {
   }
   await sleep(1500);
 
-  // 4) Open the schedule picker (clock/calendar icon).
-  const schedBtn = await waitForElement(page, () =>
-    document.querySelector('[data-testid="scheduleOption"]') ||
-    Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /schedule/i.test(b.getAttribute('aria-label') || '')) || null,
-    { timeout: 8000, interval: 400 });
-  if (!schedBtn) throw new Error('Schedule (clock) button not found.');
-  await schedBtn.click();
-  await sleep(1500);
+  // 4) Open the schedule picker (clock/calendar icon). The button can still be
+  // DISABLED right after a video attaches (encoding not finalised — slow on a
+  // hotspot), and opening the picker sometimes needs a second click. So: wait for
+  // it to be enabled, click, and confirm the picker's <select>s actually rendered;
+  // retry the click if they didn't.
+  const findSched = () => document.querySelector('[data-testid="scheduleOption"]') ||
+    Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /schedule/i.test(b.getAttribute('aria-label') || '')) || null;
+  const schedState = () => page.evaluate(() => {
+    const b = document.querySelector('[data-testid="scheduleOption"]') ||
+      Array.from(document.querySelectorAll('button,[role="button"]')).find((x) => /schedule/i.test(x.getAttribute('aria-label') || '')) || null;
+    if (!b) return { found: false };
+    return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
+  });
+  const schedEnableDeadline = Date.now() + 300000; // encoding can be slow on a hotspot
+  let sst = await schedState();
+  while (Date.now() < schedEnableDeadline && (!sst.found || sst.disabled)) { await sleep(2500); sst = await schedState(); }
+  if (!sst.found) throw new Error('Schedule (clock) button not found.');
+  if (sst.disabled) throw new Error('Schedule button stayed disabled (video still encoding — slow connection?) — not scheduled.');
+
+  let selectsReady = false;
+  for (let attempt = 0; attempt < 3 && !selectsReady; attempt++) {
+    const schedBtn = await waitForElement(page, findSched, { timeout: 6000, interval: 400 });
+    if (schedBtn) { await schedBtn.click(); }
+    // wait for the picker's <select>s to render (6 of them)
+    const sel = await waitForElement(page, () => (document.querySelectorAll('select').length >= 6 ? document.querySelector('select') : null), { timeout: 6000, interval: 400 });
+    selectsReady = !!sel;
+    if (!selectsReady) await sleep(1500);
+  }
+  if (!selectsReady) throw new Error('Schedule picker did not open (no date/time selects) after clicking the clock.');
+  await sleep(800);
 
   // 5) Fill the picker's six <select>s. CRUCIAL: they have NO aria-labels/names —
   // they're id="SELECTOR_1".."6" in a FIXED order, so we target them BY INDEX:
