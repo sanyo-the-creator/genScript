@@ -225,28 +225,37 @@ async function uploadOne(page, entry, dryRun) {
   await schedBtn.click();
   await sleep(1500);
 
-  // 5) Fill the picker's <select>s (Month/Day/Year/Hour/Minute/AMPM). X labels them
-  // with aria-label / id — match loosely.
-  const setSelect = async (labelRe, value) => {
-    const ok = await page.evaluate((reSrc, val) => {
-      const re = new RegExp(reSrc, 'i');
-      const sel = Array.from(document.querySelectorAll('select')).find((s) => re.test(s.getAttribute('aria-label') || s.id || s.name || ''));
+  // 5) Fill the picker's six <select>s. CRUCIAL: they have NO aria-labels/names —
+  // they're id="SELECTOR_1".."6" in a FIXED order, so we target them BY INDEX:
+  //   0 Month(value 1-12)  1 Day(1-31)  2 Year  3 Hour(1-12)  4 Minute(0-59)  5 AM/PM(am/pm)
+  // (Matching by label silently set NOTHING before.) The selects are React-
+  // controlled, so we set the value via the native prototype setter + input/change
+  // events, otherwise React overwrites it back. Verified live 2026-08-14.
+  const setSelectAt = async (idx, value) => {
+    const ok = await page.evaluate((i, val) => {
+      const sel = Array.from(document.querySelectorAll('select'))[i];
       if (!sel) return false;
-      // choose the option whose value or text matches
-      const opt = Array.from(sel.options).find((o) => String(o.value) === String(val) || o.textContent.trim() === String(val) || Number(o.value) === Number(val));
+      const opt = Array.from(sel.options).find((o) => {
+        if (o.value === '') return false; // skip the empty placeholder — Number('')===0 would wrongly match minute/hour 0
+        return String(o.value).toLowerCase() === String(val).toLowerCase() ||
+          o.textContent.trim().toLowerCase() === String(val).toLowerCase() ||
+          Number(o.value) === Number(val);
+      });
       if (!opt) return false;
-      sel.value = opt.value;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(sel, opt.value);
+      sel.dispatchEvent(new Event('input', { bubbles: true }));
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
-    }, labelRe.source, value);
-    if (!ok) console.warn(`   ! schedule field ${labelRe} not set to ${value}.`);
+    }, idx, value);
+    if (!ok) console.warn(`   ! schedule select #${idx} not set to ${value}.`);
   };
-  await setSelect(/month/i, entry.mo);
-  await setSelect(/day/i, entry.d);
-  await setSelect(/year/i, entry.y);
-  await setSelect(/hour/i, entry.h12);
-  await setSelect(/minute/i, entry.min);
-  await setSelect(/(am|pm|meridiem)/i, entry.ampm);
+  await setSelectAt(0, entry.mo);
+  await setSelectAt(1, entry.d);
+  await setSelectAt(2, entry.y);
+  await setSelectAt(3, entry.h12);
+  await setSelectAt(4, entry.min);
+  await setSelectAt(5, entry.ampm);
   await sleep(600);
 
   // 6) Confirm the picker.
@@ -271,8 +280,25 @@ async function uploadOne(page, entry, dryRun) {
     Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /^\s*schedule\s*$/i.test(b.textContent || '')) || null,
     { timeout: 6000, interval: 400 });
   if (!post) throw new Error('Final Schedule button not found.');
+  // The final button stays DISABLED while the video is still encoding (slow on a
+  // hotspot). Wait until it's enabled before clicking, so we never silently fail.
+  const postEnabled = () => page.evaluate(() => {
+    const b = document.querySelector('[data-testid="tweetButton"]');
+    if (!b) return { found: false };
+    return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
+  });
+  const postDeadline = Date.now() + 300000; // up to 5 min for slow encodes
+  let psx = await postEnabled();
+  while (Date.now() < postDeadline && (!psx.found || psx.disabled)) { await sleep(2500); psx = await postEnabled(); }
+  if (psx.found && psx.disabled) throw new Error('X Schedule button stayed disabled (video still encoding — slow connection?) — not scheduled.');
   await post.click();
-  await sleep(3000);
+  await sleep(3500);
+  // Verify: the composer closes (navigates away from /compose/post) on success.
+  const left = !/compose\/post/i.test(page.url());
+  if (!left) {
+    const stillThere = await page.evaluate(() => !!document.querySelector('[data-testid="tweetButton"]'));
+    if (stillThere) throw new Error('X composer did not close after Schedule — post likely NOT scheduled.');
+  }
 
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel} → X`);
   return entry.date.toISOString();
