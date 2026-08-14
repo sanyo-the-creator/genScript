@@ -53,7 +53,7 @@ function passesFor(args) {
   const defs = {
     youtube: { label: 'YouTube',   script: 'ytUpload.js',   args: [args.dir, `--port=${port}`, ...p] },
     fb:      { label: 'Facebook',  script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=fb', '--no-check', ...p] },
-    ig:      { label: 'Instagram', script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=ig', `--asset-name=${igName}`, '--ledger=meta-ig', '--no-check', ...p] },
+    ig:      { label: 'Instagram', script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=ig', `--asset-name=${igName}`, '--ledger=meta-ig', '--reel', '--no-check', ...p] },
     x:       { label: 'X (Twitter)', script: 'xUpload.js',  args: [args.dir, `--port=${xPort}`, ...p] },
   };
   return args.platforms.map((k) => defs[k]).filter(Boolean);

@@ -109,6 +109,7 @@ const HARD_DAILY_MAX = 25; // sane ceiling; Meta throttles spammy posting.
 // composer and records under its own ledger track, independent of the FB pass.
 let PLATFORM = 'meta'; // which side of the shared ledger this script owns
 let COMPOSER_URL = 'https://business.facebook.com/latest/composer';
+let REEL_COMPOSER_URL = 'https://business.facebook.com/latest/reels_composer';
 let HOME_URL = 'https://business.facebook.com/latest/home';
 
 // Append ?asset_id=&business_id= so Business Suite opens the composer/home in the
@@ -144,6 +145,12 @@ function parseArgs(argv) {
     // And --ledger names a separate ledger track so an IG-only pass isn't blocked
     // by items already marked done for the FB pass (default 'meta' = FB/back-compat).
     assetId: null, businessId: null, ledger: 'meta', assetName: null,
+    // Route video items through the dedicated REEL composer instead of the generic
+    // post composer. REQUIRED for Instagram: a 9:16 vertical video is rejected by
+    // the post composer ("aspect ratio 4:5–16:9", Schedule stays disabled), but the
+    // reel composer accepts it. Facebook's post composer accepts 9:16, so this is
+    // opt-in per pass.
+    reel: false,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
@@ -153,6 +160,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--business-id=')) args.businessId = a.slice(14).trim() || null;
     else if (a.startsWith('--ledger=')) args.ledger = a.slice(9).trim() || 'meta';
     else if (a.startsWith('--asset-name=')) args.assetName = a.slice(13).trim() || null;
+    else if (a === '--reel') args.reel = true; // video items go via the Reel composer (needed for IG)
     else if (a.startsWith('--start=')) args.start = a.slice(8);
     else if (a.startsWith('--tz=')) args.tz = a.slice(5).trim() || DEFAULT_TARGET_TZ;
     else if (a.startsWith('--port=')) args.port = Number(a.slice(7)) || envPort;
@@ -524,6 +532,130 @@ async function switchContext(page, name) {
   return { picked, url: page.url() };
 }
 
+// ── One REEL (Instagram) ─────────────────────────────────────────────────────
+// 9:16 vertical video is rejected by the generic post composer, so IG videos go
+// through the dedicated Reel composer (/latest/reels_composer): a 3-step wizard
+// Create → Edit → Share. Caption on step 1, then Next → Next → the Share step,
+// where the "Schedule" segment reveals the SAME mm/dd/yyyy + hours/minutes/meridiem
+// controls as the post composer. Verified live on upshift.productivity 2026-08-14.
+async function uploadReel(page, entry, dryRun) {
+  const { item } = entry;
+  const caption = item.meta.caption;
+  console.log(`\n▶ ${item.key} [reel]`);
+  console.log(`   caption: ${caption.split('\n')[0].slice(0, 80)}`);
+  console.log(`   when   : ${entry.dateLabel} ${entry.timeLabel} → ig(reel)`);
+
+  await page.goto(REEL_COMPOSER_URL, { waitUntil: 'networkidle2' }).catch(() => {});
+  await sleep(5000);
+
+  // 1) Add Video (native file chooser) → wait for the 100% upload marker.
+  const addBtn = await waitForText(page, 'add video', { timeout: 12000, interval: 400 });
+  if (!addBtn) throw new Error('Reel composer "Add Video" not found.');
+  try {
+    const [chooser] = await Promise.all([page.waitForFileChooser({ timeout: 8000 }), addBtn.click()]);
+    await chooser.accept([item.media]);
+  } catch (e) { throw new Error(`Reel file chooser never opened (${(e.message || e).toString().split('\n')[0]}).`); }
+  console.log('   • video handed to reel composer, waiting for 100%…');
+  const upDeadline = Date.now() + 180000;
+  await sleep(3000);
+  while (Date.now() < upDeadline) { if (await page.evaluate(() => /100%/.test(document.body.innerText || ''))) break; await sleep(2000); }
+  await sleep(2500);
+
+  // 2) Caption ("Describe your reel…").
+  const capBox = await waitForElement(page, () => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const boxes = Array.from(document.querySelectorAll('[contenteditable="true"],textarea')).filter(vis);
+    return boxes.find((b) => /describe your reel|caption|what/i.test(b.getAttribute('aria-label') || b.getAttribute('aria-placeholder') || b.getAttribute('placeholder') || '')) || boxes[0] || null;
+  }, { timeout: 8000, interval: 400 });
+  if (capBox) { await capBox.click(); await sleep(150); await page.keyboard.type(caption, { delay: 6 }); await capBox.dispose(); await sleep(400); }
+
+  // 3) Next (Create→Edit) then Next (Edit→Share).
+  const clickNext = async (which) => {
+    const n = await waitForElement(page, () => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      return Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+        .find((b) => /^\s*next\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim())) || null;
+    }, { timeout: 10000, interval: 400 });
+    if (!n) throw new Error(`Reel "Next" (${which}) not found.`);
+    await n.click(); await sleep(3800);
+  };
+  await clickNext('to Edit');
+  await clickNext('to Share');
+
+  // 4) Share step: choose the "Schedule" segment to reveal date/time.
+  const schedSeg = await waitForText(page, '^schedule$', { timeout: 8000, interval: 400 });
+  if (!schedSeg) throw new Error('Reel "Schedule" option not found on the Share step.');
+  await schedSeg.click();
+  await sleep(2000);
+
+  // 5) Date (numeric mm/dd/yyyy, focus via JS) + the three time spinbuttons — the
+  // SAME controls/mechanics as the post composer.
+  const dateNumeric = `${pad(entry.date.getMonth() + 1)}/${pad(entry.date.getDate())}/${entry.date.getFullYear()}`;
+  const tm = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(entry.timeLabel);
+  const dateFocused = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const i = Array.from(document.querySelectorAll('input')).filter(vis).find((x) => /mm\/dd\/yyyy/i.test(x.placeholder || ''));
+    if (!i) return false; i.focus(); return true;
+  });
+  if (dateFocused) {
+    await sleep(150);
+    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control'); await sleep(150);
+    await page.keyboard.type(dateNumeric, { delay: 60 }); await sleep(400);
+  } else console.warn('   ! reel date field not found.');
+  if (tm) { await setSpin(page, 'hours', tm[1]); await setSpin(page, 'minutes', tm[2]); await setMeridiem(page, tm[3].toUpperCase()); }
+
+  const conf = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const ins = Array.from(document.querySelectorAll('input')).filter(vis);
+    const d = ins.find((i) => /mm\/dd\/yyyy/i.test(i.placeholder || ''));
+    const g = (a) => { const i = ins.find((x) => (x.getAttribute('aria-label') || '') === a); return i ? (i.getAttribute('aria-valuetext') || i.getAttribute('aria-valuenow') || '?') : '?'; };
+    return { date: d ? d.value : '?', time: `${g('hours')}:${g('minutes')} ${g('meridiem')}` };
+  });
+  console.log(`   • reel picker: date="${conf.date}" time="${conf.time}"`);
+
+  if (dryRun) { console.log('   ✓ DRY RUN — reel filled; NOT sharing.'); return 'dry-run'; }
+
+  // 6) Final primary button (footer). The Share step has same-named controls near
+  // the top (the "Share now / Schedule" segment), so we target the LOWEST on-page
+  // button whose exact label is "Share" or "Schedule" — that's the footer action.
+  // With "Schedule" selected it schedules at the chosen time. Wait until enabled.
+  const footerPrimary = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const btns = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .filter((b) => /^\s*(schedule|share)\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()));
+    if (!btns.length) return { found: false };
+    const b = btns.sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top).pop();
+    return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true, label: (b.textContent || '').trim() };
+  });
+  const clickFooterPrimary = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const btns = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .filter((b) => /^\s*(schedule|share)\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()));
+    if (!btns.length) return false;
+    const b = btns.sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top).pop();
+    b.click(); return true;
+  });
+  const dl = Date.now() + 120000;
+  let bs = await footerPrimary();
+  while (Date.now() < dl && (!bs.found || bs.disabled)) { await sleep(2000); bs = await footerPrimary(); }
+  if (!bs.found) throw new Error('Reel final Share/Schedule button not found.');
+  if (bs.disabled) throw new Error('Reel Share/Schedule stayed disabled — not scheduled.');
+  await clickFooterPrimary();
+  // Success = the composer navigates AWAY from /reels_composer (to the content
+  // page). Don't test body text — "Create reel" is a persistent toolbar button, so
+  // it's a false-negative. Poll the URL.
+  const leftDeadline = Date.now() + 25000;
+  let left = false;
+  while (Date.now() < leftDeadline) {
+    await sleep(1500);
+    if (!/reels_composer/i.test(page.url())) { left = true; break; }
+  }
+  if (!left) throw new Error('Reel did not leave the composer after Share — likely NOT scheduled.');
+
+  console.log(`   ✓ Scheduled reel for ${entry.dateLabel} ${entry.timeLabel} → ig`);
+  return entry.date.toISOString();
+}
+
 // ── One post ─────────────────────────────────────────────────────────────────
 async function uploadOne(page, entry, dryRun, targets) {
   const { item } = entry;
@@ -691,10 +823,37 @@ async function uploadOne(page, entry, dryRun, targets) {
     return 'dry-run';
   }
 
-  const doneBtn = await waitForText(page, '^schedule$|schedule post', { timeout: 8000, interval: 400 });
-  if (!doneBtn) throw new Error('Could not find the final Schedule button.');
-  await doneBtn.click();
+  // Wait for the final Schedule button to be ENABLED. It stays disabled while media
+  // is still processing (or on a validation error like a bad aspect ratio) —
+  // clicking a disabled button silently does nothing, which previously produced a
+  // FALSE success. Poll until enabled; if it never enables, fail loudly.
+  const scheduleState = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .find((x) => /^\s*schedule\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+    if (!b) return { found: false };
+    return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
+  });
+  const schedDeadline = Date.now() + 120000;
+  let ss = await scheduleState();
+  while (Date.now() < schedDeadline && (!ss.found || ss.disabled)) { await sleep(2000); ss = await scheduleState(); }
+  if (!ss.found) throw new Error('Could not find the final Schedule button.');
+  if (ss.disabled) {
+    // Surface WHY (aspect ratio is the common one for 9:16 in the post composer).
+    const why = await page.evaluate(() => {
+      const t = document.body.innerText || '';
+      const m = t.match(/aspect ratio[^.]*\.|still processing|something went wrong|[^.\n]*required[^.\n]*/i);
+      return m ? m[0].trim().slice(0, 120) : '';
+    });
+    throw new Error(`Schedule button stayed disabled — NOT scheduled${why ? ` (${why})` : ''}.`);
+  }
+  const doneBtn = await waitForText(page, '^schedule$|schedule post', { timeout: 4000, interval: 300 });
+  if (doneBtn) await doneBtn.click();
   await sleep(3500);
+  // Verify it actually took: the composer closes on success.
+  const stillOpen = await page.evaluate(() => /Post to|Create post/i.test(document.body.innerText || '') &&
+    !!Array.from(document.querySelectorAll('div[role="button"],button')).find((b) => /^\s*schedule\s*$/i.test((b.textContent || '').trim())));
+  if (stillOpen) throw new Error('Composer did not close after Schedule — post likely NOT scheduled.');
 
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel} → ${targets.join('+')}`);
   return entry.date.toISOString();
@@ -712,6 +871,7 @@ async function uploadOne(page, entry, dryRun, targets) {
   // Apply context/ledger overrides (e.g. an IG-only pass in its own business).
   PLATFORM = args.ledger; // 'meta' (FB, default/back-compat) or e.g. 'meta-ig'
   COMPOSER_URL = withContext('https://business.facebook.com/latest/composer', args.assetId, args.businessId);
+  REEL_COMPOSER_URL = withContext('https://business.facebook.com/latest/reels_composer', args.assetId, args.businessId);
   HOME_URL = withContext('https://business.facebook.com/latest/home', args.assetId, args.businessId);
   if (args.assetId || args.businessId) {
     console.log(`Context: asset_id=${args.assetId || '-'} business_id=${args.businessId || '-'}  ledger track="${PLATFORM}"`);
@@ -818,7 +978,12 @@ async function uploadOne(page, entry, dryRun, targets) {
   let ok = 0, failed = 0;
   for (const entry of plan) {
     try {
-      const result = await uploadOne(page, entry, args.dryRun, args.targets);
+      // Video → Reel composer when --reel is set (required for IG's 9:16). Images
+      // and text-only posts always use the regular post composer.
+      const isVideo = ledgerStore.VIDEO_RE.test(entry.item.media || '');
+      const result = (args.reel && isVideo)
+        ? await uploadReel(page, entry, args.dryRun)
+        : await uploadOne(page, entry, args.dryRun, args.targets);
       if (result === 'dry-run') {
         console.log('\nDry run complete for the first item. Watch the composer window — if the surfaces/caption/date/time look right, re-run without --dry-run.');
         break;
