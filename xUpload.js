@@ -233,13 +233,22 @@ async function uploadOne(page, entry, dryRun) {
   if (!fileInput) throw new Error('Media file input not found.');
   await fileInput.uploadFile(item.media);
   console.log('   • media handed to X, waiting for it to process…');
-  // Wait for the media to finish processing (a progress bar shows while encoding).
-  const ingestDeadline = Date.now() + 120000;
+  // Wait until the media is TRULY ready before scheduling: X shows a progress bar
+  // while encoding and then a "<file>: Ready" label. Requiring "Ready" (not just
+  // the bar being gone) avoids scheduling a half-encoded clip — which X silently
+  // rejects (the post stays in the composer). On a slow/hotspot upload this can
+  // take a while; if it never becomes ready that's a connection problem.
+  const ingestDeadline = Date.now() + 300000; // up to 5 min for slow encodes
   await sleep(4000);
   while (Date.now() < ingestDeadline) {
-    const busy = await page.evaluate(() => !!document.querySelector('[role="progressbar"], [data-testid="progressBar"]'));
-    if (!busy) break;
-    await sleep(2000);
+    const state = await page.evaluate(() => {
+      const busy = !!document.querySelector('[role="progressbar"], [data-testid="progressBar"]');
+      const t = document.body.innerText || '';
+      const ready = /:\s*Ready\b/i.test(t) || /\bReady\b/i.test(t);
+      return { busy, ready };
+    });
+    if (!state.busy && state.ready) break;
+    await sleep(2500);
   }
   await sleep(1500);
 
