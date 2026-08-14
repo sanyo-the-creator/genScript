@@ -134,12 +134,17 @@ function parseArgs(argv) {
   const args = {
     dir: null, start: null, perDay: DEFAULT_PER_DAY, slots: DEFAULT_SLOTS,
     dryRun: false, noCheck: false, deleteAfter: false, port: envPort,
-    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ, thumbnail: true, mobile: true,
+    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ, thumbnail: true, mobile: false,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
     else if (a === '--no-thumbnail') args.thumbnail = false; // don't set the first frame as the custom thumbnail
-    else if (a === '--no-mobile') args.mobile = false; // drive Studio as desktop (thumbnail tile usually won't appear)
+    // Phone-width viewport exposes the custom-thumbnail tile for UNVERIFIED channels,
+    // but it destabilises the final Schedule click, so it's OFF by default now —
+    // scheduling reliability comes first. Opt in with --mobile if you specifically
+    // need the thumbnail trick and can tolerate the flakier schedule step.
+    else if (a === '--mobile') args.mobile = true;
+    else if (a === '--no-mobile') args.mobile = false; // (kept for back-compat; already the default)
     else if (a === '--no-check') args.noCheck = true; // skip reading the channel's existing schedule
     else if (a === '--delete-after') args.deleteAfter = true; // remove mp4+json from the folder once scheduled
     else if (a.startsWith('--start=')) args.start = a.slice(8);
@@ -306,6 +311,20 @@ async function waitForElement(page, fn, { timeout = 15000, interval = 400, args 
     await sleep(interval);
   }
   return null;
+}
+
+// Click a handle ROBUSTLY. At the phone-width viewport (used to expose the custom
+// thumbnail) the upload dialog's footer buttons — especially the final
+// "Schedule"/Done — render in a sticky mobile footer that Puppeteer's
+// coordinate-based click can't reach ("Node is either not clickable or not an
+// Element"). So we scroll it into view and, if the real click still fails,
+// dispatch a native in-page click, which works regardless of viewport position.
+async function clickHandle(handle) {
+  try { await handle.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'center' })); } catch { /* detached */ }
+  await sleep(150);
+  try { await handle.click(); return; }
+  catch { /* fall through to a native click */ }
+  await handle.evaluate((el) => (el.click ? el.click() : el.dispatchEvent(new MouseEvent('click', { bubbles: true }))));
 }
 
 // Clear a field (contenteditable OR <input>) and type fresh text. Studio
@@ -647,6 +666,24 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
     Array.from(document.querySelectorAll('ytcp-button')).find((b) => /^\s*schedule\s*$/i.test(b.textContent || '')),
     { timeout: 6000 });
   if (!doneBtn) throw new Error('Could not find the final Schedule/Done button.');
+
+  // The Schedule button is DISABLED until YouTube finishes ingesting the upload
+  // ("Upload complete… Processing will begin shortly", 0%). Puppeteer's .click()
+  // on a disabled element throws "Node is either not clickable or not an Element"
+  // — which is exactly what silently scheduled NOTHING across a whole batch. So
+  // wait until it's enabled before clicking (processing can take a while).
+  const doneEnabled = () => page.evaluate(() => {
+    const d = document.querySelector('#done-button');
+    if (!d) return { found: false };
+    const inner = d.querySelector('button');
+    const disabled = d.getAttribute('aria-disabled') === 'true' || (inner && inner.disabled);
+    return { found: true, disabled: !!disabled };
+  });
+  const enableDeadline = Date.now() + 300000; // up to 5 min — slow/hotspot uploads process slowly
+  let ds = await doneEnabled();
+  while (Date.now() < enableDeadline && (!ds.found || ds.disabled)) { await sleep(2500); ds = await doneEnabled(); }
+  if (!ds.found) throw new Error('Could not find the final Schedule/Done button.');
+  if (ds.disabled) throw new Error('Schedule button stayed disabled after 5 min (video still processing — slow connection?) — not scheduled.');
   await doneBtn.click();
 
   // Wait for the confirmation dialog, then close it.
