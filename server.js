@@ -82,6 +82,8 @@ const SCRAPER_URL = `http://127.0.0.1:${SCRAPER_PORT}`;
 // from its folder (--delete-after). Characters persist in yt_characters.json.
 const YT_CHARACTERS_FILE = path.join(__dirname, 'yt_characters.json');
 const YT_UPLOAD_SCRIPT = path.join(__dirname, 'ytUpload.js');
+const META_UPLOAD_SCRIPT = path.join(__dirname, 'metaUpload.js');
+const MOBILE_EMULATOR_SCRIPT = path.join(__dirname, 'mobileEmulate.js');
 
 // ---------------------------------------------------------------------------
 // Phone Screen Swap (POV) tool — source folders
@@ -183,6 +185,9 @@ function pushState() {
 // Chrome (unique port), so their ytUpload.js processes don't collide. We track
 // every live run in a map keyed by character id.
 const ytRuns = new Map(); // characterId -> { child, name, port }
+// Live phone-emulation helpers, keyed by port, so we don't stack a second one on
+// repeat clicks. Each exits by itself when its Chrome closes.
+const emulatorRuns = new Map(); // port -> child
 function ytRunningIds() { return [...ytRuns.keys()]; }
 function ytSnapshot() { return { runningIds: ytRunningIds(), characters: ytCharactersView() }; }
 
@@ -196,6 +201,22 @@ function saveCharacters(list) {
 function countPending(folder) {
   try { return fs.readdirSync(folder).filter(f => /\.(mp4|webm|mov)$/i.test(f)).length; }
   catch { return 0; }
+}
+// Meta also posts images and text-only posts (a .json with no sibling media), so
+// its "pending" count is broader than the video-only YouTube count.
+function countPendingMeta(folder) {
+  try {
+    const files = fs.readdirSync(folder);
+    const media = files.filter(f => /\.(mp4|webm|mov|jpg|jpeg|png)$/i.test(f));
+    const mediaBases = new Set(media.map(f => f.replace(/\.(mp4|webm|mov|jpg|jpeg|png)$/i, '')));
+    // Text posts: .json sidecars (other than the ledger) with no paired media.
+    const textPosts = files.filter(f => /\.json$/i.test(f) && f !== '.schedule-done.json'
+      && !mediaBases.has(f.replace(/\.json$/i, '')));
+    return media.length + textPosts.length;
+  } catch { return 0; }
+}
+function countPendingFor(folder, platform) {
+  return platform === 'meta' ? countPendingMeta(folder) : countPending(folder);
 }
 function ytCharactersView() {
   return loadCharacters().map(c => ({ ...c, pending: countPending(c.folder), folderExists: fs.existsSync(c.folder) }));
@@ -1173,7 +1194,11 @@ async function isDebugChromeUp(port) {
 // Spawn debug Chrome for `port` (opening `openUrl`) and wait until its debug
 // endpoint answers. Resolves once reachable; rejects if Chrome is missing or the
 // port never comes up.
-async function launchDebugChrome(port, openUrl) {
+// A recent Android Chrome UA — makes sites (Instagram/Business Suite) serve their
+// mobile experience, which permits actions the desktop web sometimes hides.
+const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+async function launchDebugChrome(port, openUrl, opts = {}) {
+  const { mobile = false } = opts;
   const exe = findChromeExe();
   if (!exe) throw new Error('Chrome not found in the usual install locations — launch it manually with the command on the card.');
   const args = [
@@ -1184,6 +1209,12 @@ async function launchDebugChrome(port, openUrl) {
     '--disable-renderer-backgrounding',
     '--no-first-run', '--no-default-browser-check',
   ];
+  // Phone emulation: a mobile user-agent + a phone-sized window. (Chrome has no
+  // persistent touch/device flag from the command line, so this is UA + size —
+  // enough to get the mobile site and a phone-shaped window.)
+  if (mobile) {
+    args.push(`--user-agent=${MOBILE_UA}`, '--window-size=390,844');
+  }
   if (openUrl) args.push(openUrl);
   const child = spawn(exe, args, { detached: true, stdio: 'ignore' });
   child.on('error', () => { /* surfaced by the readiness poll below */ });
@@ -1629,6 +1660,16 @@ const server = http.createServer(async (req, res) => {
       const name = String(p.name || '').trim();
       const folder = String(p.folder || '').trim();
       const port = parseInt(p.port) || 9222;
+      // Per-platform usernames/handles — shown as badges in the UI for an at-a-glance
+      // overview of which account each character posts to on every network. Purely
+      // informational (the drivers use the logged-in debug Chrome, not these), so we
+      // just sanitise to trimmed strings and drop the leading @.
+      const HANDLE_KEYS = ['youtube', 'facebook', 'instagram', 'x', 'threads'];
+      const handles = {};
+      for (const k of HANDLE_KEYS) {
+        const v = String((p.handles && p.handles[k]) || '').trim().replace(/^@+/, '');
+        if (v) handles[k] = v.slice(0, 64);
+      }
       if (!name) return sendJson(res, 400, { error: 'Name is required.' });
       if (!folder) return sendJson(res, 400, { error: 'Folder path is required.' });
       const list = loadCharacters();
@@ -1638,9 +1679,9 @@ const server = http.createServer(async (req, res) => {
       if (p.id) {
         const c = list.find(x => x.id === p.id);
         if (!c) return sendJson(res, 404, { error: 'Character not found.' });
-        Object.assign(c, { name, folder, port });
+        Object.assign(c, { name, folder, port, handles });
       } else {
-        list.push({ id: 'c' + Date.now().toString(36), name, folder, port });
+        list.push({ id: 'c' + Date.now().toString(36), name, folder, port, handles });
       }
       saveCharacters(list);
       broadcastYt();
@@ -1663,18 +1704,31 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Run scheduling for one character. Body: { id, perDay?, start?, dryRun?, tz? }.
-  // Parallel-friendly: many characters can run at once (each on its own port).
+  // Run scheduling for one character. Body: { id, platform?, perDay?, start?,
+  // dryRun?, tz?, targets? }. platform: 'youtube' (default) | 'meta'. One run per
+  // character at a time (both platforms drive the SAME debug Chrome on its port,
+  // so they must not overlap); different characters still run in parallel.
   if (req.method === 'POST' && url.pathname === '/api/yt/schedule') {
     let body = '';
     req.on('data', c => (body += c));
     req.on('end', async () => {
       let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      const platform = p.platform === 'meta' ? 'meta' : 'youtube';
+      const isMeta = platform === 'meta';
+      const label = isMeta ? 'Meta' : 'YouTube';
       const c = loadCharacters().find(x => x.id === p.id);
       if (!c) return sendJson(res, 404, { error: 'Character not found.' });
       if (ytRuns.has(c.id)) return sendJson(res, 409, { error: `"${c.name}" is already scheduling.` });
       if (!fs.existsSync(c.folder)) return sendJson(res, 400, { error: 'Folder does not exist: ' + c.folder });
-      if (countPending(c.folder) === 0) return sendJson(res, 400, { error: 'No videos in this character\'s folder.' });
+      if (countPendingFor(c.folder, platform) === 0) {
+        return sendJson(res, 400, { error: isMeta
+          ? 'No posts (video/image/text) in this character\'s folder.'
+          : 'No videos in this character\'s folder.' });
+      }
+      // The launch/login target differs per platform: YouTube Studio vs Meta
+      // Business Suite. The SAME per-port Chrome profile can be signed into both,
+      // so one character/port serves both platforms — only the opened URL changes.
+      const openUrl = isMeta ? 'https://business.facebook.com/latest/home' : 'https://studio.youtube.com';
       // Confirm this character's debug Chrome is up on its port — and, when the
       // character is already logged in, auto-launch it (no cmd copy needed).
       // Track whether WE launched it, so we only close what we opened when the
@@ -1683,8 +1737,8 @@ const server = http.createServer(async (req, res) => {
       if (!(await isDebugChromeUp(c.port))) {
         if (p.autoLaunch) {
           try {
-            log(`▶ YouTube: launching debug Chrome for "${c.name}" on port ${c.port} → studio.youtube.com…`);
-            await launchDebugChrome(c.port, 'https://studio.youtube.com');
+            log(`▶ ${label}: launching debug Chrome for "${c.name}" on port ${c.port} → ${openUrl}…`);
+            await launchDebugChrome(c.port, openUrl);
             launchedByUs = true;
             log(`  Chrome ready on port ${c.port}.`);
           } catch (e) {
@@ -1694,19 +1748,31 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, 400, { error: `No debug Chrome on port ${c.port}. Tick "already logged in" to auto-launch it, or launch this character's Chrome manually first.` });
         }
       }
-      const perDay = Math.max(1, Math.min(15, parseInt(p.perDay) || 3));
-      // Thumbnails are skipped: Studio's custom-thumbnail tile isn't reliably
-      // found (and these channels may lack the privilege), so setting it only
-      // slows each upload and logs a warning. Always run --no-thumbnail.
-      const cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`, '--no-thumbnail'];
+      const maxPerDay = isMeta ? 25 : 15;
+      const perDay = Math.max(1, Math.min(maxPerDay, parseInt(p.perDay) || 3));
+      let cliArgs;
+      if (isMeta) {
+        const targets = Array.isArray(p.targets) && p.targets.length ? p.targets.join(',') : 'fb,ig';
+        // Reels and posts get their own daily caps (default to the shared perDay).
+        const clampMeta = v => Math.max(1, Math.min(25, parseInt(v) || perDay));
+        const reelsPerDay = clampMeta(p.reelsPerDay);
+        const postsPerDay = clampMeta(p.postsPerDay);
+        cliArgs = [META_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`,
+          `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`, `--targets=${targets}`];
+      } else {
+        // Thumbnails are skipped: Studio's custom-thumbnail tile isn't reliably
+        // found (and these channels may lack the privilege), so setting it only
+        // slows each upload and logs a warning. Always run --no-thumbnail.
+        cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`, '--no-thumbnail'];
+      }
       if (p.start) cliArgs.push(`--start=${p.start}`);
       if (p.tz) cliArgs.push(`--tz=${p.tz}`); // target publish timezone (default US Eastern)
       if (p.dryRun) cliArgs.push('--dry-run'); else cliArgs.push('--delete-after');
 
       const child = spawn(process.execPath, cliArgs, { cwd: __dirname });
-      ytRuns.set(c.id, { child, name: c.name, port: c.port });
+      ytRuns.set(c.id, { child, name: c.name, port: c.port, platform });
       broadcastYt();
-      log(`▶ YouTube: scheduling "${c.name}" (port ${c.port}, ${perDay}/day)${p.dryRun ? ' [DRY RUN]' : ''}…`);
+      log(`▶ ${label}: scheduling "${c.name}" (port ${c.port}, ${perDay}/day)${p.dryRun ? ' [DRY RUN]' : ''}…`);
       sendJson(res, 200, { ok: true });
 
       // Prefix every line with the character name so parallel runs stay readable
@@ -1721,7 +1787,7 @@ const server = http.createServer(async (req, res) => {
       child.stdout.on('data', pipe);
       child.stderr.on('data', pipe);
       child.on('close', async (code) => {
-        log(`■ YouTube run for "${c.name}" finished (exit ${code}).`);
+        log(`■ ${label} run for "${c.name}" finished (exit ${code}).`);
         ytRuns.delete(c.id); broadcastYt();
         // The run is over (whether it completed, hit a limit, or failed) — if we
         // auto-launched this character's Chrome, close it now so the window goes
@@ -1733,9 +1799,58 @@ const server = http.createServer(async (req, res) => {
         }
       });
       child.on('error', (e) => {
-        log(`✗ YouTube run for "${c.name}" failed to start: ${e.message}`);
+        log(`✗ ${label} run for "${c.name}" failed to start: ${e.message}`);
         ytRuns.delete(c.id); broadcastYt();
       });
+    });
+    return;
+  }
+
+  // Open a character's debug Chrome ON DEMAND (not tied to scheduling). Body:
+  // { id, mobile?, url? }. Ensures the per-port Chrome is up (launching it if
+  // needed, so its logins persist), then — for phone mode — spawns a resident
+  // CDP emulator (mobileEmulate.js) that opens a fresh phone-shaped tab and holds
+  // full device emulation (UA + Client Hints + touch + metrics) on it and any new
+  // tab. Works even if a desktop Chrome was ALREADY open on the port: it attaches
+  // and adds a mobile tab without disturbing your existing tabs.
+  if (req.method === 'POST' && url.pathname === '/api/yt/open-chrome') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', async () => {
+      let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      const c = loadCharacters().find(x => x.id === p.id);
+      if (!c) return sendJson(res, 404, { error: 'Character not found.' });
+      const mobile = p.mobile !== false; // default to phone emulation (that's the point of this button)
+      const startUrl = typeof p.url === 'string' && p.url ? p.url : 'about:blank';
+      try {
+        // 1) Make sure Chrome is up on this port (plain launch — CDP does the
+        //    emulation, so no UA flag needed here).
+        if (!(await isDebugChromeUp(c.port))) {
+          log(`▶ Launching debug Chrome for "${c.name}" on port ${c.port}…`);
+          await launchDebugChrome(c.port, mobile ? null : startUrl);
+          log(`  Chrome ready on port ${c.port}.`);
+        } else {
+          log(`● Chrome for "${c.name}" already up on port ${c.port} — attaching…`);
+        }
+        // 2) Desktop mode: nothing more to do, the window is open.
+        if (!mobile) return sendJson(res, 200, { ok: true });
+        // 3) Phone mode: (re)start the emulator for this port if not already live.
+        const existing = emulatorRuns.get(c.port);
+        if (existing) {
+          log(`  Phone emulation already active on port ${c.port} — opening another mobile tab.`);
+        }
+        const child = spawn(process.execPath, [MOBILE_EMULATOR_SCRIPT, String(c.port), startUrl], { cwd: __dirname });
+        emulatorRuns.set(c.port, child);
+        child.stdout.on('data', b => { try { String(b).split(/\r?\n/).forEach(l => l.trim() && log(`  [emulate ${c.port}] ${l.trim()}`)); } catch {} });
+        child.stderr.on('data', b => { try { String(b).split(/\r?\n/).forEach(l => l.trim() && log(`  [emulate ${c.port}] ${l.trim()}`)); } catch {} });
+        child.on('close', () => { if (emulatorRuns.get(c.port) === child) emulatorRuns.delete(c.port); });
+        child.on('error', e => log(`✗ Emulator for port ${c.port} failed to start: ${e.message}`));
+        log(`▶ Phone-emulated Chrome ready for "${c.name}" (port ${c.port}).`);
+        sendJson(res, 200, { ok: true, mobile: true });
+      } catch (e) {
+        log(`✗ Could not open Chrome for "${c.name}": ${e.message}`);
+        sendJson(res, 400, { error: e.message || 'Failed to open Chrome.' });
+      }
     });
     return;
   }

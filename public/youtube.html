@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>YouTube Scheduler — Control Panel</title>
+<title>Socials Scheduler — Control Panel</title>
 <style>
   :root {
     --bg: #0d0f12; --panel: #161a20; --panel2: #1d222a; --line: #2a313b;
@@ -43,6 +43,11 @@
   .badge.good { background: #14311f; color: var(--good); border-color: #235c39; }
   .badge.bad { background: #3a1f22; color: var(--bad); border-color: #6b2b30; }
   .char-meta { font-size: 12px; color: var(--dim); margin: 6px 0; word-break: break-all; }
+  .handles { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+  .hbadge { font-size: 11px; padding: 3px 8px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; color: #fff; font-weight: 600; }
+  .hbadge .hk { opacity: .8; font-weight: 700; letter-spacing: .02em; }
+  .handle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  @media (max-width: 560px) { .handle-grid { grid-template-columns: 1fr; } }
   .char-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
   .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 7px; }
   .err { color: var(--bad); font-size: 12px; margin-top: 8px; min-height: 16px; }
@@ -51,7 +56,7 @@
 </head>
 <body>
   <header>
-    <h1>🎬 YouTube Shorts Scheduler</h1>
+    <h1>🎬 Socials Scheduler</h1>
     <a class="toolnav-link" href="/">← Flow Generator</a>
     <span id="runState" class="muted" style="margin-left:auto;"></span>
   </header>
@@ -80,6 +85,8 @@
             <input type="text" id="charFolder" placeholder="C:\Users\Jergus\yt\dan" />
           </div>
         </div>
+        <label style="margin-top:14px;">Usernames per platform (shown as badges — for your overview)</label>
+        <div class="handle-grid" id="handleGrid"></div>
         <div class="err" id="formErr"></div>
         <div style="display:flex; gap:8px; margin-top:10px;">
           <button class="primary" id="saveBtn">Save character</button>
@@ -134,6 +141,25 @@ function chromeCmd(port) {
 function loggedPref(id) { return localStorage.getItem('ytLogged_' + id) === '1'; }
 function setLoggedPref(id, on) { localStorage.setItem('ytLogged_' + id, on ? '1' : '0'); }
 
+// Platforms shown in the per-character username fields + badges. `label` is the
+// short chip text; `color` its brand-ish tint; `pre` the handle prefix.
+const PLATFORMS = [
+  { key: 'youtube',   label: 'YouTube',   color: '#c4302b', pre: '@' },
+  { key: 'facebook',  label: 'Facebook',  color: '#1877f2', pre: ''  },
+  { key: 'instagram', label: 'Instagram', color: '#c13584', pre: '@' },
+  { key: 'x',         label: 'X',         color: '#4b5563', pre: '@' },
+  { key: 'threads',   label: 'Threads',   color: '#3b3b3b', pre: '@' },
+];
+
+// Render the set handles of a character as coloured badges (skips empty ones).
+function handleBadges(handles) {
+  handles = handles || {};
+  const items = PLATFORMS.filter(p => handles[p.key]).map(p =>
+    `<span class="hbadge" style="background:${p.color}" title="${p.label}"><span class="hk">${p.label}</span>${p.pre}${escapeHtml(handles[p.key])}</span>`
+  );
+  return items.length ? `<div class="handles">${items.join('')}</div>` : '';
+}
+
 function charCard(c) {
   const isRun = runSet.has(c.id);
   const folderBadge = c.folderExists
@@ -147,13 +173,19 @@ function charCard(c) {
       <span>${folderBadge} <span class="badge">port ${c.port}</span></span>
     </div>
     <div class="char-meta">📁 ${escapeHtml(c.folder)}</div>
+    ${handleBadges(c.handles)}
     <details>
       <summary class="muted" style="cursor:pointer;">Launch command for this character's Chrome</summary>
       <div class="cmdbox">${escapeHtml(chromeCmd(c.port))}</div>
     </details>
     <div class="char-actions">
+      <label style="margin:0;" title="Where to schedule. YouTube = Shorts to this channel. Meta = the same clips cross-posted to Facebook + Instagram via Business Suite. The shared ledger tracks both, so a video is only removed from the folder once it's on BOTH.">platform</label>
+      <select class="cPlatform" style="width:150px;">
+        <option value="youtube" selected>YouTube (Shorts)</option>
+        <option value="meta">Meta (FB + IG)</option>
+      </select>
       <label style="margin:0;">per day</label>
-      <input type="number" value="3" min="1" max="15" style="width:64px;" class="cPerDay" />
+      <input type="number" value="3" min="1" max="25" style="width:64px;" class="cPerDay" />
       <label style="margin:0;">start</label>
       <input type="date" class="cStart" style="width:150px;" />
       <label style="margin:0; display:flex; align-items:center; gap:4px;" title="If this profile is already signed into its Google/YouTube channel, Schedule will auto-launch its debug Chrome (no cmd needed) and open Studio for you."><input type="checkbox" class="cLogged" style="width:auto;" ${loggedPref(c.id) ? 'checked' : ''} /> already logged in</label>
@@ -193,28 +225,54 @@ async function load() {
 }
 
 async function runChar(id, el) {
+  const platform = el.querySelector('.cPlatform').value; // 'youtube' | 'meta'
   const perDay = el.querySelector('.cPerDay').value;
   const start = el.querySelector('.cStart').value;
   const dryRun = el.querySelector('.cDry').checked;
   const autoLaunch = el.querySelector('.cLogged').checked;
-  if (autoLaunch) addLog('… launching this character\'s Chrome (if not already open) and opening Studio…');
+  const where = platform === 'meta' ? 'Business Suite (FB + IG)' : 'Studio';
+  if (autoLaunch) addLog(`… launching this character's Chrome (if not already open) and opening ${where}…`);
+  const body = { id, platform, perDay, start: start || undefined, dryRun, autoLaunch };
+  if (platform === 'meta') body.targets = ['fb', 'ig']; // cross-post to both surfaces
   const r = await fetch('/api/yt/schedule', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ id, perDay, start: start || undefined, dryRun, autoLaunch })
+    body: JSON.stringify(body)
   });
   const d = await r.json();
   if (!r.ok) { addLog('✗ ' + (d.error || 'failed to start')); alert(d.error || 'Failed to start'); }
 }
 
+// Build the per-platform username inputs into the form once, on first load.
+function buildHandleInputs() {
+  const grid = $('handleGrid');
+  if (!grid || grid.dataset.built) return;
+  grid.innerHTML = PLATFORMS.map(p =>
+    `<div><label style="margin:0 0 4px;">${p.label}</label>` +
+    `<input type="text" id="h_${p.key}" placeholder="${p.pre}username" autocomplete="off" /></div>`
+  ).join('');
+  grid.dataset.built = '1';
+}
+function getHandles() {
+  const h = {};
+  for (const p of PLATFORMS) { const v = ($('h_' + p.key)?.value || '').trim(); if (v) h[p.key] = v; }
+  return h;
+}
+function setHandles(handles) {
+  handles = handles || {};
+  for (const p of PLATFORMS) { const el = $('h_' + p.key); if (el) el.value = handles[p.key] || ''; }
+}
+
 function editChar(c) {
   $('charId').value = c.id; $('charName').value = c.name;
   $('charPort').value = c.port; $('charFolder').value = c.folder;
+  setHandles(c.handles);
   $('formTitle').textContent = 'Edit character';
   $('formErr').textContent = '';
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 }
 function resetForm() {
   $('charId').value = ''; $('charName').value = ''; $('charPort').value = '9222'; $('charFolder').value = '';
+  setHandles({});
   $('formTitle').textContent = 'Add a character'; $('formErr').textContent = '';
 }
 $('resetBtn').onclick = resetForm;
@@ -226,6 +284,7 @@ $('saveBtn').onclick = async () => {
     name: $('charName').value.trim(),
     port: parseInt($('charPort').value) || 9222,
     folder: $('charFolder').value.trim(),
+    handles: getHandles(),
   };
   const r = await fetch('/api/yt/characters/save', {
     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
@@ -253,6 +312,7 @@ const es = new EventSource('/api/events');
 es.addEventListener('log', e => addLog(JSON.parse(e.data).line));
 es.addEventListener('yt', e => render(JSON.parse(e.data)));
 
+buildHandleInputs();
 load();
 </script>
 </body>
