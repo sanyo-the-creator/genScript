@@ -733,7 +733,7 @@ async function uploadOne(page, entry, dryRun, targets) {
   console.log(`Connecting to Chrome on ${debugUrl}…`);
   const browser = await puppeteer.connect({ browserURL: debugUrl, defaultViewport: null, protocolTimeout: 240000 });
   const pages = await browser.pages();
-  const page = pages.find((p) => p.url().includes('business.facebook.com')) || pages.find((p) => p.url().includes('facebook.com')) || pages[0];
+  let page = pages.find((p) => p.url().includes('business.facebook.com')) || pages.find((p) => p.url().includes('facebook.com')) || pages[0];
   if (!page) {
     console.error('No usable tab. Open https://business.facebook.com/latest/home in the debugged Chrome first.');
     process.exit(1);
@@ -791,6 +791,30 @@ async function uploadOne(page, entry, dryRun, targets) {
   for (const p of plan) console.log(`   ${p.dateLabel} ${p.timeLabel}  [${p.kind}]  ←  ${p.item.key}`);
   console.log('════════════════════════════════════════════════════\n');
 
+  // Return a LIVE Business-Suite page, re-acquiring it if the current handle's
+  // frame got detached (IG scheduling replaces the tab's main frame). For a
+  // context-pinned pass it re-selects the asset so the composer stays in the right
+  // business. Called between items so one detach never cascade-fails the rest.
+  const stabilize = async () => {
+    let recovered = false;
+    try {
+      await page.goto(HOME_URL, { waitUntil: 'networkidle2' });
+    } catch (e) {
+      if (!/detached|Target closed|Session closed/i.test(e.message || '')) throw e;
+      await sleep(1500);
+      const ps = await browser.pages();
+      page = ps.find((p) => p.url().includes('business.facebook.com')) || ps[ps.length - 1] || page;
+      await page.bringToFront();
+      page.on('dialog', async (d) => { try { await d.accept(); } catch { /* ignore */ } });
+      recovered = true;
+      console.log('   ↻ recovered page after detached frame.');
+    }
+    // The active-business session normally survives a plain nav, so only re-run the
+    // (slow) context switch when we actually had to re-acquire the page.
+    if (recovered && args.assetName) { await switchContext(page, args.assetName); }
+    await sleep(1000);
+  };
+
   let ok = 0, failed = 0;
   for (const entry of plan) {
     try {
@@ -818,12 +842,13 @@ async function uploadOne(page, entry, dryRun, targets) {
         console.log(`   ⏳ kept ${entry.item.key} — still due on YouTube before it can be removed`);
       }
       ok++;
-      await sleep(2500);
+      // Scheduling (esp. IG) can navigate/replace the tab's main frame; settle and
+      // re-acquire the page before the next item so one detach doesn't cascade.
+      await stabilize();
     } catch (e) {
       failed++;
       console.error(`   ✗ FAILED: ${entry.item.key} — ${e.message}`);
-      await page.goto(HOME_URL, { waitUntil: 'networkidle2' }).catch(() => {});
-      await sleep(1500);
+      try { await stabilize(); } catch (re) { console.warn(`   ! recovery failed: ${re.message}`); }
     }
   }
 
