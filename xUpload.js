@@ -183,9 +183,36 @@ async function uploadOne(page, entry, dryRun) {
   console.log(`   text: ${item.meta.text.split('\n')[0].slice(0, 80)}`);
   console.log(`   when: ${entry.dateLabel} ${entry.timeLabel}`);
 
-  // 1) Open a fresh composer.
+  // 1) Open a CLEAN composer. X restores unsent content as a draft, so without
+  // discarding it first the next post's text + video pile into a growing THREAD
+  // (6 tweet boxes, 2 videos in one composer) instead of a fresh single tweet —
+  // and nothing schedules. So: open, and if any leftover content is present,
+  // close → Discard, then reopen empty.
   await page.goto('https://x.com/compose/post', { waitUntil: 'networkidle2' }).catch(() => {});
   await sleep(3000);
+  const hasLeftover = await page.evaluate(() => {
+    const boxes = Array.from(document.querySelectorAll('[data-testid^="tweetTextarea_"]'));
+    const hasText = boxes.some((b) => (b.textContent || '').trim().length > 0);
+    const hasMedia = document.querySelectorAll('video').length > 0 || !!document.querySelector('[data-testid="attachments"]');
+    return boxes.length > 1 || hasText || hasMedia;
+  });
+  if (hasLeftover) {
+    console.log('   • clearing a leftover draft in the composer…');
+    await page.evaluate(() => {
+      const x = document.querySelector('[data-testid="app-bar-close"]') ||
+        Array.from(document.querySelectorAll('[aria-label]')).find((e) => /^close$/i.test(e.getAttribute('aria-label') || ''));
+      if (x) x.click();
+    });
+    await sleep(1200);
+    await page.evaluate(() => {
+      const d = document.querySelector('[data-testid="confirmationSheetConfirm"]') ||
+        Array.from(document.querySelectorAll('[role="button"],button,span')).find((e) => /^discard$/i.test((e.textContent || '').trim()));
+      if (d) d.click();
+    });
+    await sleep(1500);
+    await page.goto('https://x.com/compose/post', { waitUntil: 'networkidle2' }).catch(() => {});
+    await sleep(2500);
+  }
 
   // 2) Text box.
   const box = await waitForElement(page, () =>
@@ -314,13 +341,18 @@ async function uploadOne(page, entry, dryRun) {
   while (Date.now() < postDeadline && (!psx.found || psx.disabled)) { await sleep(2500); psx = await postEnabled(); }
   if (psx.found && psx.disabled) throw new Error('X Schedule button stayed disabled (video still encoding — slow connection?) — not scheduled.');
   await post.click();
-  await sleep(3500);
-  // Verify: the composer closes (navigates away from /compose/post) on success.
-  const left = !/compose\/post/i.test(page.url());
-  if (!left) {
-    const stillThere = await page.evaluate(() => !!document.querySelector('[data-testid="tweetButton"]'));
-    if (stillThere) throw new Error('X composer did not close after Schedule — post likely NOT scheduled.');
-  }
+  await sleep(4000);
+  // Verify FOR REAL: a successful schedule CLEARS the composer. Check that OUR
+  // specific text and any video are gone. (The old URL/tweetButton check gave
+  // false successes — the composer stayed and posts piled into a thread.)
+  const firstLine = item.meta.text.split('\n')[0].slice(0, 24);
+  const stillHasOurPost = await page.evaluate((needle) => {
+    const boxes = Array.from(document.querySelectorAll('[data-testid^="tweetTextarea_"]'));
+    const textPresent = needle && boxes.some((b) => (b.textContent || '').includes(needle));
+    const hasVideo = document.querySelectorAll('video').length > 0;
+    return textPresent || hasVideo;
+  }, firstLine);
+  if (stillHasOurPost) throw new Error('X post still in the composer after Schedule — NOT scheduled (check the schedule flow).');
 
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel} → X`);
   return entry.date.toISOString();
