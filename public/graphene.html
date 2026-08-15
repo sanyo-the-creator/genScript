@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TikTok Scheduler — Control Panel</title>
+<style>
+  :root {
+    --bg: #0d0f12; --panel: #161a20; --panel2: #1d222a; --line: #2a313b;
+    --text: #e7ecf2; --dim: #93a1b0; --faint: #6b7683; --accent: #6ea8fe; --accent2: #3b82f6;
+    --good: #34d399; --bad: #f87171; --warn: #fbbf24; --chip: #232a33; --chipOn: #2b4c86;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+  header { padding: 16px 24px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  header .spacer { flex: 1; }
+  .toolnav-link { font-size: 12px; color: var(--accent); background: var(--panel);
+    border: 1px solid var(--line); padding: 6px 12px; border-radius: 8px; font-weight: 600;
+    cursor: pointer; text-decoration: none; }
+  .toolnav-link:hover { border-color: var(--accent2); }
+
+  #devicePill { font-size: 12px; display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); }
+
+  .wrap { display: grid; grid-template-columns: 1fr 420px; gap: 22px; padding: 22px 24px;
+    max-width: 1240px; margin: 0 auto; }
+  @media (max-width: 940px) { .wrap { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 18px 20px; margin-bottom: 20px; }
+  .card > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim);
+    margin: 0 0 16px; display: flex; align-items: center; gap: 9px; }
+  .step { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+    border-radius: 999px; background: var(--accent2); color: #fff; font-size: 11px; font-weight: 700;
+    letter-spacing: 0; }
+
+  label { display: block; font-size: 12px; color: var(--dim); margin: 14px 0 5px; font-weight: 500; }
+  input[type=text], input[type=number], input[type=datetime-local], select, textarea {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 9px 11px; font: inherit; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent2); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); padding: 9px 14px; }
+  button:hover { border-color: var(--faint); }
+  button.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; font-weight: 600; }
+  button.primary:hover { background: #2f74e6; }
+  button.ghost { background: transparent; }
+  button.tiny { padding: 3px 9px; font-size: 11px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  .muted { color: var(--dim); font-size: 12px; }
+  .hint { color: var(--faint); font-size: 11.5px; margin-top: 6px; }
+
+  /* Collapsible */
+  details.card { padding: 0; }
+  details.card > summary { list-style: none; cursor: pointer; padding: 16px 20px;
+    font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim);
+    display: flex; align-items: center; gap: 9px; user-select: none; }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary .chev { margin-left: auto; transition: transform .15s; color: var(--faint); }
+  details.card[open] > summary .chev { transform: rotate(90deg); }
+  details.card > .body { padding: 0 20px 18px; }
+
+  /* Drop zone */
+  .drop-zone { border: 1.5px dashed var(--line); border-radius: 10px; padding: 26px 16px;
+    text-align: center; cursor: pointer; color: var(--dim); transition: border-color .15s, background .15s; }
+  .drop-zone:hover, .drop-zone.hot { border-color: var(--accent2); background: rgba(59,130,246,.06); }
+  .drop-zone .big { font-size: 22px; display: block; margin-bottom: 6px; }
+  .file-ok { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; }
+
+  /* Platforms */
+  .plats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .plat { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel2); font-size: 12.5px; cursor: pointer; }
+  .plat input { accent-color: var(--accent2); }
+  .plat.on { border-color: var(--chipOn); background: var(--chipOn); color: #fff; }
+
+  /* Accounts organizer */
+  .profile-box { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    margin-bottom: 12px; background: var(--panel2); }
+  .network-row { display: grid; grid-template-columns: 82px 1fr 78px; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .network-name { font-size: 11px; font-weight: 700; color: var(--dim); letter-spacing: .03em; }
+
+  /* Queue */
+  .day-group { margin-bottom: 18px; }
+  .day-head { font-size: 12px; font-weight: 700; color: var(--text); margin: 0 0 9px;
+    display: flex; align-items: center; gap: 8px; }
+  .day-head .count { color: var(--faint); font-weight: 500; }
+  .qitem { display: grid; grid-template-columns: 58px 1fr; gap: 12px; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; margin-bottom: 9px; }
+  .qtime { text-align: center; }
+  .qtime .hm { font-size: 15px; font-weight: 700; line-height: 1.15; }
+  .qtime .ap { font-size: 10px; color: var(--faint); text-transform: uppercase; }
+  .qbody { min-width: 0; }
+  .qtop { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+  .qtitle { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; flex: 1; }
+  .qdel { background: transparent; border: none; color: var(--faint); font-size: 14px;
+    line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: 5px; }
+  .qdel:hover { color: #ffb4b4; background: #3a1f22; }
+  .qsel { accent-color: var(--accent2); cursor: pointer; }
+  .qcap { font-size: 12px; color: var(--dim); margin: 2px 0 6px; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .qplats { display: flex; flex-wrap: wrap; gap: 5px; }
+  .pchip { font-size: 10px; padding: 2px 7px; border-radius: 5px; background: var(--chip); color: var(--dim);
+    display: inline-flex; align-items: center; gap: 4px; }
+  .pchip .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--faint); }
+  .pchip.success .dot { background: var(--good); } .pchip.success { color: var(--good); }
+  .pchip.failed .dot { background: var(--bad); } .pchip.failed { color: #ffb4b4; }
+  .pchip.running .dot { background: var(--accent); } .pchip.running { color: #bcd4ff; }
+
+  .badge { font-size: 10px; padding: 2px 7px; border-radius: 5px; text-transform: uppercase;
+    letter-spacing: .03em; font-weight: 600; }
+  .badge.pending { background: #2a2f38; color: var(--dim); }
+  .badge.running { background: #26406e; color: #bcd4ff; }
+  .badge.success { background: #12352a; color: var(--good); }
+  .badge.failed { background: #3a1f22; color: #ffb4b4; }
+
+  .console { background: #07090c; border: 1px solid var(--line); border-radius: 8px; height: 300px;
+    overflow-y: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; white-space: pre-wrap; color: #b9c6d3; }
+
+  .empty { text-align: center; color: var(--faint); padding: 26px 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🎬 TikTok Scheduler</h1>
+    <span id="devicePill" class="muted">Checking device…</span>
+    <span class="spacer"></span>
+    <a class="toolnav-link" href="/">← Flow Generator</a>
+    <a class="toolnav-link" href="/youtube">YouTube</a>
+  </header>
+
+  <div class="wrap">
+    <!-- LEFT: create a post -->
+    <div>
+      <div class="card">
+        <h2><span class="step">1</span> New scheduled post</h2>
+
+        <div class="drop-zone" id="dropZone">
+          <span class="big">📦</span>
+          <strong>Drop a ZIP</strong> with slideshow folders, or a video / image
+          <div class="hint">Each folder in the ZIP = one post. Posts auto-schedule at 3PM / 6PM / 9PM (phone time), spilling onto the next days.</div>
+        </div>
+        <input type="file" id="fileInput" style="display:none" />
+        <div id="fileStatus" class="hint">No file selected</div>
+
+        <div id="captionContainer" style="display:none">
+          <label>Caption / post text <span class="muted">(first line becomes the YouTube title)</span></label>
+          <textarea id="postCaption" rows="3" placeholder="Enter post text…"></textarea>
+        </div>
+
+        <div class="row2">
+          <div>
+            <label>Profile</label>
+            <select id="targetProfileSelect"><option value="">Select profile…</option></select>
+          </div>
+          <div>
+            <label>Sub-account</label>
+            <select id="targetSubSelect"><option value="">Select sub-account…</option></select>
+          </div>
+        </div>
+
+        <label>Platforms</label>
+        <div class="plats" id="platsWrap">
+          <label class="plat"><input type="checkbox" value="tiktok" class="platform-check" checked /> TikTok</label>
+          <label class="plat"><input type="checkbox" value="instagram" class="platform-check" /> Instagram</label>
+          <label class="plat"><input type="checkbox" value="threads" class="platform-check" /> Threads</label>
+          <label class="plat"><input type="checkbox" value="x" class="platform-check" /> X</label>
+          <label class="plat"><input type="checkbox" value="youtube" class="platform-check" /> YouTube</label>
+        </div>
+        <div class="hint">Slideshow scheduling is fully wired for <b>TikTok</b>. #fyp and #foryoupage are added automatically.</div>
+
+        <div id="timeContainer" style="display:none">
+          <label id="timeLabel">Scheduled date &amp; time</label>
+          <input type="datetime-local" id="scheduleTime" />
+        </div>
+
+        <button id="addQueueBtn" class="primary" style="margin-top:18px; width:100%">Schedule post</button>
+      </div>
+
+      <!-- Accounts & setup (collapsed by default) -->
+      <details class="card" id="setupCard">
+        <summary><span class="step">⚙</span> Accounts &amp; device setup <span class="chev">›</span></summary>
+        <div class="body">
+          <div id="deviceList" class="muted" style="margin-bottom:10px">Checking ADB devices…</div>
+          <button id="scanAdbBtn" class="primary tiny">Scan profiles</button>
+          <div id="profileOrganizer" style="margin-top:14px"></div>
+        </div>
+      </details>
+    </div>
+
+    <!-- RIGHT: queue + logs -->
+    <div>
+      <div class="card">
+        <h2>🗓️ Scheduled posts
+          <button id="clearDoneBtn" class="tiny" style="margin-left:auto;" onclick="clearFinished(this)">Clear done</button>
+          <button id="stopBtn" class="tiny" style="background:#3a1f22; border-color:#6b2b30; color:#ffb4b4;" onclick="stopScheduling(this)">⏹ Stop</button>
+        </h2>
+        <div id="selBar" style="display:none; align-items:center; gap:10px; margin-bottom:12px; padding:8px 11px; background:var(--panel2); border:1px solid var(--line); border-radius:8px;">
+          <span id="selCount" class="muted">0 selected</span>
+          <button class="tiny" onclick="clearSelection()">Clear</button>
+          <button class="tiny" style="margin-left:auto; background:#3a1f22; border-color:#6b2b30; color:#ffb4b4;" onclick="deleteSelected(this)">🗑 Remove from list</button>
+        </div>
+        <div id="queueList"><div class="empty">Loading…</div></div>
+      </div>
+
+      <details class="card" id="logsCard">
+        <summary>🖥️ ADB connection logs <span class="chev">›</span></summary>
+        <div class="body"><div class="console" id="logConsole"></div></div>
+      </details>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let adbProfiles = [];
+    let savedProfiles = [];
+    let uploadFilePath = '';
+    let uploadFileName = '';
+    let uploadMediaType = '';
+
+    async function loadStatus() {
+      try {
+        const r = await fetch('/api/graphene/devices');
+        const data = await r.json();
+        if (data.devices && data.devices.length) {
+          const txt = data.devices.map(d => `${d.id}`).join(', ');
+          $('deviceList').innerHTML = `<span style="color:var(--good)">● Connected:</span> ${data.devices.map(d => `${d.id} (${d.status})`).join(', ')}`;
+          $('devicePill').innerHTML = `<span style="color:var(--good)">●</span> ${txt}`;
+        } else {
+          $('deviceList').innerHTML = `<span style="color:var(--bad)">● No devices.</span> Connect the phone via USB with debugging on.`;
+          $('devicePill').innerHTML = `<span style="color:var(--bad)">●</span> No device`;
+        }
+      } catch (e) {
+        $('deviceList').innerHTML = 'Error listing devices.';
+        $('devicePill').innerHTML = `<span style="color:var(--bad)">●</span> Error`;
+      }
+
+      try {
+        const r = await fetch('/api/graphene/profiles');
+        const data = await r.json();
+        adbProfiles = data.adbProfiles || [];
+        savedProfiles = data.savedProfiles || [];
+        renderOrganizer();
+        populateProfileDropdowns();
+      } catch (e) { console.error(e); }
+
+      loadQueue();
+    }
+
+    async function loadQueue() {
+      try {
+        const r = await fetch('/api/graphene/schedule');
+        const data = await r.json();
+        renderQueue(data.schedule || []);
+      } catch (e) { console.error(e); }
+    }
+
+    function renderOrganizer() {
+      const container = $('profileOrganizer');
+      container.innerHTML = '';
+      if (adbProfiles.length === 0) {
+        container.innerHTML = '<p class="muted">No ADB user profiles detected. Connect GrapheneOS and click Scan.</p>';
+        return;
+      }
+      adbProfiles.forEach(ap => {
+        let sp = savedProfiles.find(p => p.grapheneUserId === ap.id);
+        if (!sp) {
+          sp = {
+            id: `profile_${ap.id}`, grapheneUserId: ap.id, name: ap.name || `Profile ${ap.id}`,
+            subAccounts: [
+              { id: `sub_${ap.id}_1`, name: 'Brand A', accounts: getNetworkDefaults() },
+              { id: `sub_${ap.id}_2`, name: 'Brand B', accounts: getNetworkDefaults() },
+              { id: `sub_${ap.id}_3`, name: 'Brand C', accounts: getNetworkDefaults() }
+            ]
+          };
+          savedProfiles.push(sp);
+        }
+        const profEl = document.createElement('div');
+        profEl.className = 'profile-box';
+        profEl.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <strong style="font-size:14px">📱 ${escapeHtml(sp.name)} <span class="muted">· user ${sp.grapheneUserId}</span></strong>
+            <button onclick="saveOrganizer()" class="ghost tiny">Save config</button>
+          </div>
+          ${sp.subAccounts.map((sa, sIdx) => `
+            <div style="border-top:1px solid var(--line); padding:9px 0;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="muted">📁 Folder</span>
+                <input type="text" value="${escapeHtml(sa.name)}" onchange="updateSubName(${sp.grapheneUserId}, ${sIdx}, this.value)" style="max-width:220px; padding:4px 8px;" />
+              </div>
+              <div style="margin-top:8px;">
+                ${Object.keys(sa.accounts).map(net => `
+                  <div class="network-row">
+                    <span class="network-name">${net.toUpperCase()}</span>
+                    <input type="text" placeholder="${net === 'youtube' ? 'Channel name' : 'Username'}" value="${escapeHtml(sa.accounts[net].username || sa.accounts[net].channelName || '')}" onchange="updateAccountUsername(${sp.grapheneUserId}, ${sIdx}, '${net}', this.value)" style="padding:4px 8px; font-size:12px;" />
+                    <input type="number" placeholder="${net === 'youtube' ? 'Port' : 'Index'}" value="${sa.accounts[net].accountIndex || sa.accounts[net].port || ''}" onchange="updateAccountIndex(${sp.grapheneUserId}, ${sIdx}, '${net}', this.value)" style="padding:4px 8px; font-size:12px;" />
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `).join('')}
+        `;
+        container.appendChild(profEl);
+      });
+    }
+
+    function getNetworkDefaults() {
+      return {
+        instagram: { username: '', accountIndex: 1 },
+        tiktok: { username: '', accountIndex: 1 },
+        threads: { username: '', accountIndex: 1 },
+        x: { username: '', accountIndex: 1 },
+        youtube: { channelName: '', port: 9222 }
+      };
+    }
+
+    function updateSubName(userId, subIdx, val) {
+      const p = savedProfiles.find(prof => prof.grapheneUserId === userId);
+      if (p) p.subAccounts[subIdx].name = val;
+      populateProfileDropdowns();
+    }
+    function updateAccountUsername(userId, subIdx, net, val) {
+      const p = savedProfiles.find(prof => prof.grapheneUserId === userId);
+      if (p) {
+        if (net === 'youtube') p.subAccounts[subIdx].accounts[net].channelName = val;
+        else p.subAccounts[subIdx].accounts[net].username = val;
+      }
+    }
+    function updateAccountIndex(userId, subIdx, net, val) {
+      const p = savedProfiles.find(prof => prof.grapheneUserId === userId);
+      if (p) {
+        if (net === 'youtube') p.subAccounts[subIdx].accounts[net].port = parseInt(val) || 9222;
+        else p.subAccounts[subIdx].accounts[net].accountIndex = parseInt(val) || 1;
+      }
+    }
+    async function saveOrganizer() {
+      try {
+        const r = await fetch('/api/graphene/profiles', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(savedProfiles)
+        });
+        if (r.ok) alert('Configuration saved.');
+      } catch (e) { alert('Failed to save config.'); }
+    }
+
+    function populateProfileDropdowns() {
+      const profSelect = $('targetProfileSelect');
+      profSelect.innerHTML = '<option value="">Select profile…</option>';
+      savedProfiles.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id; opt.textContent = p.name;
+        profSelect.appendChild(opt);
+      });
+      profSelect.onchange = () => {
+        const subSelect = $('targetSubSelect');
+        subSelect.innerHTML = '<option value="">Select sub-account…</option>';
+        const p = savedProfiles.find(prof => prof.id === profSelect.value);
+        if (p) p.subAccounts.forEach(sa => {
+          const opt = document.createElement('option');
+          opt.value = sa.id; opt.textContent = sa.name;
+          subSelect.appendChild(opt);
+        });
+      };
+    }
+
+    // Keep platform pills visually in sync with their checkbox.
+    function syncPlatPills() {
+      document.querySelectorAll('.plat').forEach(l => {
+        const cb = l.querySelector('input');
+        l.classList.toggle('on', cb.checked);
+      });
+    }
+
+    function renderQueue(schedule) {
+      lastSchedule = schedule;
+      // Drop any selection for tasks that no longer exist.
+      const live = new Set(schedule.map(t => t.id));
+      [...selectedIds].forEach(id => { if (!live.has(id)) selectedIds.delete(id); });
+      updateSelBar();
+
+      const container = $('queueList');
+      container.innerHTML = '';
+      if (!schedule.length) {
+        container.innerHTML = '<div class="empty">No scheduled posts yet.<br>Drop a ZIP to get started.</div>';
+        return;
+      }
+
+      // Sort chronologically, then group by calendar day.
+      const items = [...schedule].sort((a, b) => new Date(a.scheduledTime) - new Date(b.scheduledTime));
+      const groups = {};
+      items.forEach(it => {
+        const d = new Date(it.scheduledTime);
+        const key = isNaN(d) ? 'No date' : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+        (groups[key] = groups[key] || []).push(it);
+      });
+
+      Object.keys(groups).forEach(day => {
+        const g = document.createElement('div');
+        g.className = 'day-group';
+        g.innerHTML = `<div class="day-head">${day} <span class="count">· ${groups[day].length} post${groups[day].length > 1 ? 's' : ''}</span></div>`;
+        groups[day].forEach(item => g.appendChild(renderQueueItem(item)));
+        container.appendChild(g);
+      });
+    }
+
+    function renderQueueItem(item) {
+      const el = document.createElement('div');
+      el.className = 'qitem';
+      const d = new Date(item.scheduledTime);
+      const hm = isNaN(d) ? '—' : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      const [time, ap] = hm.split(' ');
+      const showRun = item.status === 'pending' || item.status === 'failed';
+      const caption = (item.caption || '').trim();
+      const title = caption ? caption.split('\n')[0] : (item.fileName || 'Post');
+      const checked = selectedIds.has(item.id) ? 'checked' : '';
+
+      el.innerHTML = `
+        <div class="qtime">
+          <input type="checkbox" class="qsel" ${checked} onchange="toggleSelect('${item.id}', this.checked)" style="margin-bottom:4px" title="Select" />
+          <div class="hm">${escapeHtml(time || '—')}</div>
+          <div class="ap">${escapeHtml(ap || '')}</div>
+        </div>
+        <div class="qbody">
+          <div class="qtop">
+            <span class="qtitle">${escapeHtml(title)}</span>
+            <span class="badge ${item.status}">${item.status}</span>
+            <button class="qdel" title="Remove from list" onclick="deleteOne('${item.id}')">✕</button>
+          </div>
+          ${caption ? `<div class="qcap">${escapeHtml(caption)}</div>` : ''}
+          <div class="qplats">
+            ${item.platforms.map(p => {
+              const res = item.results?.[p] || {};
+              const st = res.status || 'pending';
+              const err = res.error;
+              return `<span class="pchip ${st}" ${err ? `title="${escapeHtml(err)}"` : ''}><span class="dot"></span>${p}${err ? ' ⚠️' : ''}</span>`;
+            }).join('')}
+            ${showRun ? `<button class="tiny" style="margin-left:auto; background:var(--accent2); border-color:var(--accent2); color:#fff;" onclick="runTaskNow('${item.id}', this)">Run now</button>` : ''}
+          </div>
+        </div>
+      `;
+      return el;
+    }
+
+    // ── Selection & deletion (genScript list only — never touches the device) ──
+    const selectedIds = new Set();
+    let lastSchedule = [];
+
+    function toggleSelect(id, on) { if (on) selectedIds.add(id); else selectedIds.delete(id); updateSelBar(); }
+    function clearSelection() {
+      selectedIds.clear();
+      document.querySelectorAll('.qsel').forEach(cb => cb.checked = false);
+      updateSelBar();
+    }
+    function updateSelBar() {
+      const n = selectedIds.size;
+      $('selCount').textContent = `${n} selected`;
+      $('selBar').style.display = n ? 'flex' : 'none';
+    }
+
+    async function deleteIds(ids) {
+      if (!ids.length) return;
+      try {
+        await fetch('/api/graphene/schedule/delete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids })
+        });
+      } catch (e) { alert('Failed to remove.'); }
+      ids.forEach(id => selectedIds.delete(id));
+      updateSelBar();
+      loadQueue();
+    }
+
+    function deleteOne(id) { deleteIds([id]); }
+
+    async function deleteSelected(btn) {
+      const ids = [...selectedIds];
+      if (!ids.length) return;
+      if (!confirm(`Remove ${ids.length} post${ids.length > 1 ? 's' : ''} from the list? (This does NOT delete anything already scheduled in TikTok.)`)) return;
+      btn.disabled = true;
+      await deleteIds(ids);
+      btn.disabled = false;
+    }
+
+    async function clearFinished(btn) {
+      const ids = lastSchedule.filter(t => t.status === 'success' || t.status === 'failed').map(t => t.id);
+      if (!ids.length) return alert('Nothing finished to clear.');
+      if (!confirm(`Remove ${ids.length} finished post${ids.length > 1 ? 's' : ''} from the list?`)) return;
+      btn.disabled = true;
+      await deleteIds(ids);
+      btn.disabled = false;
+    }
+
+    async function stopScheduling(btn) {
+      btn.disabled = true; btn.textContent = 'Stopping…';
+      try { await fetch('/api/graphene/schedule/stop', { method: 'POST' }); } catch (e) {}
+      setTimeout(() => { btn.disabled = false; btn.textContent = '⏹ Stop'; loadQueue(); }, 1500);
+    }
+
+    async function runTaskNow(taskId, btn) {
+      btn.disabled = true; btn.textContent = 'Triggered…';
+      try {
+        const r = await fetch(`/api/graphene/schedule/run/${taskId}`, { method: 'POST' });
+        if (r.ok) setTimeout(loadQueue, 1500);
+        else { alert('Failed to trigger execution.'); btn.disabled = false; btn.textContent = 'Run now'; }
+      } catch (e) { alert('Error triggering execution.'); btn.disabled = false; btn.textContent = 'Run now'; }
+    }
+
+    // Drag & drop upload
+    const dropZone = $('dropZone');
+    dropZone.onclick = () => $('fileInput').click();
+    $('fileInput').onchange = (e) => handleFiles(e.target.files);
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('hot'); };
+    dropZone.ondragleave = () => dropZone.classList.remove('hot');
+    dropZone.ondrop = (e) => { e.preventDefault(); dropZone.classList.remove('hot'); handleFiles(e.dataTransfer.files); };
+
+    async function handleFiles(files) {
+      if (!files.length) return;
+      const file = files[0];
+      $('fileStatus').textContent = `Uploading ${file.name}…`;
+      try {
+        const r = await fetch('/api/graphene/schedule/upload', {
+          method: 'POST', headers: { 'x-file-name': file.name }, body: file
+        });
+        const res = await r.json();
+        if (res.ok) {
+          uploadFilePath = res.filePath;
+          uploadFileName = res.fileName;
+          uploadMediaType = file.name.endsWith('.zip') ? 'slideshow' : (file.type.startsWith('video') ? 'video' : 'image');
+          $('fileStatus').innerHTML = `<span class="file-ok"><span style="color:var(--good)">✓</span> ${escapeHtml(file.name)} <span class="muted">· ${uploadMediaType}</span></span>`;
+          if (uploadMediaType === 'slideshow') {
+            $('captionContainer').style.display = 'block';
+            const capLabel = $('captionContainer').querySelector('label');
+            if (capLabel) capLabel.innerHTML = 'Fallback caption <span class="muted">(used if slideshow folder lacks a .txt file)</span>';
+            $('timeContainer').style.display = 'none';
+          } else {
+            $('captionContainer').style.display = 'block';
+            const capLabel = $('captionContainer').querySelector('label');
+            if (capLabel) capLabel.innerHTML = 'Caption / post text <span class="muted">(first line becomes the YouTube title)</span>';
+            $('timeLabel').textContent = 'Scheduled date & time';
+            $('scheduleTime').type = 'datetime-local';
+            $('timeContainer').style.display = 'block';
+          }
+        } else {
+          $('fileStatus').textContent = 'Upload failed: ' + (res.error || 'Unknown error');
+        }
+      } catch (e) { $('fileStatus').textContent = 'Upload failed.'; }
+    }
+
+    $('addQueueBtn').onclick = async () => {
+      const profileId = $('targetProfileSelect').value;
+      const subAccountId = $('targetSubSelect').value;
+      const caption = $('postCaption').value;
+      const scheduledTime = $('scheduleTime').value;
+      const platforms = [];
+      document.querySelectorAll('.platform-check:checked').forEach(cb => platforms.push(cb.value));
+
+      if (!uploadFilePath) return alert('Please upload a ZIP, video or image first.');
+      if (!profileId || !subAccountId) return alert('Please select a profile and sub-account.');
+      if (uploadMediaType !== 'slideshow' && !scheduledTime) return alert('Please pick a schedule time.');
+      if (platforms.length === 0) return alert('Select at least one platform.');
+
+      const item = {
+        profileId, subAccountId, platforms,
+        caption: caption || '',
+        scheduledTime: uploadMediaType === 'slideshow' ? '' : new Date(scheduledTime).toISOString(),
+        mediaPath: uploadFilePath, fileName: uploadFileName, mediaType: uploadMediaType
+      };
+      
+      $('addQueueBtn').disabled = true;
+      $('addQueueBtn').textContent = 'Scheduling…';
+
+      try {
+        const r = await fetch('/api/graphene/schedule/add', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item)
+        });
+        const res = await r.json().catch(() => ({}));
+        if (r.ok && res.ok) {
+          alert(res.count ? `Successfully scheduled ${res.count} post${res.count > 1 ? 's' : ''}! Background automation has started.` : 'Post scheduled.');
+          loadQueue();
+          $('postCaption').value = '';
+          $('scheduleTime').value = '';
+          $('fileStatus').textContent = 'No file selected';
+          $('captionContainer').style.display = 'none';
+          $('timeContainer').style.display = 'none';
+          uploadFilePath = '';
+        } else {
+          alert(res.error || 'Failed to schedule post.');
+          loadQueue();
+        }
+      } catch (e) {
+        alert('Failed to schedule post: ' + e.message);
+      } finally {
+        $('addQueueBtn').disabled = false;
+        $('addQueueBtn').textContent = 'Schedule post';
+      }
+    };
+
+    $('scanAdbBtn').onclick = async () => {
+      $('scanAdbBtn').disabled = true; $('scanAdbBtn').textContent = 'Scanning…';
+      await loadStatus();
+      $('scanAdbBtn').disabled = false; $('scanAdbBtn').textContent = 'Scan profiles';
+    };
+
+    function escapeHtml(str) {
+      if (str === 0) return '0';
+      if (!str) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Platform pill highlight
+    document.querySelectorAll('.platform-check').forEach(cb => cb.addEventListener('change', syncPlatPills));
+    syncPlatPills();
+
+    // Live logs
+    const ev = new EventSource('/api/events');
+    ev.addEventListener('log', (e) => {
+      const consoleEl = $('logConsole');
+      const atBottom = consoleEl.scrollTop + consoleEl.clientHeight >= consoleEl.scrollHeight - 20;
+      try {
+        const data = JSON.parse(e.data);
+        consoleEl.textContent += (consoleEl.textContent ? '\n' : '') + data.line;
+      } catch (err) {
+        consoleEl.textContent += (consoleEl.textContent ? '\n' : '') + e.data;
+      }
+      if (atBottom) consoleEl.scrollTop = consoleEl.scrollHeight;
+    });
+
+    let pollTimer = null;
+    function scheduleNextPoll(schedule) {
+      if (pollTimer) clearTimeout(pollTimer);
+      const hasActive = (schedule || []).some(t => t.status === 'pending' || t.status === 'running');
+      pollTimer = setTimeout(loadQueue, hasActive ? 3000 : 15000);
+    }
+
+    async function loadQueue() {
+      try {
+        const r = await fetch('/api/graphene/schedule');
+        const data = await r.json();
+        const sched = data.schedule || [];
+        renderQueue(sched);
+        scheduleNextPoll(sched);
+      } catch (e) {
+        console.error(e);
+        scheduleNextPoll([]);
+      }
+    }
+
+    loadStatus();
+  </script>
+</body>
+</html>

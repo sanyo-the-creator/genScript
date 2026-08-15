@@ -24,3 +24,8 @@ yt_characters.json
 uploaded_videos/
 generated_clips/
 .clip_tmp/
+
+# Local media library & uploaded archives
+public/media_library/
+public/slideshow_uploads/
+
