@@ -329,9 +329,8 @@ async function clickHandle(handle) {
 
 // Clear a field (contenteditable OR <input>) and type fresh text. Studio
 // prefills the title from the filename and the date/time with defaults, so we
-// MUST fully clear first — triple-click select was unreliable and left remnants
-// (doubled "titletitle" / "datedate"), so we select-all with Ctrl+A instead,
-// which selects the whole contents of both contenteditables and inputs.
+// MUST fully clear first — on Mac Meta+A is required (Control+A moves cursor to
+// start of line without selecting, leaving trailing filename remnants).
 async function clearAndType(page, handle, text) {
   // Scroll the field into view and retry the focus click — on the 2nd+ upload of
   // a batch the box can render just off-screen / not-yet-interactive, which threw
@@ -345,18 +344,33 @@ async function clearAndType(page, handle, text) {
     await handle.click(); // one retry after a beat
   }
   await sleep(120);
+
+  // Clear via keyboard: Meta+A on Mac (Cmd+A), Control+A on Windows/Linux
+  await page.keyboard.down('Meta');
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up('Meta');
   await page.keyboard.down('Control');
   await page.keyboard.press('KeyA');
   await page.keyboard.up('Control');
   await sleep(60);
   await page.keyboard.press('Backspace');
-  await sleep(120);
-  // Verify it's actually empty; if a leftover remains, nuke it with repeated
-  // Backspace/Delete before typing so we never append onto stale text.
-  const leftover = await handle.evaluate((el) => (el.value !== undefined ? el.value : el.textContent || '').length);
-  if (leftover > 0) {
-    for (let i = 0; i < leftover + 2; i++) await page.keyboard.press('Backspace');
-  }
+  await sleep(60);
+
+  // Guarantee clean slate via DOM clear in case keyboard selection missed anything
+  await handle.evaluate((el) => {
+    if (el.value !== undefined) {
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (el.isContentEditable) {
+      el.textContent = '';
+      el.innerText = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
+  await sleep(60);
+
   await page.keyboard.type(text, { delay: 12 });
 }
 

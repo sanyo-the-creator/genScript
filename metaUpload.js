@@ -400,16 +400,33 @@ async function clearAndType(page, handle, text) {
   try { await handle.click(); }
   catch { await sleep(500); await handle.click(); }
   await sleep(120);
+
+  // Clear via keyboard: Meta+A on Mac (Cmd+A), Control+A on Windows/Linux
+  await page.keyboard.down('Meta');
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up('Meta');
   await page.keyboard.down('Control');
   await page.keyboard.press('KeyA');
   await page.keyboard.up('Control');
   await sleep(60);
   await page.keyboard.press('Backspace');
-  await sleep(120);
-  const leftover = await handle.evaluate((el) => (el.value !== undefined ? el.value : el.textContent || '').length);
-  if (leftover > 0) {
-    for (let i = 0; i < leftover + 2; i++) await page.keyboard.press('Backspace');
-  }
+  await sleep(60);
+
+  // Guarantee clean slate via DOM clear
+  await handle.evaluate((el) => {
+    if (el.value !== undefined) {
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (el.isContentEditable) {
+      el.textContent = '';
+      el.innerText = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
+  await sleep(60);
+
   await page.keyboard.type(text, { delay: 8 });
 }
 
