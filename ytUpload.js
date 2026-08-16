@@ -134,7 +134,7 @@ function parseArgs(argv) {
   const args = {
     dir: null, start: null, perDay: DEFAULT_PER_DAY, slots: DEFAULT_SLOTS,
     dryRun: false, noCheck: false, deleteAfter: false, port: envPort,
-    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ, thumbnail: true, mobile: false,
+    tz: process.env.YT_TARGET_TZ || DEFAULT_TARGET_TZ, thumbnail: true, mobile: true,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
@@ -684,15 +684,43 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   while (Date.now() < enableDeadline && (!ds.found || ds.disabled)) { await sleep(2500); ds = await doneEnabled(); }
   if (!ds.found) throw new Error('Could not find the final Schedule/Done button.');
   if (ds.disabled) throw new Error('Schedule button stayed disabled after 5 min (video still processing — slow connection?) — not scheduled.');
-  await doneBtn.click();
+  // Robust click: at phone width the button sits in a sticky mobile footer that a
+  // coordinate click can't reach, so clickHandle scrolls it into view and falls
+  // back to a native in-page click.
+  await clickHandle(doneBtn);
 
-  // Wait for the confirmation dialog, then close it.
-  await sleep(2500);
-  const closeBtn = await findElement(page, () =>
-    document.querySelector('#close-button') ||
-    Array.from(document.querySelectorAll('ytcp-button')).find((b) => /^\s*close\s*$/i.test(b.textContent || ''))
-  );
-  if (closeBtn) { await closeBtn.click(); await sleep(800); }
+  // Verify the schedule took. On SUCCESS the dialog closes and its frame tears
+  // down — a follow-up evaluate then throws "detached Frame" / "context was
+  // destroyed", which IS success (that's why the run reported false failures).
+  // So: detached/destroyed ⇒ scheduled; #done-button gone ⇒ scheduled; still there
+  // ⇒ retry once, then fail loudly.
+  await sleep(3000);
+  const isDetached = (e) => /detached|context was destroyed|Target closed|Session closed/i.test((e && e.message) || '');
+  let scheduled = false;
+  try {
+    const stillOpen = await page.evaluate(() => !!document.querySelector('#done-button'));
+    if (!stillOpen) scheduled = true;
+    else {
+      try { await doneBtn.evaluate((el) => el.click()); } catch (e) { if (isDetached(e)) scheduled = true; }
+      if (!scheduled) {
+        await sleep(3000);
+        try { scheduled = !(await page.evaluate(() => !!document.querySelector('#done-button'))); }
+        catch (e) { if (isDetached(e)) scheduled = true; else throw e; }
+      }
+    }
+  } catch (e) {
+    if (isDetached(e)) scheduled = true; else throw e;
+  }
+  if (!scheduled) throw new Error('Schedule dialog did not close after clicking Schedule — NOT scheduled.');
+
+  // Confirmation dialog → close it. Best-effort: the frame may already be gone.
+  try {
+    const closeBtn = await findElement(page, () =>
+      document.querySelector('#close-button') ||
+      Array.from(document.querySelectorAll('ytcp-button')).find((b) => /^\s*close\s*$/i.test(b.textContent || ''))
+    );
+    if (closeBtn) { await clickHandle(closeBtn); await sleep(800); }
+  } catch { /* dialog already closed */ }
 
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel}`);
   return date.toISOString();
@@ -724,7 +752,7 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   console.log(`Connecting to Chrome on ${debugUrl}…`);
   const browser = await puppeteer.connect({ browserURL: debugUrl, defaultViewport: null, protocolTimeout: 240000 });
   const pages = await browser.pages();
-  const page = pages.find((p) => p.url().includes('studio.youtube.com')) || pages.find((p) => p.url().includes('youtube.com')) || pages[0];
+  let page = pages.find((p) => p.url().includes('studio.youtube.com')) || pages.find((p) => p.url().includes('youtube.com')) || pages[0];
   if (!page) {
     console.error('No usable tab. Open https://studio.youtube.com in the debugged Chrome first.');
     process.exit(1);
@@ -783,6 +811,15 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   let ok = 0, failed = 0;
   for (const entry of plan) {
     try {
+      // Scheduling can detach the previous page's main frame, so re-acquire a live
+      // Studio page (and re-apply phone emulation) before each upload.
+      try {
+        await page.evaluate(() => 1); // probe: throws if detached
+      } catch {
+        const fresh = (await browser.pages()).find((p) => p.url().includes('youtube.com'));
+        if (fresh) { page = fresh; await page.bringToFront().catch(() => {}); }
+      }
+      if (args.mobile) await emulateMobile(page);
       const result = await uploadOne(page, entry, args.dryRun, args.thumbnail);
       if (result === 'dry-run') {
         console.log('\nDry run complete for the first video. Watch the Studio window — if the date/time/title look right, re-run without --dry-run.');

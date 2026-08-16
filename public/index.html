@@ -1093,7 +1093,15 @@ document.getElementById('addAcctBtn').onclick = async () => {
   if (!name) { alert('Give the account a name.'); return; }
   if (!port) { alert('Give the account a debug port (e.g. 9223).'); return; }
   const r = await fetch('/api/accounts/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, port }) });
-  if (!r.ok) { const e = await r.json(); alert(e.error || 'Failed to add account'); return; }
+  if (!r.ok) {
+    // The server may reply with plain text (e.g. a 404 "Not found" from a stale
+    // server that predates this endpoint), so don't assume JSON — fall back to a
+    // clear message instead of throwing on r.json() and dying silently.
+    let msg = 'Failed to add account';
+    try { const e = await r.json(); msg = e.error || msg; }
+    catch { msg = `Failed to add account (HTTP ${r.status}). If this is 404, restart the server — it's running an older build without this endpoint.`; }
+    alert(msg); return;
+  }
   document.getElementById('acctName').value = '';
   document.getElementById('acctPort').value = '';
   refreshAccounts();

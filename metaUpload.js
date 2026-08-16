@@ -60,7 +60,9 @@
 // exactly which one, so we can pin the selector.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const puppeteer = require('puppeteer-core');
 // Shared cross-platform ledger (YouTube + Meta) — see scheduleLedger.js. We only
 // ever touch the 'meta' side here; YouTube writes its own side into the same file.
@@ -145,6 +147,9 @@ function parseArgs(argv) {
     // And --ledger names a separate ledger track so an IG-only pass isn't blocked
     // by items already marked done for the FB pass (default 'meta' = FB/back-compat).
     assetId: null, businessId: null, ledger: 'meta', assetName: null,
+    // Append a mention (e.g. @joinupshift) to every caption — used to tag the brand
+    // account on Instagram posts/reels. Added once, only if not already present.
+    mention: null,
     // Route video items through the dedicated REEL composer instead of the generic
     // post composer. REQUIRED for Instagram: a 9:16 vertical video is rejected by
     // the post composer ("aspect ratio 4:5–16:9", Schedule stays disabled), but the
@@ -160,6 +165,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--business-id=')) args.businessId = a.slice(14).trim() || null;
     else if (a.startsWith('--ledger=')) args.ledger = a.slice(9).trim() || 'meta';
     else if (a.startsWith('--asset-name=')) args.assetName = a.slice(13).trim() || null;
+    else if (a.startsWith('--mention=')) { const m = a.slice(10).trim(); args.mention = m ? (m.startsWith('@') ? m : '@' + m) : null; }
     else if (a === '--reel') args.reel = true; // video items go via the Reel composer (needed for IG)
     else if (a.startsWith('--start=')) args.start = a.slice(8);
     else if (a.startsWith('--tz=')) args.tz = a.slice(5).trim() || DEFAULT_TARGET_TZ;
@@ -214,7 +220,52 @@ function collectItems(dir) {
       console.warn(`  ! Could not parse text post ${f} (${e.message}) — skipping.`);
     }
   }
+  // Image CAROUSEL posts from the sibling/child `posts/` dir (see collectCarousels).
+  for (const it of collectCarousels(dir)) items.push(it);
   return items;
+}
+
+// Characters are laid out as <char>/videos (the folder the scheduler is pointed at
+// for reels) alongside <char>/posts (image carousels). Find that posts dir — either
+// as a sibling of a …/videos folder, or a `posts` child of the given dir.
+function findPostsDir(dir) {
+  const candidates = [];
+  if (path.basename(dir).toLowerCase() === 'videos') candidates.push(path.join(path.dirname(dir), 'posts'));
+  candidates.push(path.join(dir, 'posts'));
+  for (const c of candidates) { try { if (fs.statSync(c).isDirectory()) return c; } catch { /* not there */ } }
+  return null;
+}
+
+// Sort carousel slides by the trailing -N index so they stay in author order
+// (…-1, …-2 … -10) rather than lexical order (…-1, …-10, …-2).
+function slideIndex(f) {
+  const m = /-(\d+)\.(?:jpg|jpeg|png)$/i.exec(f);
+  return m ? Number(m[1]) : 0;
+}
+
+// Each subfolder of posts/ is ONE image carousel: <name>-1.png … <name>-N.png in
+// index order, plus a <name>.txt caption. Keyed `post_<name>` so the shared ledger
+// tracks it independently from a same-named reel living in videos/.
+function collectCarousels(dir) {
+  const postsDir = findPostsDir(dir);
+  if (!postsDir) return [];
+  const out = [];
+  for (const name of fs.readdirSync(postsDir).sort()) {
+    const sub = path.join(postsDir, name);
+    let st; try { st = fs.statSync(sub); } catch { continue; }
+    if (!st.isDirectory()) continue;
+    const inner = fs.readdirSync(sub);
+    const imgs = inner.filter((f) => /\.(jpg|jpeg|png)$/i.test(f))
+      .sort((a, b) => slideIndex(a) - slideIndex(b))
+      .map((f) => path.join(sub, f));
+    if (!imgs.length) continue;
+    // Caption = the .txt in the subfolder (raw: title + body + hashtags), else name.
+    let caption = name;
+    const txt = inner.find((f) => /\.txt$/i.test(f));
+    if (txt) { try { caption = (fs.readFileSync(path.join(sub, txt), 'utf8').trim() || name); } catch { /* keep name */ } }
+    out.push({ key: `post_${name}`, media: null, images: imgs, carousel: true, meta: { caption: caption.slice(0, 2200) } });
+  }
+  return out;
 }
 
 // Meta has ONE caption field. Prefer an explicit `caption`; else stitch the
@@ -657,6 +708,31 @@ async function uploadReel(page, entry, dryRun) {
 }
 
 // ── One post ─────────────────────────────────────────────────────────────────
+// Downscale + re-encode carousel images before handing them to the composer. The
+// source PNGs are full-resolution screenshots (2–3 MB each); feeding 6–7 of them
+// (~15 MB) into Business Suite's composer pegs the renderer and the CDP calls in
+// the schedule step die on protocolTimeout (verified live). Facebook/Instagram
+// recompress uploads anyway, so shrinking to a max 1440px JPEG (~150 KB) is lossless
+// in practice and makes the composer responsive. Uses ffmpeg (already on PATH; the
+// clip pipeline uses it too). Best-effort: on any failure we fall back to originals.
+const IMG_EXT_RE = /\.(jpg|jpeg|png)$/i;
+function prepareImagesForUpload(paths) {
+  const imgs = paths.filter((p) => IMG_EXT_RE.test(p));
+  if (!imgs.length) return paths; // nothing to do (e.g. a video)
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'meta-carousel-'));
+  const out = [];
+  for (const src of paths) {
+    if (!IMG_EXT_RE.test(src)) { out.push(src); continue; }
+    const dst = path.join(outDir, path.basename(src).replace(IMG_EXT_RE, '.jpg'));
+    const r = spawnSync('ffmpeg', ['-y', '-i', src,
+      '-vf', 'scale=1440:1440:force_original_aspect_ratio=decrease', '-q:v', '4', dst],
+      { stdio: 'ignore' });
+    if (r.status === 0 && fs.existsSync(dst)) out.push(dst);
+    else { console.warn(`   ! ffmpeg downscale failed for ${path.basename(src)} — using original.`); out.push(src); }
+  }
+  return out;
+}
+
 async function uploadOne(page, entry, dryRun, targets) {
   const { item } = entry;
   const { caption } = item.meta;
@@ -707,11 +783,21 @@ async function uploadOne(page, entry, dryRun, targets) {
   // file <input>. Click it to reveal the input, then feed the file. Text-only
   // posts (item.media === null) skip this entirely — but note Instagram cannot
   // accept a text-only post, so those effectively go to Facebook only.
-  if (item.media) {
+  // A carousel post feeds SEVERAL images at once; a single reel/photo feeds one.
+  // Downscale image sets first (keeps the composer responsive — see helper above).
+  let mediaFiles = (item.images && item.images.length) ? item.images : (item.media ? [item.media] : []);
+  if (mediaFiles.length && mediaFiles.every((f) => IMG_EXT_RE.test(f))) {
+    const before = mediaFiles.length;
+    mediaFiles = prepareImagesForUpload(mediaFiles);
+    if (before > 1) console.log(`   • downscaled ${before} images for a snappier composer.`);
+  }
+  if (mediaFiles.length) {
     // "Add photo/video" is a label/button that opens a NATIVE OS file dialog (it
-    // mounts+clicks a hidden <input type=file>, so there's no persistent input in
-    // the DOM to feed). Puppeteer intercepts that dialog via waitForFileChooser
-    // and supplies the file without the blocking OS window. Verified live.
+    // mounts+clicks a hidden <input type=file multiple>, so there's no persistent
+    // input in the DOM to feed). Puppeteer intercepts that dialog via
+    // waitForFileChooser and supplies the file(s) without the blocking OS window.
+    // Passing an array of paths selects them all in one go (carousel). Verified live
+    // for a single file; multi-file relies on the input's `multiple` attribute.
     const addMedia = await waitForText(page, 'add photo|add video|photo/video|add media', { timeout: 8000, interval: 400 });
     if (!addMedia) throw new Error('Could not find the "Add photo/video" control in the composer.');
     let accepted = false;
@@ -720,12 +806,12 @@ async function uploadOne(page, entry, dryRun, targets) {
         page.waitForFileChooser({ timeout: 8000 }),
         addMedia.click(),
       ]);
-      await chooser.accept([item.media]);
+      await chooser.accept(mediaFiles);
       accepted = true;
     } catch (e) {
       throw new Error(`Media file chooser never opened (${(e.message || e).toString().split('\n')[0]}).`);
     }
-    if (accepted) console.log('   • media handed to composer, waiting for it to ingest…');
+    if (accepted) console.log(`   • ${mediaFiles.length > 1 ? `${mediaFiles.length} images (carousel)` : 'media'} handed to composer, waiting for it to ingest…`);
     // The composer shows "Uploading media" while it ingests. FIRST wait for that
     // busy state to actually APPEAR (otherwise a slow-to-start upload lets us race
     // ahead and toggle scheduling before the reel is attached, which hides the
@@ -735,6 +821,16 @@ async function uploadOne(page, entry, dryRun, targets) {
     while (Date.now() < startDeadline) { if (await busyNow()) break; await sleep(1000); }
     const ingestDeadline = Date.now() + 120000; // reels can take a while
     while (Date.now() < ingestDeadline) { if (!(await busyNow())) break; await sleep(2000); }
+    // Multi-image carousels keep rendering/processing thumbnails AFTER the "Uploading
+    // media" text clears (images often never show that busy text at all). Entering the
+    // schedule step while the composer is still churning through ~15MB of PNGs pegs the
+    // renderer, and the schedule-button poll then dies on protocolTimeout (verified
+    // failure). So give multi-image posts a proportional settle before scheduling.
+    if (mediaFiles.length > 1) {
+      const extra = Math.min(60000, 6000 * mediaFiles.length);
+      console.log(`   • carousel (${mediaFiles.length} imgs) — settling ${Math.round(extra / 1000)}s so the composer finishes rendering…`);
+      await sleep(extra);
+    }
     await sleep(2500); // settle after processing
   } else {
     console.log('   • text-only post (no media) — Facebook only, Instagram will be skipped by Meta.');
@@ -827,13 +923,23 @@ async function uploadOne(page, entry, dryRun, targets) {
   // is still processing (or on a validation error like a bad aspect ratio) —
   // clicking a disabled button silently does nothing, which previously produced a
   // FALSE success. Poll until enabled; if it never enables, fail loudly.
-  const scheduleState = () => page.evaluate(() => {
-    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
-      .find((x) => /^\s*schedule\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
-    if (!b) return { found: false };
-    return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
-  });
+  // Wrapped in try/catch: while a heavy carousel is still rendering, a single
+  // evaluate can transiently time out — swallow it and let the poll try again
+  // rather than aborting the whole (otherwise-fine) schedule.
+  const scheduleState = async () => {
+    try {
+      return await page.evaluate(() => {
+        const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+          .find((x) => /^\s*schedule\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+        if (!b) return { found: false };
+        return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
+      });
+    } catch (e) {
+      console.log(`   … schedule-button probe hiccup (${(e.message || '').split('\n')[0].slice(0, 60)}) — retrying`);
+      return { found: false };
+    }
+  };
   const schedDeadline = Date.now() + 120000;
   let ss = await scheduleState();
   while (Date.now() < schedDeadline && (!ss.found || ss.disabled)) { await sleep(2000); ss = await scheduleState(); }
@@ -847,13 +953,44 @@ async function uploadOne(page, entry, dryRun, targets) {
     });
     throw new Error(`Schedule button stayed disabled — NOT scheduled${why ? ` (${why})` : ''}.`);
   }
-  const doneBtn = await waitForText(page, '^schedule$|schedule post', { timeout: 4000, interval: 300 });
-  if (doneBtn) await doneBtn.click();
-  await sleep(3500);
-  // Verify it actually took: the composer closes on success.
-  const stillOpen = await page.evaluate(() => /Post to|Create post/i.test(document.body.innerText || '') &&
-    !!Array.from(document.querySelectorAll('div[role="button"],button')).find((b) => /^\s*schedule\s*$/i.test((b.textContent || '').trim())));
-  if (stillOpen) throw new Error('Composer did not close after Schedule — post likely NOT scheduled.');
+  // Click the (enabled) Schedule button IN-PAGE via getBoundingClientRect. The
+  // composer is a FIXED-position modal, so the offsetParent-based finders (waitForText)
+  // skip it → we were silently clicking nothing and the composer never closed (verified
+  // failure). Retry a few times and re-verify the composer actually closed each time.
+  const clickSchedule = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .find((x) => /^\s*schedule( post)?\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim())
+        && x.getAttribute('aria-disabled') !== 'true' && x.disabled !== true);
+    if (!b) return false; b.click(); return true;
+  });
+  const composerClosed = () => page.evaluate(() => !(/Post to|Create post|Schedule post/i.test(document.body.innerText || '') &&
+    !!Array.from(document.querySelectorAll('div[role="button"],button')).find((b) => /^\s*schedule\s*$/i.test((b.textContent || '').trim()))));
+  // TEMP DEBUG: dump the visible buttons + any alert/error text so we can see what
+  // the composer shows after a Schedule click that doesn't close it.
+  const dumpState = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const btns = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .map(x => (x.getAttribute('aria-label') || x.textContent || '').trim()).filter(Boolean).slice(0, 40);
+    const t = document.body.innerText || '';
+    const err = (t.match(/[^.\n]*(error|something went wrong|required|couldn'?t|can'?t|try again|aspect|too )[^.\n]*/i) || [])[0] || '';
+    const dialog = Array.from(document.querySelectorAll('[role="dialog"],[role="alertdialog"]')).filter(vis).map(d => (d.textContent || '').replace(/\s+/g, ' ').slice(0, 200));
+    return { btns, err: err.trim().slice(0, 160), dialog };
+  });
+  let closed = false;
+  for (let i = 0; i < 3 && !closed; i++) {
+    const did = await clickSchedule();
+    await sleep(4000);
+    closed = await composerClosed();
+    if (!closed) {
+      const st = await dumpState();
+      console.log(`   … Schedule click ${i + 1} (found=${did}) didn't close. buttons=${JSON.stringify(st.btns)}`);
+      if (st.err) console.log(`      possible error text: "${st.err}"`);
+      if (st.dialog.length) console.log(`      dialog(s): ${JSON.stringify(st.dialog)}`);
+      await sleep(2000);
+    }
+  }
+  if (!closed) throw new Error('Composer did not close after Schedule — post likely NOT scheduled.');
 
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel} → ${targets.join('+')}`);
   return entry.date.toISOString();
@@ -879,6 +1016,15 @@ async function uploadOne(page, entry, dryRun, targets) {
 
   const ledger = ledgerStore.loadLedger(args.dir);
   const allItems = collectItems(args.dir);
+  // Tag the brand account (e.g. @joinupshift) by appending the mention to each
+  // caption once. Instagram turns @handles in the caption into real profile links.
+  if (args.mention) {
+    const re = new RegExp('(^|\\s)' + args.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+    for (const it of allItems) {
+      const cap = it.meta.caption || '';
+      if (!re.test(cap)) it.meta.caption = `${cap}\n\n${args.mention}`.trim().slice(0, 2200);
+    }
+  }
   // Skip only items already scheduled ON META — an item on YouTube but not Meta
   // still needs its Meta run (the cross-check the user asked for).
   const items = allItems.filter((it) => !ledgerStore.isScheduled(ledger, it.key, PLATFORM));
@@ -891,7 +1037,7 @@ async function uploadOne(page, entry, dryRun, targets) {
 
   const debugUrl = `http://127.0.0.1:${args.port}`;
   console.log(`Connecting to Chrome on ${debugUrl}…`);
-  const browser = await puppeteer.connect({ browserURL: debugUrl, defaultViewport: null, protocolTimeout: 240000 });
+  const browser = await puppeteer.connect({ browserURL: debugUrl, defaultViewport: null, protocolTimeout: 600000 });
   const pages = await browser.pages();
   let page = pages.find((p) => p.url().includes('business.facebook.com')) || pages.find((p) => p.url().includes('facebook.com')) || pages[0];
   if (!page) {
@@ -981,9 +1127,24 @@ async function uploadOne(page, entry, dryRun, targets) {
       // Video → Reel composer when --reel is set (required for IG's 9:16). Images
       // and text-only posts always use the regular post composer.
       const isVideo = ledgerStore.VIDEO_RE.test(entry.item.media || '');
-      const result = (args.reel && isVideo)
-        ? await uploadReel(page, entry, args.dryRun)
-        : await uploadOne(page, entry, args.dryRun, args.targets);
+      const doUpload = () => (args.reel && isVideo)
+        ? uploadReel(page, entry, args.dryRun)
+        : uploadOne(page, entry, args.dryRun, args.targets);
+      // Business Suite's composer is FLAKY per-step (the file chooser occasionally
+      // doesn't open, a re-render drops the schedule fields, etc.) — each usually
+      // succeeds on a fresh attempt. Retry the whole item a few times, re-navigating
+      // to a clean composer (stabilize) between tries, so a fleet run doesn't lose
+      // items to transient hiccups. The shared ledger still guards against dupes.
+      let result, lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try { result = await doUpload(); lastErr = null; break; }
+        catch (e) {
+          lastErr = e;
+          console.warn(`   ↻ attempt ${attempt}/3 failed for ${entry.item.key}: ${(e.message || '').split('\n')[0]}`);
+          if (attempt < 3) await stabilize();
+        }
+      }
+      if (lastErr) throw lastErr;
       if (result === 'dry-run') {
         console.log('\nDry run complete for the first item. Watch the composer window — if the surfaces/caption/date/time look right, re-run without --dry-run.');
         break;
