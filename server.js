@@ -25,6 +25,9 @@ const path = require('path');
 const { spawn } = require('child_process');
 const puppeteer = require('puppeteer-core');
 const clipTool = require('./clipTool');
+const adbHelper = require('./adb_helper');
+const socialScheduler = require('./social_scheduler');
+const tiktokStudio = require('./tiktok_studio');
 
 const PORT = 3000;
 const DEFAULT_FLOW_PORT = 9222;
@@ -1264,6 +1267,164 @@ const server = http.createServer(async (req, res) => {
     return res.end(html);
   }
 
+  // GrapheneOS Manager UI
+  if (req.method === 'GET' && url.pathname === '/graphene') {
+    const html = fs.readFileSync(path.join(__dirname, 'public', 'graphene.html'));
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    return res.end(html);
+  }
+
+  // --- GrapheneOS ADB Scheduler endpoints ---
+  if (req.method === 'GET' && url.pathname === '/api/graphene/devices') {
+    try {
+      const devices = adbHelper.getDevices();
+      return sendJson(res, 200, { devices });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/graphene/profiles') {
+    try {
+      const adbProfiles = adbHelper.getProfiles();
+      const savedProfiles = socialScheduler.loadProfiles();
+      return sendJson(res, 200, { adbProfiles, savedProfiles });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/graphene/profiles') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        socialScheduler.saveProfiles(data);
+        return sendJson(res, 200, { ok: true });
+      } catch (e) {
+        return sendJson(res, 400, { error: 'Invalid JSON payload' });
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/graphene/schedule') {
+    try {
+      const schedule = socialScheduler.loadSchedule();
+      return sendJson(res, 200, { schedule });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/graphene/schedule/add') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      try {
+        const item = JSON.parse(body);
+        
+        if (item.mediaType === 'slideshow' && item.mediaPath && item.mediaPath.endsWith('.zip')) {
+          // Import ZIP archive containing multiple slideshows/folders
+          const tasks = socialScheduler.importZipArchive(
+            item.profileId,
+            item.subAccountId,
+            item.platforms,
+            item.mediaPath,
+            item.caption,
+            item.scheduledTime
+          );
+
+          if (!tasks || tasks.length === 0) {
+            return sendJson(res, 400, { ok: false, count: 0, error: 'No valid slideshow posts or images found in the ZIP archive.' });
+          }
+
+          // Run them sequentially in the background immediately
+          (async () => {
+            console.log(`⚡ Starting sequential execution for ${tasks.length} imported posts...`);
+            tiktokStudio.clearStop();
+            for (const t of tasks) {
+              if (tiktokStudio.isStopRequested()) { console.log('⏹️  Scheduling stopped — remaining posts left pending.'); break; }
+              try {
+                await socialScheduler.processItemImmediately(t.id);
+              } catch (err) {
+                if (err.message === 'STOP_REQUESTED') { console.log('⏹️  Scheduling stopped.'); break; }
+                console.error(`Error running imported task ${t.id}:`, err);
+              }
+            }
+          })().catch(err => console.error(err));
+
+          return sendJson(res, 200, { ok: true, count: tasks.length, type: 'multi-post', tasks });
+        } else {
+          // Standard single video/image schedule
+          const schedule = socialScheduler.loadSchedule();
+          item.id = item.id || `task_${Date.now()}`;
+          item.status = 'pending';
+          item.results = {};
+          schedule.push(item);
+          socialScheduler.saveSchedule(schedule);
+          return sendJson(res, 200, { ok: true, item, type: 'single-post' });
+        }
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, error: e.message || 'Invalid request' });
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/graphene/schedule/run/')) {
+    const taskId = url.pathname.split('/').pop();
+    try {
+      tiktokStudio.clearStop();
+      socialScheduler.processItemImmediately(taskId).catch(err => {
+        if (err.message !== 'STOP_REQUESTED') console.error(`Error executing task ${taskId} immediately:`, err);
+      });
+      return sendJson(res, 200, { ok: true, message: `Task ${taskId} execution triggered.` });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  // Stop any in-progress TikTok scheduling automation.
+  if (req.method === 'POST' && url.pathname === '/api/graphene/schedule/stop') {
+    tiktokStudio.requestStop();
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Remove task(s) from the genScript queue (local only — not from the device).
+  if (req.method === 'POST' && url.pathname === '/api/graphene/schedule/delete') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      try {
+        const { ids } = JSON.parse(body || '{}');
+        const removed = socialScheduler.deleteTasks(Array.isArray(ids) ? ids : []);
+        return sendJson(res, 200, { ok: true, removed });
+      } catch (e) {
+        return sendJson(res, 400, { error: 'Invalid payload' });
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/graphene/schedule/upload') {
+    const fileName = req.headers['x-file-name'] || `upload_${Date.now()}.mp4`;
+    const isZip = fileName.endsWith('.zip');
+    const destDir = path.join(__dirname, 'public', isZip ? 'slideshow_uploads' : 'media_library');
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    const filePath = path.join(destDir, fileName);
+    const writeStream = fs.createWriteStream(filePath);
+    req.pipe(writeStream);
+    req.on('end', () => {
+      // Return relative path for frontend reference
+      const relativePath = isZip ? `public/slideshow_uploads/${fileName}` : `public/media_library/${fileName}`;
+      return sendJson(res, 200, { ok: true, filePath, relativePath, fileName });
+    });
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/api/status') {
     const chrome = await checkChrome(DEFAULT_FLOW_PORT);
     const debugCommands = debugCommandsFor(DEFAULT_FLOW_PORT);
@@ -2012,4 +2173,5 @@ process.on('uncaughtException', (err) => {
 
 server.listen(PORT, () => {
   console.log(`\nControl panel running at http://localhost:${PORT}\n`);
+  socialScheduler.startSchedulerLoop();
 });

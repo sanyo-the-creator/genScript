@@ -1,0 +1,342 @@
+[
+  {
+    "id": "profile_0",
+    "grapheneUserId": 0,
+    "name": "Owner",
+    "subAccounts": [
+      {
+        "id": "sub_0_1",
+        "name": "Brand A",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_0_2",
+        "name": "Brand B",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_0_3",
+        "name": "Brand C",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "profile_10",
+    "grapheneUserId": 10,
+    "name": "Another Batch",
+    "subAccounts": [
+      {
+        "id": "sub_10_1",
+        "name": "Brand A",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_10_2",
+        "name": "Brand B",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_10_3",
+        "name": "Brand C",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "profile_14",
+    "grapheneUserId": 14,
+    "name": "Proxycheap",
+    "subAccounts": [
+      {
+        "id": "sub_14_1",
+        "name": "Brand A",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "mike.winxler",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_14_2",
+        "name": "Brand B",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_14_3",
+        "name": "Brand C",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "profile_11",
+    "grapheneUserId": 11,
+    "name": "New Proxy Type Batch",
+    "subAccounts": [
+      {
+        "id": "sub_11_1",
+        "name": "Brand A",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_11_2",
+        "name": "Brand B",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_11_3",
+        "name": "Brand C",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      }
+    ]
+  }
+]
