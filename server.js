@@ -1175,9 +1175,20 @@ async function checkChrome(port = DEFAULT_FLOW_PORT) {
 // start its dedicated debug Chrome (persistent per-port profile that keeps the
 // Google login) and open studio.youtube.com, exactly what ytUpload.js expects.
 const CHROME_EXE_CANDIDATES = [
+  // macOS
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  path.join(os.homedir(), 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
+  // Windows
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+  // Linux
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
 ];
 function findChromeExe() {
   for (const p of CHROME_EXE_CANDIDATES) {

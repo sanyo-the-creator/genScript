@@ -50,6 +50,9 @@
   @media (max-width: 560px) { .handle-grid { grid-template-columns: 1fr; } }
   .char-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
   .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+  .seg { display: inline-flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 20px; padding: 3px; }
+  .seg button { border: none; background: transparent; color: var(--dim); padding: 5px 14px; border-radius: 16px; font-weight: 600; cursor: pointer; font-size: 12px; }
+  .seg button.active { background: var(--accent2); color: #fff; }
   .err { color: var(--bad); font-size: 12px; margin-top: 8px; min-height: 16px; }
   a.link { color: var(--accent); }
 </style>
@@ -66,7 +69,13 @@
     <div>
       <!-- Characters -->
       <div class="card">
-        <h2>Characters</h2>
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+          <h2 style="margin:0;">Characters</h2>
+          <div class="seg" id="osSeg">
+            <button data-os="mac">🍎 macOS</button>
+            <button data-os="windows">🪟 Windows</button>
+          </div>
+        </div>
         <div id="charList"><p class="muted">Loading…</p></div>
       </div>
 
@@ -132,8 +141,16 @@ function addLog(line) {
 }
 
 let runSet = new Set(); // ids of characters currently scheduling (parallel)
+let osChoice = localStorage.getItem('yt_os') || (/Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '') ? 'mac' : 'windows');
+
+function updateOsButtons() {
+  document.querySelectorAll('#osSeg button').forEach(b => b.classList.toggle('active', b.dataset.os === osChoice));
+}
 
 function chromeCmd(port) {
+  if (osChoice === 'mac') {
+    return `/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=${port} --user-data-dir="$HOME/yt-profile-${port}"`;
+  }
   return `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=${port} --user-data-dir="%USERPROFILE%\\yt-profile-${port}"`;
 }
 
@@ -308,12 +325,22 @@ async function delChar(id) {
 $('stopBtn').onclick = () => fetch('/api/yt/stop', { method: 'POST' });
 $('refreshBtn').onclick = load;
 
+$('osSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  osChoice = b.dataset.os;
+  localStorage.setItem('yt_os', osChoice);
+  updateOsButtons();
+  load();
+});
+
 // Live log + state via the shared SSE stream.
 const es = new EventSource('/api/events');
 es.addEventListener('log', e => addLog(JSON.parse(e.data).line));
 es.addEventListener('yt', e => render(JSON.parse(e.data)));
 
 buildHandleInputs();
+updateOsButtons();
 load();
 </script>
 </body>

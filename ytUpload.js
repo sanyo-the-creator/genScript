@@ -681,11 +681,9 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
     { timeout: 6000 });
   if (!doneBtn) throw new Error('Could not find the final Schedule/Done button.');
 
-  // The Schedule button is DISABLED until YouTube finishes ingesting the upload
-  // ("Upload complete… Processing will begin shortly", 0%). Puppeteer's .click()
-  // on a disabled element throws "Node is either not clickable or not an Element"
-  // — which is exactly what silently scheduled NOTHING across a whole batch. So
-  // wait until it's enabled before clicking (processing can take a while).
+  // The Schedule button is DISABLED while the raw file is uploading (0-100%).
+  // Once the raw file upload finishes, YouTube allows scheduling even while
+  // processing (SD/HD/Checks) continues in the background.
   const doneEnabled = () => page.evaluate(() => {
     const d = document.querySelector('#done-button');
     if (!d) return { found: false };
@@ -693,48 +691,65 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
     const disabled = d.getAttribute('aria-disabled') === 'true' || (inner && inner.disabled);
     return { found: true, disabled: !!disabled };
   });
-  const enableDeadline = Date.now() + 300000; // up to 5 min — slow/hotspot uploads process slowly
+  const enableDeadline = Date.now() + 300000; // up to 5 min for raw file upload
   let ds = await doneEnabled();
-  while (Date.now() < enableDeadline && (!ds.found || ds.disabled)) { await sleep(2500); ds = await doneEnabled(); }
+  while (Date.now() < enableDeadline && (!ds.found || ds.disabled)) { await sleep(2000); ds = await doneEnabled(); }
   if (!ds.found) throw new Error('Could not find the final Schedule/Done button.');
-  if (ds.disabled) throw new Error('Schedule button stayed disabled after 5 min (video still processing — slow connection?) — not scheduled.');
-  // Robust click: at phone width the button sits in a sticky mobile footer that a
-  // coordinate click can't reach, so clickHandle scrolls it into view and falls
-  // back to a native in-page click.
-  await clickHandle(doneBtn);
+  if (ds.disabled) throw new Error('Schedule button stayed disabled after 5 min (raw video still uploading) — not scheduled.');
 
-  // Verify the schedule took. On SUCCESS the dialog closes and its frame tears
-  // down — a follow-up evaluate then throws "detached Frame" / "context was
-  // destroyed", which IS success (that's why the run reported false failures).
-  // So: detached/destroyed ⇒ scheduled; #done-button gone ⇒ scheduled; still there
-  // ⇒ retry once, then fail loudly.
-  await sleep(3000);
+  // Click Schedule / Done
+  await clickHandle(doneBtn);
+  await sleep(2500);
+
+  // Verify the schedule took. YouTube may show a "Video scheduled" or "Video processing"
+  // confirmation modal, or the dialog may close/detach immediately.
   const isDetached = (e) => /detached|context was destroyed|Target closed|Session closed/i.test((e && e.message) || '');
   let scheduled = false;
-  try {
-    const stillOpen = await page.evaluate(() => !!document.querySelector('#done-button'));
-    if (!stillOpen) scheduled = true;
-    else {
-      try { await doneBtn.evaluate((el) => el.click()); } catch (e) { if (isDetached(e)) scheduled = true; }
-      if (!scheduled) {
-        await sleep(3000);
-        try { scheduled = !(await page.evaluate(() => !!document.querySelector('#done-button'))); }
-        catch (e) { if (isDetached(e)) scheduled = true; else throw e; }
+
+  for (let i = 0; i < 10; i++) {
+    try {
+      const state = await page.evaluate(() => {
+        const text = (document.body?.innerText || '');
+        const hasSuccess = /video scheduled|scheduled to become public|upload complete|processing up to hd|processing hd|processing will begin shortly|your video has been scheduled/i.test(text);
+        const hasCloseBtn = !!(document.querySelector('#close-button') ||
+          Array.from(document.querySelectorAll('ytcp-button, button')).find((b) => /^\s*close\s*$/i.test(b.textContent || '')));
+        const hasDoneBtn = !!document.querySelector('#done-button');
+        return { hasSuccess, hasCloseBtn, hasDoneBtn };
+      });
+
+      if (state.hasSuccess || state.hasCloseBtn || !state.hasDoneBtn) {
+        scheduled = true;
+        break;
+      }
+      // If done button is still present, try clicking it once more
+      if (i === 2) {
+        try { await doneBtn.evaluate((el) => el.click()); } catch {}
+      }
+    } catch (e) {
+      if (isDetached(e)) {
+        scheduled = true;
+        break;
       }
     }
-  } catch (e) {
-    if (isDetached(e)) scheduled = true; else throw e;
+    await sleep(1500);
   }
-  if (!scheduled) throw new Error('Schedule dialog did not close after clicking Schedule — NOT scheduled.');
 
-  // Confirmation dialog → close it. Best-effort: the frame may already be gone.
+  // Dismiss any confirmation / close modal that YouTube displays
   try {
     const closeBtn = await findElement(page, () =>
       document.querySelector('#close-button') ||
-      Array.from(document.querySelectorAll('ytcp-button')).find((b) => /^\s*close\s*$/i.test(b.textContent || ''))
+      document.querySelector('button[aria-label="Close"]') ||
+      Array.from(document.querySelectorAll('ytcp-button, button')).find((b) => /^\s*close\s*$/i.test(b.textContent || ''))
     );
-    if (closeBtn) { await clickHandle(closeBtn); await sleep(800); }
+    if (closeBtn) {
+      await clickHandle(closeBtn);
+      await sleep(1000);
+    }
   } catch { /* dialog already closed */ }
+
+  if (!scheduled) {
+    throw new Error('Schedule dialog did not confirm after clicking Schedule — please check YouTube Studio.');
+  }
 
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel}`);
   return date.toISOString();
