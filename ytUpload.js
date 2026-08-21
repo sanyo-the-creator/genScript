@@ -461,25 +461,39 @@ async function isUploadLimitReached(page) {
   } catch { return false; }
 }
 
-// After the Schedule click, YouTube may interrupt with a "We're still checking
-// your content" dialog (common on newer / unverified channels, or whenever the
-// automated checks haven't finished yet) offering "Publish anyway" / "Go back".
-// If we don't confirm, the schedule never lands and the video is left as a DRAFT.
-// This finds and clicks "Publish anyway" (which schedules for our chosen time —
-// the checks simply continue in the background). Returns true if it clicked.
-async function confirmPublishAnyway(page) {
-  try {
-    const btn = await findElement(page, () =>
-      Array.from(document.querySelectorAll('ytcp-button, button, tp-yt-paper-button, yt-button-shape'))
-        .find((b) => /publish anyway/i.test(b.textContent || '')) || null
-    );
-    if (btn) {
-      await clickHandle(btn);
-      await sleep(1500);
-      return true;
-    }
-  } catch { /* dialog not present / already handled */ }
-  return false;
+// Around scheduling, YouTube interrupts with one (or both) of two "We're still
+// checking your content" dialogs — especially when a copyright claim was found
+// ("Claimed content found"):
+//   • a confirmation with "Publish anyway" / "Go back" (after the Schedule click), and
+//   • a warning ending in a single "Got it" button (shown on the Visibility step).
+// Either one, left unhandled, stalls the schedule and the video is saved as a
+// DRAFT. This clicks whichever affirmative button is present ("Publish anyway",
+// "Schedule anyway", "Publish", or "Got it") to dismiss the dialog and let the
+// schedule land — the checks simply continue in the background. It loops so both
+// dialogs get cleared, and returns how many it dismissed.
+async function dismissContentCheckDialog(page) {
+  let clicked = 0;
+  for (let i = 0; i < 4; i++) {
+    let btn = null;
+    try {
+      btn = await findElement(page, () => {
+        const inDialog = Array.from(
+          document.querySelectorAll('tp-yt-paper-dialog, ytcp-confirmation-dialog, [role="dialog"]')
+        ).filter((d) => d.offsetParent !== null);
+        const scope = inDialog.length ? inDialog : [document.body];
+        for (const root of scope) {
+          const b = Array.from(root.querySelectorAll('ytcp-button, button, tp-yt-paper-button, yt-button-shape'))
+            .find((el) => el.offsetParent !== null &&
+              /^(publish anyway|schedule anyway|got it|publish)$/i.test((el.textContent || '').replace(/\s+/g, ' ').trim()));
+          if (b) return b;
+        }
+        return null;
+      });
+    } catch { /* ignore */ }
+    if (!btn) break;
+    try { await clickHandle(btn); clicked++; await sleep(1500); } catch { break; }
+  }
+  return clicked;
 }
 
 // ── One upload ───────────────────────────────────────────────────────────────
@@ -718,14 +732,19 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   if (!ds.found) throw new Error('Could not find the final Schedule/Done button.');
   if (ds.disabled) throw new Error('Schedule button stayed disabled after 5 min (raw video still uploading) — not scheduled.');
 
+  // A "We're still checking your content" warning ("Got it") can already be
+  // covering the Visibility step (e.g. when a copyright claim was found) —
+  // dismiss it first so the Schedule button is actually clickable.
+  await dismissContentCheckDialog(page);
+
   // Click Schedule / Done
   await clickHandle(doneBtn);
   await sleep(2500);
 
-  // Immediately handle the "We're still checking your content" interstitial, if
-  // it popped up — without this the schedule silently stalls and the video is
-  // left as a draft.
-  await confirmPublishAnyway(page);
+  // Immediately handle the "still checking your content" interstitial(s) — the
+  // "Publish anyway" confirmation and/or the "Got it" warning. Without this the
+  // schedule silently stalls and the video is left as a draft.
+  await dismissContentCheckDialog(page);
 
   // Verify the schedule took. YouTube may show a "Video scheduled" or "Video processing"
   // confirmation modal, or the dialog may close/detach immediately.
@@ -734,9 +753,9 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
 
   for (let i = 0; i < 10; i++) {
     try {
-      // The "still checking your content" dialog can appear with a short delay —
-      // keep dismissing it via "Publish anyway" throughout the wait.
-      await confirmPublishAnyway(page);
+      // The "still checking your content" dialog(s) can appear with a short delay —
+      // keep dismissing them ("Publish anyway" / "Got it") throughout the wait.
+      await dismissContentCheckDialog(page);
 
       const state = await page.evaluate(() => {
         const text = (document.body?.innerText || '');
