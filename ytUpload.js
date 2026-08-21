@@ -461,6 +461,27 @@ async function isUploadLimitReached(page) {
   } catch { return false; }
 }
 
+// After the Schedule click, YouTube may interrupt with a "We're still checking
+// your content" dialog (common on newer / unverified channels, or whenever the
+// automated checks haven't finished yet) offering "Publish anyway" / "Go back".
+// If we don't confirm, the schedule never lands and the video is left as a DRAFT.
+// This finds and clicks "Publish anyway" (which schedules for our chosen time —
+// the checks simply continue in the background). Returns true if it clicked.
+async function confirmPublishAnyway(page) {
+  try {
+    const btn = await findElement(page, () =>
+      Array.from(document.querySelectorAll('ytcp-button, button, tp-yt-paper-button, yt-button-shape'))
+        .find((b) => /publish anyway/i.test(b.textContent || '')) || null
+    );
+    if (btn) {
+      await clickHandle(btn);
+      await sleep(1500);
+      return true;
+    }
+  } catch { /* dialog not present / already handled */ }
+  return false;
+}
+
 // ── One upload ───────────────────────────────────────────────────────────────
 async function uploadOne(page, entry, dryRun, setThumb = true) {
   const { item, hh, mm, date } = entry;
@@ -701,6 +722,11 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
   await clickHandle(doneBtn);
   await sleep(2500);
 
+  // Immediately handle the "We're still checking your content" interstitial, if
+  // it popped up — without this the schedule silently stalls and the video is
+  // left as a draft.
+  await confirmPublishAnyway(page);
+
   // Verify the schedule took. YouTube may show a "Video scheduled" or "Video processing"
   // confirmation modal, or the dialog may close/detach immediately.
   const isDetached = (e) => /detached|context was destroyed|Target closed|Session closed/i.test((e && e.message) || '');
@@ -708,21 +734,27 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
 
   for (let i = 0; i < 10; i++) {
     try {
+      // The "still checking your content" dialog can appear with a short delay —
+      // keep dismissing it via "Publish anyway" throughout the wait.
+      await confirmPublishAnyway(page);
+
       const state = await page.evaluate(() => {
         const text = (document.body?.innerText || '');
         const hasSuccess = /video scheduled|scheduled to become public|upload complete|processing up to hd|processing hd|processing will begin shortly|your video has been scheduled/i.test(text);
+        const stillChecking = /still checking your content|we're still checking/i.test(text);
         const hasCloseBtn = !!(document.querySelector('#close-button') ||
           Array.from(document.querySelectorAll('ytcp-button, button')).find((b) => /^\s*close\s*$/i.test(b.textContent || '')));
         const hasDoneBtn = !!document.querySelector('#done-button');
-        return { hasSuccess, hasCloseBtn, hasDoneBtn };
+        return { hasSuccess, stillChecking, hasCloseBtn, hasDoneBtn };
       });
 
-      if (state.hasSuccess || state.hasCloseBtn || !state.hasDoneBtn) {
+      // Only treat as done once the "still checking" dialog is gone.
+      if (!state.stillChecking && (state.hasSuccess || state.hasCloseBtn || !state.hasDoneBtn)) {
         scheduled = true;
         break;
       }
-      // If done button is still present, try clicking it once more
-      if (i === 2) {
+      // If done button is still present (and no blocking dialog), nudge it again.
+      if (i === 2 && !state.stillChecking) {
         try { await doneBtn.evaluate((el) => el.click()); } catch {}
       }
     } catch (e) {
