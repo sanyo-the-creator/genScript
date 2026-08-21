@@ -180,9 +180,10 @@
         </div>
         <div class="hint">Slideshow scheduling is fully wired for <b>TikTok</b>. #fyp and #foryoupage are added automatically.</div>
 
-        <div id="timeContainer" style="display:none">
-          <label id="timeLabel">Scheduled date &amp; time</label>
-          <input type="datetime-local" id="scheduleTime" />
+        <div id="timeContainer" style="margin-top: 14px;">
+          <label id="timeLabel">Start date <span class="muted">(optional — defaults to today)</span></label>
+          <input type="date" id="scheduleTime" />
+          <div class="hint" id="timeHint">Posts auto-schedule at 3PM / 6PM / 9PM phone time, starting from this date and rolling onto following days.</div>
         </div>
 
         <button id="addQueueBtn" class="primary" style="margin-top:18px; width:100%">Schedule post</button>
@@ -542,14 +543,18 @@
             $('captionContainer').style.display = 'block';
             const capLabel = $('captionContainer').querySelector('label');
             if (capLabel) capLabel.innerHTML = 'Fallback caption <span class="muted">(used if slideshow folder lacks a .txt file)</span>';
-            $('timeContainer').style.display = 'none';
+            $('timeContainer').style.display = 'block';
+            $('timeLabel').innerHTML = 'Start scheduling from date <span class="muted">(optional — defaults to today)</span>';
+            $('scheduleTime').type = 'date';
+            $('timeHint').textContent = 'Posts auto-schedule across 3 slots per day (3PM, 6PM, 9PM phone time) starting from this day, rolling onto following days.';
           } else {
             $('captionContainer').style.display = 'block';
             const capLabel = $('captionContainer').querySelector('label');
             if (capLabel) capLabel.innerHTML = 'Caption / post text <span class="muted">(first line becomes the YouTube title)</span>';
+            $('timeContainer').style.display = 'block';
             $('timeLabel').textContent = 'Scheduled date & time';
             $('scheduleTime').type = 'datetime-local';
-            $('timeContainer').style.display = 'block';
+            $('timeHint').textContent = 'Exact date and time when this single post should be published.';
           }
         } else {
           $('fileStatus').textContent = 'Upload failed: ' + (res.error || 'Unknown error');
@@ -573,7 +578,8 @@
       const item = {
         profileId, subAccountId, platforms,
         caption: caption || '',
-        scheduledTime: uploadMediaType === 'slideshow' ? '' : new Date(scheduledTime).toISOString(),
+        startDate: scheduledTime || '',
+        scheduledTime: uploadMediaType === 'slideshow' ? (scheduledTime || '') : new Date(scheduledTime).toISOString(),
         mediaPath: uploadFilePath, fileName: uploadFileName, mediaType: uploadMediaType
       };
       
@@ -586,13 +592,25 @@
         });
         const res = await r.json().catch(() => ({}));
         if (r.ok && res.ok) {
-          alert(res.count ? `Successfully scheduled ${res.count} post${res.count > 1 ? 's' : ''}! Background automation has started.` : 'Post scheduled.');
+          let msg = '';
+          if (res.count > 0) {
+            msg = `Successfully scheduled ${res.count} post${res.count > 1 ? 's' : ''}!`;
+            if (res.skipped > 0) msg += ` (${res.skipped} already posted/scheduled and skipped)`;
+            msg += ' Background automation has started.';
+          } else if (res.skipped > 0) {
+            msg = `All ${res.skipped} post${res.skipped > 1 ? 's' : ''} were already scheduled/posted on this account and were skipped.`;
+          } else {
+            msg = 'Post scheduled.';
+          }
+          alert(msg);
           loadQueue();
           $('postCaption').value = '';
           $('scheduleTime').value = '';
+          $('scheduleTime').type = 'date';
+          $('timeLabel').innerHTML = 'Start date <span class="muted">(optional — defaults to today)</span>';
+          $('timeHint').textContent = 'Posts auto-schedule at 3PM / 6PM / 9PM phone time, starting from this date and rolling onto following days.';
           $('fileStatus').textContent = 'No file selected';
           $('captionContainer').style.display = 'none';
-          $('timeContainer').style.display = 'none';
           uploadFilePath = '';
         } else {
           alert(res.error || 'Failed to schedule post.');

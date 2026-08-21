@@ -176,7 +176,7 @@
     "subAccounts": [
       {
         "id": "sub_14_1",
-        "name": "Brand A",
+        "name": "mike.winxler",
         "accounts": {
           "instagram": {
             "username": "",
@@ -202,14 +202,14 @@
       },
       {
         "id": "sub_14_2",
-        "name": "Brand B",
+        "name": "chriss.vayne",
         "accounts": {
           "instagram": {
             "username": "",
             "accountIndex": 1
           },
           "tiktok": {
-            "username": "",
+            "username": "chriss.vayne",
             "accountIndex": 1
           },
           "threads": {

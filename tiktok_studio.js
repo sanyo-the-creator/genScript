@@ -94,17 +94,27 @@ function addDays({ y, mo, d }, days) {
 // Returns [{ dayOffset, hour, minute, label, wall:{y,mo,d,h,mi} }] where
 // dayOffset is days ahead of the phone's today and `wall` is the absolute
 // phone-local calendar date+time. Rolls over to following days as needed.
-function nextPhoneSlots(count, slots = [15, 18, 21], jitterMin = 10) {
+function nextPhoneSlots(count, slots = [15, 18, 21], jitterMin = 10, startDate = null) {
   const now = getPhoneNow();
+  let startOffset = 0;
+  if (startDate) {
+    const m = String(startDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) {
+      const targetUtc = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+      const nowUtc = Date.UTC(now.y, now.mo - 1, now.d);
+      const diffDays = Math.round((targetUtc - nowUtc) / 86400000);
+      startOffset = Math.max(0, diffDays);
+    }
+  }
   const nowMinsAbs = now.d * 1440 + now.h * 60 + now.mi; // approx within a month
   const res = [];
-  for (let dayOffset = 0; res.length < count; dayOffset++) {
+  for (let dayOffset = startOffset; res.length < count; dayOffset++) {
     for (const h of slots) {
       const jitter = Math.floor(Math.random() * (2 * jitterMin + 1)) - jitterMin;
       let hour = h, minute = jitter;
       if (minute < 0) { hour -= 1; minute += 60; }
       const slotMinsAbs = (now.d + dayOffset) * 1440 + hour * 60 + minute;
-      if (slotMinsAbs > nowMinsAbs + 15) { // at least 15 min ahead of phone-now
+      if (dayOffset > 0 || slotMinsAbs > nowMinsAbs + 15) { // at least 15 min ahead if today, always valid if future day
         const day = addDays(now, dayOffset);
         res.push({ dayOffset, hour, minute,
           wall: { y: day.y, mo: day.mo, d: day.d, h: hour, mi: minute },
@@ -112,7 +122,7 @@ function nextPhoneSlots(count, slots = [15, 18, 21], jitterMin = 10) {
         if (res.length >= count) break;
       }
     }
-    if (dayOffset > 30) break; // safety
+    if (dayOffset > startOffset + 60) break; // safety
   }
   return res;
 }

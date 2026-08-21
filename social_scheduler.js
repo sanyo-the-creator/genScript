@@ -421,10 +421,35 @@ function importZipArchive(profileId, subAccountId, platforms, zipPath, fallbackC
     throw new Error('No images or slideshow folders found in the extracted ZIP archive.');
   }
 
-  const targetSlots = tiktokStudio.nextPhoneSlots(discoveredPosts.length);
+  // Deduplication check: find which items are already scheduled/posted for this sub-account
+  const existingForSub = schedule.filter(t => 
+    t.profileId === profileId && 
+    t.subAccountId === subAccountId && 
+    (t.status === 'success' || t.status === 'pending' || t.status === 'running')
+  );
+  const existingNames = new Set(existingForSub.map(t => t.fileName).filter(Boolean));
+
+  const newPosts = discoveredPosts.filter(p => {
+    const isDup = existingNames.has(p.name);
+    if (isDup) {
+      console.log(`   ⏭️  Skipping already scheduled/posted item: "${p.name}" for sub-account ${subAccountId}`);
+    }
+    return !isDup;
+  });
+
+  const skippedCount = discoveredPosts.length - newPosts.length;
+
+  if (newPosts.length === 0) {
+    console.log(`ℹ️ All ${discoveredPosts.length} posts in this ZIP were already scheduled/posted for this account.`);
+    try { execSync(`rm -rf "${tempExtractDir}"`); } catch {}
+    try { fs.unlinkSync(zipPath); } catch {}
+    return { tasks: [], skipped: skippedCount, total: discoveredPosts.length };
+  }
+
+  const targetSlots = tiktokStudio.nextPhoneSlots(newPosts.length, [15, 18, 21], 10, startDateLabel);
   let tasksCreated = [];
 
-  discoveredPosts.forEach((post, index) => {
+  newPosts.forEach((post, index) => {
     const taskId = `task_${Date.now()}_${index}`;
     const destDir = path.join(__dirname, 'public', 'media_library', taskId);
     fs.mkdirSync(destDir, { recursive: true });
@@ -469,7 +494,7 @@ function importZipArchive(profileId, subAccountId, platforms, zipPath, fallbackC
   try { fs.unlinkSync(zipPath); } catch {}
 
   saveSchedule(schedule);
-  return tasksCreated;
+  return { tasks: tasksCreated, skipped: skippedCount, total: discoveredPosts.length };
 }
 
 module.exports = {
