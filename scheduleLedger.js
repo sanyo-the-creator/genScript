@@ -27,12 +27,104 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const LEDGER_NAME = '.schedule-done.json';
 const ALL_PLATFORMS = ['youtube', 'meta'];
 const VIDEO_RE = /\.(mp4|webm|mov)$/i;
 
 function ledgerPath(dir) { return path.join(dir, LEDGER_NAME); }
+
+// ── CONTENT IDENTITY ────────────────────────────────────────────────────────
+// A filename is NOT an identity: delete "clip_03.mp4" and drop a brand-new
+// slideshow in under the same name and the old ledger entry would silently mark
+// the new video as "already scheduled", so it never gets posted. Every entry
+// therefore also carries `_fp` — a fingerprint of the actual bytes behind that
+// key. On load we re-fingerprint what's on disk: same bytes → entry stands;
+// different bytes → the key is a NEW item and its platform records are dropped
+// so it schedules normally.
+const FP_EXTS = ['.mp4', '.webm', '.mov', '.jpg', '.jpeg', '.png', '.json'];
+const FP_CHUNK = 256 * 1024;
+
+// Cheap but collision-safe enough: size + first 256KB + last 256KB. Full-file
+// hashing a folder of 100MB videos on every load would be far too slow, and any
+// re-encode/re-render changes the size and the head bytes.
+function hashFile(p) {
+  const st = fs.statSync(p);
+  const h = crypto.createHash('sha1');
+  h.update(String(st.size));
+  const fd = fs.openSync(p, 'r');
+  try {
+    const n = Math.min(FP_CHUNK, st.size);
+    if (n > 0) {
+      const head = Buffer.alloc(n);
+      fs.readSync(fd, head, 0, n, 0);
+      h.update(head);
+    }
+    if (st.size > FP_CHUNK * 2) {
+      const tail = Buffer.alloc(FP_CHUNK);
+      fs.readSync(fd, tail, 0, FP_CHUNK, st.size - FP_CHUNK);
+      h.update(tail);
+    }
+  } finally { fs.closeSync(fd); }
+  return h.digest('hex');
+}
+
+// Every file that makes up one ledger key: `base.<media ext>` + its `base.json`
+// sidecar, or — for carousel keys `post_<name>` — the whole `<name>/` slide
+// folder. Caption edits count as a change too, which is what we want.
+function partsFor(dir, key) {
+  const parts = [];
+  const carousel = /^post_(.+)$/.exec(key);
+  if (carousel) {
+    const sub = path.join(dir, carousel[1]);
+    try {
+      if (fs.statSync(sub).isDirectory()) {
+        for (const f of fs.readdirSync(sub).sort()) {
+          const fp = path.join(sub, f);
+          try { if (fs.statSync(fp).isFile()) parts.push(fp); } catch {}
+        }
+      }
+    } catch {}
+  }
+  for (const ext of FP_EXTS) {
+    const p = path.join(dir, key + ext);
+    try { if (fs.statSync(p).isFile()) parts.push(p); } catch {}
+  }
+  return parts;
+}
+
+// Fingerprint of everything behind `key`, or null when nothing is on disk (the
+// media was deleted after posting — the entry stays a tombstone so a folder
+// re-sync can't repost it).
+function fingerprint(dir, key) {
+  const parts = partsFor(dir, key);
+  if (!parts.length) return null;
+  const h = crypto.createHash('sha1');
+  for (const p of parts) {
+    h.update(path.basename(p));
+    try { h.update(hashFile(p)); } catch { return null; }
+  }
+  return h.digest('hex').slice(0, 24);
+}
+
+// Drop platform records for any key whose bytes on disk no longer match what was
+// scheduled. Entries written before fingerprinting existed adopt the current file
+// once (so an existing backlog is never re-posted on upgrade).
+function reconcile(dir, led) {
+  let changed = false;
+  for (const key of Object.keys(led)) {
+    const entry = led[key];
+    if (!entry || typeof entry !== 'object') continue;
+    const fp = fingerprint(dir, key);
+    if (!fp) continue;                       // nothing on disk → keep as tombstone
+    if (!entry._fp) { entry._fp = fp; changed = true; continue; }  // legacy adopt
+    if (entry._fp === fp) continue;          // same content → still scheduled
+    led[key] = { _fp: fp, _replacedAt: new Date().toISOString() };  // new item
+    changed = true;
+  }
+  return changed;
+}
 
 // Load the unified ledger, folding in any legacy per-platform ledgers the FIRST
 // time we see a folder that predates this module (so nothing already scheduled is
@@ -44,6 +136,7 @@ function loadLedger(dir) {
   let changed = false;
   changed = foldLegacy(dir, '.ytupload-done.json', 'youtube', led) || changed;
   changed = foldLegacy(dir, '.metaupload-done.json', 'meta', led) || changed;
+  changed = reconcile(dir, led) || changed;
   if (changed) saveLedger(dir, led);
   return led;
 }
@@ -74,6 +167,12 @@ function isScheduled(led, key, platform) {
 // mid-batch loses nothing. Returns the updated ledger.
 function markScheduled(dir, led, key, platform, info) {
   led[key] ||= {};
+  // Stamp the identity of what we ACTUALLY just scheduled, so replacing the file
+  // later is detected even if this key is never reconciled in between.
+  if (!led[key]._fp) {
+    const fp = fingerprint(dir, key);
+    if (fp) led[key]._fp = fp;
+  }
   led[key][platform] = info;
   saveLedger(dir, led);
   return led;
@@ -93,5 +192,6 @@ function allRequiredDone(led, key, mediaNameOrPath) {
 module.exports = {
   LEDGER_NAME, ALL_PLATFORMS, VIDEO_RE,
   ledgerPath, loadLedger, saveLedger,
+  fingerprint, reconcile,
   isScheduled, markScheduled, requiredPlatforms, allRequiredDone,
 };
