@@ -108,9 +108,35 @@ function fingerprint(dir, key) {
   return h.digest('hex').slice(0, 24);
 }
 
-// Drop platform records for any key whose bytes on disk no longer match what was
-// scheduled. Entries written before fingerprinting existed adopt the current file
-// once (so an existing backlog is never re-posted on upgrade).
+// Newest mtime across the files behind `key`, or 0 when none are on disk.
+function newestMtime(dir, key) {
+  let newest = 0;
+  for (const p of partsFor(dir, key)) {
+    try { newest = Math.max(newest, fs.statSync(p).mtimeMs); } catch {}
+  }
+  return newest;
+}
+
+// Entries written before fingerprinting existed have no `_fp` to compare against,
+// so they fall back to a second, independent signal: a file CANNOT be the one that
+// got scheduled if it was written after that schedule was placed. `scheduledAt` is
+// a future publish slot, and the media always exists before we book it — so an
+// mtime later than the latest recorded slot means the file was swapped out, and
+// the entry does not describe what's on disk now.
+function legacyLooksReplaced(dir, key, entry) {
+  let latest = 0;
+  for (const [platform, info] of Object.entries(entry)) {
+    if (platform.startsWith('_') || !info || !info.scheduledAt) continue;
+    const t = Date.parse(info.scheduledAt);
+    if (!Number.isNaN(t)) latest = Math.max(latest, t);
+  }
+  if (!latest) return false;              // no timestamp to reason from → adopt
+  return newestMtime(dir, key) > latest;
+}
+
+// Drop platform records for any key whose content on disk no longer matches what
+// was scheduled, so it schedules again. Untouched legacy entries adopt their
+// current file (an existing backlog is never re-posted on upgrade).
 function reconcile(dir, led) {
   let changed = false;
   for (const key of Object.keys(led)) {
@@ -118,8 +144,11 @@ function reconcile(dir, led) {
     if (!entry || typeof entry !== 'object') continue;
     const fp = fingerprint(dir, key);
     if (!fp) continue;                       // nothing on disk → keep as tombstone
-    if (!entry._fp) { entry._fp = fp; changed = true; continue; }  // legacy adopt
-    if (entry._fp === fp) continue;          // same content → still scheduled
+    if (!entry._fp) {
+      if (!legacyLooksReplaced(dir, key, entry)) { entry._fp = fp; changed = true; continue; }
+    } else if (entry._fp === fp) {
+      continue;                              // same content → still scheduled
+    }
     led[key] = { _fp: fp, _replacedAt: new Date().toISOString() };  // new item
     changed = true;
   }
