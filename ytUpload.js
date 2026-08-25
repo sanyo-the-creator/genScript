@@ -98,6 +98,137 @@ function extractFirstFrame(videoPath) {
   });
 }
 
+// Selector for the custom-thumbnail editor. Studio renders the compact editor at
+// phone width and the full one on desktop; both own their OWN hidden image
+// <input type="file">. We ALWAYS scope the file input to this editor — a global
+// "first input[type=file]" lookup can hit the VIDEO uploader and silently
+// re-upload the clip instead of setting a thumbnail.
+const THUMB_EDITOR_SEL = 'ytcp-thumbnails-compact-editor, ytcp-video-thumbnail-editor, ytcp-thumbnail-editor, #thumbnail-uploader';
+
+// Poll Studio's status line until the file has finished UPLOADING. The status
+// goes "Uploading NN% …" → "Upload complete … Processing up to HD …" → "Checks
+// complete". Only "Uploading NN%" means not-ready: the old check also treated
+// the word "processing" (and "100%") as done, so on a fast connection it matched
+// the very first poll and we touched the thumbnail tile mid-upload, where Studio
+// silently drops it.
+async function waitForUploadComplete(page, timeout = 900000) {
+  const read = () => page.evaluate(() => {
+    const t = document.body?.innerText || '';
+    const m = t.match(/uploading\s+(\d+)\s*%/i);
+    return { uploading: !!m, pct: m ? Number(m[1]) : null };
+  }).catch(() => ({ uploading: false, pct: null }));
+  const deadline = Date.now() + timeout;
+  let s = await read();
+  let last = -1;
+  while (Date.now() < deadline && s.uploading) {
+    if (s.pct !== null && s.pct !== last) { last = s.pct; console.log(`   • uploading ${s.pct}% …`); }
+    await sleep(2500);
+    s = await read();
+  }
+  return !s.uploading;
+}
+
+// True once the editor actually shows a picked thumbnail (a real image preview),
+// as opposed to the empty "Upload file / Select from video" tiles.
+function thumbnailIsSet(page) {
+  return page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
+    if (!ed) return false;
+    return Array.from(ed.querySelectorAll('img')).some((i) => {
+      const src = i.currentSrc || i.src || '';
+      return /^(blob:|data:image|https?:)/.test(src) && i.clientWidth > 40;
+    });
+  }, THUMB_EDITOR_SEL).catch(() => false);
+}
+
+// Fallback path when ffmpeg isn't available (or its upload didn't take): use
+// Studio's own "Select from video" picker. Those stills only exist once the
+// video has been PROCESSED, so we wait for real still images to render instead
+// of clicking through the "still being processed" placeholder.
+async function pickThumbnailFromVideo(page) {
+  const opener = await waitForElement(page, () =>
+    Array.from(document.querySelectorAll('ytcp-button, button, [role="button"]'))
+      .find((b) => /select from video|auto-?generated/i.test(b.textContent || '')) || null,
+    { timeout: 20000, interval: 1000 });
+  if (!opener) return false;
+  await clickHandle(opener);
+  await sleep(1500);
+  const still = await waitForElement(page, () =>
+    document.querySelector('ytcp-still-cell img, ytcp-still-picker img, #still-picker img') ||
+    Array.from(document.querySelectorAll('tp-yt-paper-dialog img, ytcp-dialog img'))
+      .find((i) => /^(blob:|data:image|https?:)/.test(i.currentSrc || i.src || '') && i.clientWidth > 40) ||
+    null,
+    { timeout: 600000, interval: 5000 }); // processing can take minutes
+  if (!still) {
+    console.warn('   ! Studio never produced video stills — leaving the thumbnail unset.');
+    const cancel = await findElement(page, () =>
+      Array.from(document.querySelectorAll('ytcp-button, button')).find((b) => /^\s*cancel\s*$/i.test(b.textContent || '')) || null);
+    if (cancel) { await clickHandle(cancel); await sleep(500); }
+    return false;
+  }
+  await clickHandle(still); // the FIRST still = the opening frame of the video
+  await sleep(600);
+  const confirm = await findElement(page, () =>
+    Array.from(document.querySelectorAll('ytcp-button, button'))
+      .find((b) => /^\s*(done|select|save)\s*$/i.test(b.textContent || '')) || null);
+  if (confirm) { await clickHandle(confirm); await sleep(2000); }
+  return thumbnailIsSet(page);
+}
+
+// Set the video's first frame as the custom thumbnail. Best-effort: an
+// unverified channel has no custom-thumbnail privilege, and the upload must
+// never fail over a thumbnail.
+async function setCustomThumbnail(page, videoPath) {
+  if (!(await waitForUploadComplete(page))) {
+    console.warn('   ! Video still uploading after 15 min — skipping the thumbnail.');
+    return false;
+  }
+  console.log('   • video finished uploading — setting the custom thumbnail now.');
+
+  const editor = await waitForElement(page, (sel) => document.querySelector(sel), { timeout: 20000, args: [THUMB_EDITOR_SEL] });
+  if (!editor) {
+    console.warn('   ! Thumbnail editor not found (channel may lack custom-thumbnail access) — skipping.');
+    return false;
+  }
+  try { await editor.evaluate((el) => el.scrollIntoView({ block: 'center' })); } catch { /* detached */ }
+  await sleep(400);
+
+  const thumbPath = await extractFirstFrame(videoPath);
+  if (thumbPath) {
+    try {
+      const thumbInput = await waitForElement(page, (sel) => {
+        const ed = document.querySelector(sel);
+        if (!ed) return null;
+        const inputs = Array.from(ed.querySelectorAll('input[type="file"]'));
+        return inputs.find((i) => /image/i.test(i.accept || '')) || inputs[0] || null;
+      }, { timeout: 10000, interval: 400, args: [THUMB_EDITOR_SEL] });
+      if (thumbInput) {
+        await thumbInput.uploadFile(thumbPath);
+        // Studio ingests + renders the preview; poll rather than a blind sleep.
+        for (let i = 0; i < 20 && !(await thumbnailIsSet(page)); i++) await sleep(1000);
+      } else {
+        console.warn('   ! Thumbnail file input not found inside the editor.');
+      }
+    } catch (e) {
+      console.warn(`   ! Thumbnail upload failed (${(e.message || e).toString().split('\n')[0]}).`);
+    } finally {
+      try { fs.unlinkSync(thumbPath); } catch { /* temp file */ }
+    }
+  }
+
+  if (await thumbnailIsSet(page)) {
+    console.log('   • custom thumbnail (first frame) set.');
+    return true;
+  }
+  console.log('   • falling back to Studio\'s "Select from video" first still …');
+  if (await pickThumbnailFromVideo(page)) {
+    console.log('   • thumbnail set from the video\'s first still.');
+    return true;
+  }
+  console.warn('   ! Could not set a custom thumbnail — continuing without one.');
+  return false;
+}
+
 // Viral-in-USA daily slots (channel-timezone clock times), ordered BEST-FIRST so
 // a low --per-day automatically uses the strongest US windows. Rough ET peaks
 // for Shorts: the 7–10pm evening block and around midday, plus a morning slot.
@@ -139,12 +270,12 @@ function parseArgs(argv) {
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
     else if (a === '--no-thumbnail') args.thumbnail = false; // don't set the first frame as the custom thumbnail
-    // Phone-width viewport exposes the custom-thumbnail tile for UNVERIFIED channels,
-    // but it destabilises the final Schedule click, so it's OFF by default now —
-    // scheduling reliability comes first. Opt in with --mobile if you specifically
-    // need the thumbnail trick and can tolerate the flakier schedule step.
+    // Phone-width viewport exposes the custom-thumbnail tile for UNVERIFIED channels.
+    // It's ON by default (mobile: true) because custom thumbnails are wanted; the
+    // flakier mobile-footer Schedule click is handled by the robust fresh-handle
+    // retry loop below, so it no longer causes missed/duplicate scheduling.
     else if (a === '--mobile') args.mobile = true;
-    else if (a === '--no-mobile') args.mobile = false; // (kept for back-compat; already the default)
+    else if (a === '--no-mobile') args.mobile = false; // opt out → desktop layout (thumbnails only on verified channels)
     else if (a === '--no-check') args.noCheck = true; // skip reading the channel's existing schedule
     else if (a === '--delete-after') args.deleteAfter = true; // remove mp4+json from the folder once scheduled
     else if (a.startsWith('--start=')) args.start = a.slice(8);
@@ -497,9 +628,17 @@ async function dismissContentCheckDialog(page) {
 }
 
 // ── One upload ───────────────────────────────────────────────────────────────
-async function uploadOne(page, entry, dryRun, setThumb = true) {
+async function uploadOne(page, entry, dryRun, setThumb = true, dir = null, ledger = null) {
   const { item, hh, mm, date } = entry;
   const { title, description, tags } = item.meta;
+
+  // Safety net: if this video was already marked as scheduled in the ledger
+  // (e.g. by a parallel/overlapping run), skip it instead of double-posting.
+  if (ledger && ledgerStore.isScheduled(ledger, item.key, PLATFORM)) {
+    console.log(`\n⏭ ${item.key} — already in ledger, skipping.`);
+    return 'already-done';
+  }
+
   console.log(`\n▶ ${item.key}`);
   console.log(`   title: ${title}`);
   console.log(`   when : ${entry.dateLabel} ${entry.timeLabel}`);
@@ -597,35 +736,12 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
     }
   }
 
-  // 6b) Custom thumbnail = the video's FIRST frame. Best-effort: if the channel
-  // has no custom-thumbnail privilege (unverified) or the tile isn't found, we
-  // warn and carry on — the upload must never fail just because of a thumbnail.
+  // 6b) Custom thumbnail = the video's FIRST frame. Runs only AFTER the upload
+  // itself is finished (Studio drops thumbnails set mid-upload) and verifies the
+  // preview actually rendered, falling back to Studio's own "Select from video"
+  // stills when ffmpeg isn't available.
   if (setThumb) {
-    const thumbPath = await extractFirstFrame(item.video);
-    if (thumbPath) {
-      try {
-        // The thumbnail picker owns its OWN hidden file <input> (accepts images),
-        // distinct from the video input. Match by accept=image, scoped to the
-        // thumbnail editor when possible.
-        const thumbInput = await waitForElement(page, () =>
-          document.querySelector('ytcp-thumbnails-compact-editor input[type="file"]') ||
-          document.querySelector('#file-loader') ||
-          Array.from(document.querySelectorAll('input[type="file"]')).find((i) => /image/i.test(i.accept || '')) ||
-          null,
-          { timeout: 8000, interval: 400 });
-        if (thumbInput) {
-          await thumbInput.uploadFile(thumbPath);
-          await sleep(2500); // let Studio ingest + render the custom thumbnail
-          console.log('   • custom thumbnail (first frame) uploaded.');
-        } else {
-          console.warn('   ! Thumbnail uploader not found (channel may lack custom-thumbnail access) — skipping.');
-        }
-      } catch (e) {
-        console.warn(`   ! Thumbnail upload failed (${(e.message || e).toString().split('\n')[0]}) — skipping.`);
-      } finally {
-        try { fs.unlinkSync(thumbPath); } catch {}
-      }
-    }
+    await setCustomThumbnail(page, item.video);
   }
 
   // 7) Next until the Visibility step. The step count varies (monetisation/checks
@@ -802,8 +918,21 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
     throw new Error('Schedule dialog did not confirm after clicking Schedule — please check YouTube Studio.');
   }
 
+  // ── Record in the ledger IMMEDIATELY after confirming the schedule ──
+  // If the script crashes later, the ledger already knows this video is done,
+  // so the next run won't re-upload it. The outer loop retries on failure.
+  const scheduledIso = date.toISOString();
+  if (dir && ledger) {
+    try {
+      ledgerStore.markScheduled(dir, ledger, item.key, PLATFORM, { scheduledAt: scheduledIso, title });
+      console.log(`   ✓ Ledger updated for ${item.key} (${PLATFORM}).`);
+    } catch (e) {
+      console.warn(`   ! Ledger write failed (${e.message}) — outer loop will retry.`);
+    }
+  }
+
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel}`);
-  return date.toISOString();
+  return scheduledIso;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -900,7 +1029,11 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
         if (fresh) { page = fresh; await page.bringToFront().catch(() => {}); }
       }
       if (args.mobile) await emulateMobile(page);
-      const result = await uploadOne(page, entry, args.dryRun, args.thumbnail);
+      const result = await uploadOne(page, entry, args.dryRun, args.thumbnail, args.dir, ledger);
+      if (result === 'already-done') {
+        console.log(`   (ledger says already done — skipped)`);
+        continue;
+      }
       if (result === 'dry-run') {
         console.log('\nDry run complete for the first video. Watch the Studio window — if the date/time/title look right, re-run without --dry-run.');
         break;
@@ -911,7 +1044,12 @@ async function uploadOne(page, entry, dryRun, setThumb = true) {
         try { await page.close(); } catch { /* already gone */ }
         break;
       }
-      ledgerStore.markScheduled(args.dir, ledger, entry.item.key, PLATFORM, { scheduledAt: result, title: entry.item.meta.title });
+      // markScheduled is already called inside uploadOne() right after the
+      // schedule is confirmed. This is a safety fallback in case the inner
+      // write failed (e.g. disk error) — the ledger write is idempotent.
+      if (!ledgerStore.isScheduled(ledger, entry.item.key, PLATFORM)) {
+        ledgerStore.markScheduled(args.dir, ledger, entry.item.key, PLATFORM, { scheduledAt: result, title: entry.item.meta.title });
+      }
       // With --delete-after, remove the video + sidecar ONLY once it's been
       // scheduled on every platform it's due on (video ⇒ YouTube AND Meta). If
       // Meta hasn't taken it yet, we keep the file so the Meta run can still find
