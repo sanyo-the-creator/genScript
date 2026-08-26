@@ -97,6 +97,8 @@
         </div>
         <label style="margin-top:14px;">Usernames per platform (shown as badges — for your overview)</label>
         <div class="handle-grid" id="handleGrid"></div>
+        <label style="margin-top:14px;">Logged-in platforms (checked = this character is logged in, available for scheduling)</label>
+        <div class="handle-grid" id="loggedGrid"></div>
         <div class="err" id="formErr"></div>
         <div style="display:flex; gap:8px; margin-top:10px;">
           <button class="primary" id="saveBtn">Save character</button>
@@ -161,12 +163,13 @@ function setLoggedPref(id, on) { localStorage.setItem('ytLogged_' + id, on ? '1'
 
 // Platforms shown in the per-character username fields + badges. `label` is the
 // short chip text; `color` its brand-ish tint; `pre` the handle prefix.
+// `schedulable` marks whether this platform can be scheduled from the UI.
 const PLATFORMS = [
-  { key: 'youtube',   label: 'YouTube',   color: '#c4302b', pre: '@' },
-  { key: 'facebook',  label: 'Facebook',  color: '#1877f2', pre: ''  },
-  { key: 'instagram', label: 'Instagram', color: '#c13584', pre: '@' },
-  { key: 'x',         label: 'X',         color: '#4b5563', pre: '@' },
-  { key: 'threads',   label: 'Threads',   color: '#3b3b3b', pre: '@' },
+  { key: 'youtube',   label: 'YouTube',   color: '#c4302b', pre: '@', schedulable: true },
+  { key: 'facebook',  label: 'Facebook',  color: '#1877f2', pre: '',  schedulable: true },
+  { key: 'instagram', label: 'Instagram', color: '#c13584', pre: '@', schedulable: true },
+  { key: 'x',         label: 'X',         color: '#4b5563', pre: '@', schedulable: true },
+  { key: 'threads',   label: 'Threads',   color: '#3b3b3b', pre: '@', schedulable: true },
 ];
 
 // Render the set handles of a character as coloured badges (skips empty ones).
@@ -183,6 +186,23 @@ function charCard(c) {
   const folderBadge = c.folderExists
     ? `<span class="badge good">${c.pending} video${c.pending===1?'':'s'} ready</span>`
     : `<span class="badge bad">folder not found</span>`;
+
+  // Build platform dropdown options based on loggedPlatforms
+  const logged = c.loggedPlatforms || {};
+  const platformOpts = [];
+  platformOpts.push('<option value="all">All (sequential)</option>');
+  if (logged.youtube) platformOpts.push('<option value="youtube" selected>YouTube (Shorts)</option>');
+  // Facebook and Instagram are SEPARATE options (each logged into Business Suite on
+  // its own), scheduled independently. The combined "Meta (FB + IG)" cross-post is
+  // still offered when BOTH are logged in, for anyone who wants one shared entry.
+  if (logged.facebook) platformOpts.push('<option value="fb">Facebook</option>');
+  if (logged.instagram) platformOpts.push('<option value="ig">Instagram</option>');
+  if (logged.facebook && logged.instagram) platformOpts.push('<option value="meta">Meta (FB + IG together)</option>');
+  if (logged.x) platformOpts.push('<option value="x">X (Twitter)</option>');
+  if (logged.threads) platformOpts.push('<option value="threads">Threads (API)</option>');
+  // Fallback if nothing is logged in
+  if (platformOpts.length === 1) platformOpts.push('<option value="youtube">YouTube (Shorts)</option>');
+
   const el = document.createElement('div');
   el.className = 'char' + (isRun ? ' running' : '');
   el.innerHTML = `
@@ -197,10 +217,9 @@ function charCard(c) {
       <div class="cmdbox">${escapeHtml(chromeCmd(c.port))}</div>
     </details>
     <div class="char-actions">
-      <label style="margin:0;" title="Where to schedule. YouTube = Shorts to this channel. Meta = the same clips cross-posted to Facebook + Instagram via Business Suite. The shared ledger tracks both, so a video is only removed from the folder once it's on BOTH.">platform</label>
-      <select class="cPlatform" style="width:150px;">
-        <option value="youtube" selected>YouTube (Shorts)</option>
-        <option value="meta">Meta (FB + IG)</option>
+      <label style="margin:0;" title="Where to schedule. All = runs YouTube, Facebook, Instagram, X, and Threads sequentially on the same Chrome.">platform</label>
+      <select class="cPlatform" style="width:180px;">
+        ${platformOpts.join('')}
       </select>
       <label style="margin:0;">per day</label>
       <input type="number" value="3" min="1" max="25" style="width:64px;" class="cPerDay" />
@@ -243,15 +262,40 @@ async function load() {
 }
 
 async function runChar(id, el) {
-  const platform = el.querySelector('.cPlatform').value; // 'youtube' | 'meta'
+  const platform = el.querySelector('.cPlatform').value; // 'youtube' | 'meta' | 'x' | 'threads' | 'all'
   const perDay = el.querySelector('.cPerDay').value;
   const start = el.querySelector('.cStart').value;
   const dryRun = el.querySelector('.cDry').checked;
   const autoLaunch = el.querySelector('.cLogged').checked;
-  const where = platform === 'meta' ? 'Business Suite (FB + IG)' : 'Studio';
-  if (autoLaunch) addLog(`… launching this character's Chrome (if not already open) and opening ${where}…`);
+
+  let where;
+  if (platform === 'all') where = 'all platforms';
+  else if (platform === 'fb') where = 'Business Suite (Facebook)';
+  else if (platform === 'ig') where = 'Business Suite (Instagram)';
+  else if (platform === 'meta') where = 'Business Suite (FB + IG)';
+  else if (platform === 'x') where = 'X (Twitter)';
+  else if (platform === 'threads') where = 'Threads API';
+  else where = 'Studio';
+
+  // Instagram needs its OWN Business Suite login, which the Facebook login does not
+  // provide (see IG_LOGIN_SWAP.md). Nothing in the browser can do that swap for us,
+  // so confirm the operator has already done it rather than letting the run abort.
+  if (platform === 'ig' || platform === 'all') {
+    const ok = confirm(
+      "Instagram scheduling needs this character's debug Chrome signed into the " +
+      "INSTAGRAM Business Suite, not the Facebook one.\n\n" +
+      "Swap the login first (business.facebook.com > log out > Log in with Instagram), " +
+      "then swap back to Facebook afterwards. See IG_LOGIN_SWAP.md.\n\n" +
+      "Continue?"
+    );
+    if (!ok) { addLog('Cancelled: Instagram login swap not done yet.'); return; }
+  }
+
+  if (autoLaunch && platform !== 'threads') addLog(`… launching this character's Chrome (if not already open) and opening ${where}…`);
+
   const body = { id, platform, perDay, start: start || undefined, dryRun, autoLaunch };
-  if (platform === 'meta') body.targets = ['fb', 'ig']; // cross-post to both surfaces
+  if (platform === 'meta') body.targets = ['fb', 'ig']; // combined cross-post to both surfaces
+
   const r = await fetch('/api/yt/schedule', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify(body)
@@ -270,6 +314,16 @@ function buildHandleInputs() {
   ).join('');
   grid.dataset.built = '1';
 }
+// Build the per-platform logged-in checkboxes
+function buildLoggedInputs() {
+  const grid = $('loggedGrid');
+  if (!grid || grid.dataset.built) return;
+  grid.innerHTML = PLATFORMS.filter(p => p.schedulable).map(p =>
+    `<div><label style="margin:0; display:flex; align-items:center; gap:6px;">` +
+    `<input type="checkbox" id="logged_${p.key}" style="width:auto;" /> ${p.label}</label></div>`
+  ).join('');
+  grid.dataset.built = '1';
+}
 function getHandles() {
   const h = {};
   for (const p of PLATFORMS) { const v = ($('h_' + p.key)?.value || '').trim(); if (v) h[p.key] = v; }
@@ -279,11 +333,26 @@ function setHandles(handles) {
   handles = handles || {};
   for (const p of PLATFORMS) { const el = $('h_' + p.key); if (el) el.value = handles[p.key] || ''; }
 }
+function getLoggedPlatforms() {
+  const logged = {};
+  for (const p of PLATFORMS.filter(p => p.schedulable)) {
+    logged[p.key] = $('logged_' + p.key)?.checked || false;
+  }
+  return logged;
+}
+function setLoggedPlatforms(logged) {
+  logged = logged || {};
+  for (const p of PLATFORMS.filter(p => p.schedulable)) {
+    const el = $('logged_' + p.key);
+    if (el) el.checked = logged[p.key] || false;
+  }
+}
 
 function editChar(c) {
   $('charId').value = c.id; $('charName').value = c.name;
   $('charPort').value = c.port; $('charFolder').value = c.folder;
   setHandles(c.handles);
+  setLoggedPlatforms(c.loggedPlatforms);
   $('formTitle').textContent = 'Edit character';
   $('formErr').textContent = '';
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
@@ -291,6 +360,7 @@ function editChar(c) {
 function resetForm() {
   $('charId').value = ''; $('charName').value = ''; $('charPort').value = '9222'; $('charFolder').value = '';
   setHandles({});
+  setLoggedPlatforms({});
   $('formTitle').textContent = 'Add a character'; $('formErr').textContent = '';
 }
 $('resetBtn').onclick = resetForm;
@@ -303,6 +373,7 @@ $('saveBtn').onclick = async () => {
     port: parseInt($('charPort').value) || 9222,
     folder: $('charFolder').value.trim(),
     handles: getHandles(),
+    loggedPlatforms: getLoggedPlatforms(),
   };
   const r = await fetch('/api/yt/characters/save', {
     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
@@ -341,6 +412,7 @@ es.addEventListener('yt', e => render(JSON.parse(e.data)));
 
 buildHandleInputs();
 updateOsButtons();
+buildLoggedInputs();
 load();
 </script>
 </body>

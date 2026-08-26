@@ -18,11 +18,11 @@
     "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077370_0",
     "fileName": "6-hobbies-that-make-you-noticeably-manli",
     "mediaType": "slideshow",
-    "status": "success",
+    "status": "failed",
     "results": {
       "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T11:53:28.898Z"
+        "status": "failed",
+        "error": "ENOENT: no such file or directory, stat 'C:\\Users\\alexpoole\\Documents\\genScript\\public\\media_library\\task_1786789796785_0'"
       }
     }
   },
@@ -126,11 +126,11 @@
     "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077457_4",
     "fileName": "how-i-broke-free-from-addiction-for-good",
     "mediaType": "slideshow",
-    "status": "success",
+    "status": "failed",
     "results": {
       "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:01:43.286Z"
+        "status": "failed",
+        "error": "ENOENT: no such file or directory, stat 'C:\\Users\\alexpoole\\Documents\\genScript\\public\\media_library\\task_1786789796814_1'"
       }
     }
   },
@@ -153,11 +153,11 @@
     "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077468_5",
     "fileName": "how-i-finally-quit-after-years-of-strugg",
     "mediaType": "slideshow",
-    "status": "success",
+    "status": "failed",
     "results": {
       "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:03:34.919Z"
+        "status": "failed",
+        "error": "ENOENT: no such file or directory, stat 'C:\\Users\\alexpoole\\Documents\\genScript\\public\\media_library\\task_1786789796839_2'"
       }
     }
   },
@@ -180,11 +180,11 @@
     "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077476_6",
     "fileName": "how-i-finally-quit-for-good-and-what-rea",
     "mediaType": "slideshow",
-    "status": "success",
+    "status": "failed",
     "results": {
       "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:05:30.082Z"
+        "status": "failed",
+        "error": "ENOENT: no such file or directory, stat 'C:\\Users\\alexpoole\\Documents\\genScript\\public\\media_library\\task_1786789796864_3'"
       }
     }
   },
@@ -369,11 +369,11 @@
     "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077709_13",
     "fileName": "this-is-how-i-quit-and-got-my-life-back",
     "mediaType": "slideshow",
-    "status": "success",
+    "status": "failed",
     "results": {
       "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:20:07.642Z"
+        "status": "failed",
+        "error": "ENOENT: no such file or directory, stat 'C:\\Users\\alexpoole\\Documents\\genScript\\public\\media_library\\task_1786789796890_4'"
       }
     }
   },
@@ -396,389 +396,11 @@
     "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077721_14",
     "fileName": "uncomfortable-habits-that-will-build-ext",
     "mediaType": "slideshow",
-    "status": "success",
+    "status": "failed",
     "results": {
       "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:22:19.244Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077749_15",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Uncomfortable habits that will build extreme confidence.\n\nThese habits might feel rough at first, but they’re worth it 💪. Commit to change!\n\n#confidence #selfimprovement #growth",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 26,
-      "h": 14,
-      "mi": 51
-    },
-    "scheduledTime": "2026-08-26T14:51:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077749_15",
-    "fileName": "uncomfortable-habits-that-will-build-ext-2",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:24:36.641Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077802_16",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Uncomfortable habits that will build extreme confidence\n\nConfidence isn’t built overnight, it takes small, consistent actions. 💪🚀\n\n#confidence #selfimprovement #habits",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 26,
-      "h": 17,
-      "mi": 58
-    },
-    "scheduledTime": "2026-08-26T17:58:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077802_16",
-    "fileName": "uncomfortable-habits-that-will-build-ext-3",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:26:45.907Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077831_17",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Uncomfortable habits that will build extreme confidence\n\nTackle these habits and see how your confidence grows! 💪\n\n#confidence #selfimprovement #habits",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 26,
-      "h": 20,
-      "mi": 54
-    },
-    "scheduledTime": "2026-08-26T20:54:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077831_17",
-    "fileName": "uncomfortable-habits-that-will-build-ext-4",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:28:56.207Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077856_18",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "uncomfortable habits that will build extreme confidence\n\nBuild your confidence by getting uncomfortable! 💪 #Confidence #PersonalGrowth #Mindset\n\n#Confidence #PersonalGrowth #Mindset",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 27,
-      "h": 14,
-      "mi": 52
-    },
-    "scheduledTime": "2026-08-27T14:52:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077856_18",
-    "fileName": "uncomfortable-habits-that-will-build-ext-5",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:31:12.409Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035070_0",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nTransform your life step by step! 💪🔥\n\n#transformation #motivation #selfimprovement",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 27,
-      "h": 15,
-      "mi": 8
-    },
-    "scheduledTime": "2026-08-27T15:08:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035070_0",
-    "fileName": "how-i-changed-my-entire-life-in-one-year",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:42:48.006Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035093_1",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nReal change takes effort, but it’s worth it. 💪 Keep pushing!\n\n#selfimprovement #motivation #mindset",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 27,
-      "h": 17,
-      "mi": 55
-    },
-    "scheduledTime": "2026-08-27T17:55:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035093_1",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-2",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:44:57.370Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035133_2",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nYou really can turn your life around! 💪🚀\n\n#lifechange #motivation #productivity",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 27,
-      "h": 21,
-      "mi": 9
-    },
-    "scheduledTime": "2026-08-27T21:09:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035133_2",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-3",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:47:05.876Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035180_3",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nTake the first step and change your life! 💪📈\n\n#transformation #motivation #selfimprovement",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 28,
-      "h": 15,
-      "mi": 4
-    },
-    "scheduledTime": "2026-08-28T15:04:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035180_3",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-4",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:49:16.536Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035207_4",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nYour turnaround is in your hands. 💪🔥\n\n#selfimprovement #motivation #transformation",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 28,
-      "h": 17,
-      "mi": 57
-    },
-    "scheduledTime": "2026-08-28T17:57:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035207_4",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-5",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:51:24.563Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035231_5",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nYour turnaround is waiting. You got this! 💪🏽\n\n#motivation #transformation #growth",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 28,
-      "h": 20,
-      "mi": 52
-    },
-    "scheduledTime": "2026-08-28T20:52:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035231_5",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-6",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:53:30.562Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035259_6",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nReady for a change? Let’s make it happen 💪 #motivation #transformation #selfimprovement\n\n#lifechange #productivity #selfgrowth",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 29,
-      "h": 15,
-      "mi": 2
-    },
-    "scheduledTime": "2026-08-29T15:02:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035259_6",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-7",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:57:18.596Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035285_7",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nTransform your life starting now! 💪📈\n\n#lifechange #motivation #selfimprovement",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 29,
-      "h": 18,
-      "mi": 5
-    },
-    "scheduledTime": "2026-08-29T18:05:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035285_7",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-8",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T13:00:20.527Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035333_8",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nYou can turn it all around too! 💪📈\n\n#selfimprovement #motivation #lifestyle",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 29,
-      "h": 21,
-      "mi": 8
-    },
-    "scheduledTime": "2026-08-29T21:08:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035333_8",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-9",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T13:02:31.355Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035397_9",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nHere's how to turn your life around! 🚀💪\n\n#motivation #selfimprovement #productivity",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 30,
-      "h": 15,
-      "mi": 9
-    },
-    "scheduledTime": "2026-08-30T15:09:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035397_9",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-10",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T13:05:03.863Z"
+        "status": "failed",
+        "error": "ENOENT: no such file or directory, stat 'C:\\Users\\alexpoole\\Documents\\genScript\\public\\media_library\\task_1786789796920_5'"
       }
     }
   }

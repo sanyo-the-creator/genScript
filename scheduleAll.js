@@ -18,7 +18,7 @@
 //
 // USAGE
 //   node scheduleAll.js "C:\path\to\folder" --port=9202 \
-//        [--platforms=youtube,fb,ig,x,threads] [--ig-asset-name="upshift.productivity"] \
+//        [--platforms=youtube,fb,ig,x,threads] [--fb-asset-name="<Page name>"] //        [--ig-asset-name="<ig handle>"] \
 //        [--x-port=9210] [--per-day=3] [--start=YYYY-MM-DD] [--tz=America/New_York] \
 //        [--dry-run]
 //
@@ -31,7 +31,7 @@ const { spawn } = require('child_process');
 
 function parseArgs(argv) {
   const args = {
-    dir: null, port: null, xPort: null, igAssetName: null, igMention: '@joinupshift',
+    dir: null, port: null, xPort: null, igAssetName: null, fbAssetName: null, igMention: '@joinupshift',
     platforms: ['youtube', 'fb', 'ig', 'x', 'threads'],
     passthrough: [], // flags forwarded to every driver (--per-day, --start, --tz, --dry-run)
   };
@@ -40,6 +40,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--port=')) args.port = a.slice(7);
     else if (a.startsWith('--x-port=')) args.xPort = a.slice(9);
     else if (a.startsWith('--ig-asset-name=')) args.igAssetName = a.slice(16).replace(/^"|"$/g, '');
+    else if (a.startsWith('--fb-asset-name=')) args.fbAssetName = a.slice(16).replace(/^"|"$/g, '');
     else if (a.startsWith('--ig-mention=')) args.igMention = a.slice(13).replace(/^"|"$/g, '');
     else if (a === '--dry-run' || a.startsWith('--per-day=') || a.startsWith('--start=') || a.startsWith('--tz=') ||
              a.startsWith('--reels-per-day=') || a.startsWith('--posts-per-day=') || a.startsWith('--slots=')) args.passthrough.push(a);
@@ -52,11 +53,20 @@ function parseArgs(argv) {
 function passesFor(args) {
   const port = args.port || '9202';
   const xPort = args.xPort || port;
-  const igName = args.igAssetName || 'upshift.productivity';
+  // NEVER default the Instagram profile name. A wrong name silently schedules into
+  // whatever asset happens to match, i.e. somebody else's account — so the caller
+  // must state it (server.js passes the character's igAssetName).
+  const igName = args.igAssetName;
+  const fbName = args.fbAssetName; // pin the Page; a login can hold several look-alikes
   const p = args.passthrough;
   const defs = {
     youtube: { label: 'YouTube',   script: 'ytUpload.js',   args: [args.dir, `--port=${port}`, ...p] },
-    fb:      { label: 'Facebook',  script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=fb', '--no-check', ...p] },
+    fb:      { label: 'Facebook',  script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=fb', '--no-check', ...(fbName ? [`--asset-name=${fbName}`] : []), ...p] },
+    // NOTE: the ig pass needs the debug Chrome signed into the INSTAGRAM Business
+    // Suite login (IG is not an asset in the Facebook login's portfolio). Do the
+    // swap described in IG_LOGIN_SWAP.md before running a platform list with ig in
+    // it, or run ig on its own after the browser passes. Without the swap metaUpload
+    // aborts this pass with exit 2 and the rest of the run continues.
     ig:      { label: 'Instagram', script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=ig', `--asset-name=${igName}`, '--ledger=meta-ig', '--reel', '--no-check', ...(args.igMention ? [`--mention=${args.igMention}`] : []), ...p] },
     x:       { label: 'X (Twitter)', script: 'xUpload.js',  args: [args.dir, `--port=${xPort}`, ...p] },
     // Threads has no native scheduler → this pass only QUEUES due-times (no browser,
@@ -64,6 +74,11 @@ function passesFor(args) {
     // only the scheduling flags Threads understands (skip browser/port passthroughs).
     threads: { label: 'Threads',   script: 'threadsUpload.js', args: [args.dir, ...p.filter((f) => /^--(per-day|start|tz|slots|dry-run)/.test(f))] },
   };
+  if (args.platforms.includes('ig') && !igName) {
+    console.error('✗ --ig-asset-name is required whenever "ig" is in --platforms (the IG profile name as Business Suite shows it, e.g. jonathanbale.upshift).');
+    console.error('  It is deliberately not defaulted: a wrong name would schedule into a different account.');
+    process.exit(1);
+  }
   return args.platforms.map((k) => defs[k]).filter(Boolean);
 }
 
@@ -89,7 +104,7 @@ function runPass(def) {
 (async () => {
   const args = parseArgs(process.argv.slice(2));
   if (!args.dir) {
-    console.error('Usage: node scheduleAll.js "<folder>" --port=9202 [--platforms=youtube,fb,ig,x,threads] [--ig-asset-name="upshift.productivity"] [--x-port=9210] [--per-day=N] [--start=YYYY-MM-DD] [--dry-run]');
+    console.error('Usage: node scheduleAll.js "<folder>" --port=9202 [--platforms=youtube,fb,ig,x,threads] [--fb-asset-name="Upshift: #1 Productivity App"] [--ig-asset-name="jonathanbale.upshift"] [--x-port=9210] [--per-day=N] [--start=YYYY-MM-DD] [--dry-run]');
     process.exit(1);
   }
   const passes = passesFor(args);

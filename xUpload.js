@@ -71,12 +71,60 @@ function parseArgs(argv) {
   return args;
 }
 
-// ── Folder → work items (media + JSON sidecar) ───────────────────────────────
+// ── Folder → work items (media + JSON sidecar, plus image carousels) ─────────
 const MEDIA_RE = /\.(mp4|webm|mov|jpg|jpeg|png)$/i;
+const X_IMAGE_CAP = 4; // X allows at most 4 images in a single post.
+// findPostsDir: the crate can have BOTH <dir>/videos (reels/clips) AND a sibling
+// or child <dir>/posts/ where each subfolder is ONE image carousel (like IG).
+function findPostsDir(dir) {
+  const child = path.join(dir, 'posts');
+  if (fs.existsSync(child) && fs.statSync(child).isDirectory()) return child;
+  if (/[\\/]videos$/i.test(dir)) {
+    const sibling = path.join(path.dirname(dir), 'posts');
+    if (fs.existsSync(sibling) && fs.statSync(sibling).isDirectory()) return sibling;
+  }
+  return null;
+}
+// Sort carousel slides by the trailing -N index so they stay in author order.
+function slideIndex(name) {
+  const m = /-(\d+)(\.[^.]+)?$/.exec(path.basename(name));
+  return m ? parseInt(m[1], 10) : 0;
+}
+function collectCarousels(dir) {
+  const postsDir = findPostsDir(dir);
+  if (!postsDir) return [];
+  const items = [];
+  for (const sub of fs.readdirSync(postsDir)) {
+    const subDir = path.join(postsDir, sub);
+    if (!fs.statSync(subDir).isDirectory()) continue;
+    const base = sub.replace(/^post_/, '');
+    const imgs = fs.readdirSync(subDir)
+      .filter((f) => /\.(jpg|jpeg|png)$/i.test(f))
+      .sort((a, b) => slideIndex(a) - slideIndex(b))
+      .map((f) => path.join(subDir, f));
+    if (!imgs.length) continue;
+    let text = base;
+    const capTxt = path.join(subDir, `${base}.txt`);
+    if (fs.existsSync(capTxt)) {
+      text = String(fs.readFileSync(capTxt, 'utf8')).trim();
+    } else {
+      const capJson = path.join(subDir, `${base}.json`); // fallback: a JSON sidecar
+      if (fs.existsSync(capJson)) {
+        try { text = buildText(JSON.parse(fs.readFileSync(capJson, 'utf8')), base); }
+        catch (e) { console.warn(`  ! Could not parse ${capJson} (${e.message}) — using folder name.`); }
+      }
+    }
+    const excess = imgs.length - X_IMAGE_CAP;
+    const slides = imgs.slice(0, X_IMAGE_CAP);
+    if (excess > 0) console.warn(`  ! "${base}" has ${imgs.length} slides; X allows ${X_IMAGE_CAP} per post → scheduling the first ${X_IMAGE_CAP} (${excess} omitted).`);
+    items.push({ key: `post_${base}`, media: null, images: slides, carousel: true, dir: subDir, meta: { text: text.slice(0, X_TEXT_LIMIT) } });
+  }
+  return items;
+}
 function collectItems(dir) {
   const files = fs.readdirSync(dir);
   const media = files.filter((f) => MEDIA_RE.test(f)).sort();
-  return media.map((v) => {
+  const items = media.map((v) => {
     const base = v.replace(MEDIA_RE, '');
     const jsonPath = path.join(dir, `${base}.json`);
     let text = base;
@@ -86,6 +134,9 @@ function collectItems(dir) {
     }
     return { key: base, media: path.join(dir, v), meta: { text } };
   });
+  // Image CAROUSEL posts from the sibling/child `posts/` dir (see collectCarousels).
+  for (const it of collectCarousels(dir)) items.push(it);
+  return items;
 }
 
 // Build the tweet text: prefer explicit caption, else title + hashtags, capped.
@@ -168,6 +219,98 @@ async function waitForElement(page, fn, { timeout = 15000, interval = 400, args 
   while (Date.now() < deadline) { const el = await findElement(page, fn, ...args); if (el) return el; await sleep(interval); }
   return null;
 }
+// Bound a page.evaluate so a renderer that's mid-navigation (its execution
+// context being replaced / torn down) can't hang the whole item on
+// Runtime.callFunctionOn timed out. On timeout/error warns and returns undefined
+// so a caller falls through to a navigation reset rather than aborting.
+async function evalTimeout(page, fn, ms = 10000) {
+  try {
+    return await Promise.race([
+      page.evaluate(fn),
+      sleep(ms).then(() => { throw new Error(`evaluate timed out after ${ms}ms`); }),
+    ]);
+  } catch (e) { console.warn(`   ! evaluate skipped (${(e.message || '').split('\n')[0]})`); return undefined; }
+}
+
+// X's "graduated access" gate hijacks the compose flow. Verified live 2026-08-26
+// on @JonathanBale48 (see x-sched-diag): clicking Schedule navigates the tab to
+// /i/graduated-access?graduatedAccessScribeSrc=compose and shows a modal
+// ("Unlock more on X - we want to be sure there's a human behind this account"),
+// the submit is swallowed, tweetButton goes null, and every retry fails
+// identically. It is NOT a picker/selector break, so no amount of re-clicking
+// helps. Detect it, dismiss its single "Got it" primary, and let the item-level
+// retry rebuild the composer from scratch.
+//
+// This MUST be checked BEFORE the composer-closed success test: the gate
+// navigates away from the composer, so an undetected gate reads as "composer
+// gone" = scheduled, and we would mark an unscheduled post as done in the ledger.
+async function dismissAccessGate(page) {
+  const hit = await evalTimeout(page, () => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const gate = /unlock more on x|human behind this account/i;
+    const onGateUrl = /\/i\/graduated-access/.test(location.href);
+    const dlg = Array.from(document.querySelectorAll('div[role="dialog"],div[aria-modal="true"]')).filter(vis)
+      .find((d) => gate.test(d.textContent || ''));
+    if (!dlg && !onGateUrl) return false;
+    const scope = dlg || document;
+    const btn = Array.from(scope.querySelectorAll('button,[role="button"]')).filter(vis)
+      .find((b) => /^\s*(got it|ok|close|continue)\s*$/i.test((b.textContent || '').trim()));
+    if (btn) { btn.click(); return 'clicked'; }
+    return onGateUrl ? 'nav' : false;
+  }, 8000);
+  if (!hit) return false;
+  console.warn('   ! X "Unlock more on X" access gate appeared - dismissed it.');
+  await sleep(1500);
+  if (hit === 'nav' || /\/i\/graduated-access/.test(page.url())) {
+    await page.goto(HOME_URL, { waitUntil: 'networkidle2' }).catch(() => {});
+    await sleep(1500);
+  }
+  return true;
+}
+
+// dumpFailure: when an item throws, capture EXACTLY what X was showing so we can
+// tell WHY the Schedule click never happened — the schedule button state, the
+// picker's <select>s (count + each one's value/options), the final button label,
+// and a screenshot. Written to a diag dir so one real run pins the DOM break.
+const DIAG_DIR = path.join(process.env.TEMP || process.env.TMP || __dirname, 'x-sched-diag');
+async function dumpFailure(page, entry, err, tag = '') {
+  try {
+    fs.mkdirSync(DIAG_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const base = path.join(DIAG_DIR, `${entry.item.key}_${stamp}${tag ? '_' + tag : ''}`);
+    const state = await evalTimeout(page, () => {
+      const btnInfo = (b) => b ? {
+        label: (b.textContent || '').trim().slice(0, 40),
+        testid: b.getAttribute('data-testid') || null,
+        disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true,
+      } : null;
+      const schedBtn = document.querySelector('[data-testid="scheduleOption"]') ||
+        Array.from(document.querySelectorAll('button,[role="button"]')).find((x) => /schedule/i.test(x.getAttribute('aria-label') || '')) || null;
+      const tweetBtn = document.querySelector('[data-testid="tweetButton"]') ||
+        Array.from(document.querySelectorAll('button,[role="button"]')).find((x) => /^\s*schedule\s*$/i.test(x.textContent || '')) || null;
+      const selects = Array.from(document.querySelectorAll('select')).map((s, i) => ({
+        idx: i, value: s.value,
+        options: Array.from(s.options).slice(0, 6).map((o) => `${o.value}:${(o.textContent || '').trim()}`),
+        total: s.options.length,
+      }));
+      const confirmBtn = document.querySelector('[data-testid="scheduledConfirmationPrimaryAction"]') ||
+        Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /^\s*confirm\s*$/i.test(b.textContent || '')) || null;
+      return {
+        url: location.href,
+        scheduleButton: btnInfo(schedBtn),
+        tweetButton: btnInfo(tweetBtn),
+        confirmButtonPresent: !!confirmBtn,
+        selectCount: selects.length,
+        selects,
+        bodyTextSample: (document.body.innerText || '').slice(0, 600),
+      };
+    }, 12000);
+    const report = { key: entry.item.key, error: (err && err.message) || String(err), when: `${entry.dateLabel} ${entry.timeLabel}`, wanted: { mo: entry.mo, d: entry.d, y: entry.y, h12: entry.h12, min: entry.min, ampm: entry.ampm }, state };
+    fs.writeFileSync(`${base}.json`, JSON.stringify(report, null, 2));
+    await page.screenshot({ path: `${base}.png`, fullPage: false }).catch(() => {});
+    console.warn(`   🩺 diag written → ${base}.json (+ .png)`);
+  } catch (e) { console.warn(`   ! could not write diag: ${(e.message || '').split('\n')[0]}`); }
+}
 
 // ── One post ─────────────────────────────────────────────────────────────────
 // NOTE: X composer selectors (data-testid) — VERIFY LIVE on the first --dry-run:
@@ -190,7 +333,7 @@ async function uploadOne(page, entry, dryRun) {
   // close → Discard, then reopen empty.
   await page.goto('https://x.com/compose/post', { waitUntil: 'networkidle2' }).catch(() => {});
   await sleep(3000);
-  const hasLeftover = await page.evaluate(() => {
+  const hasLeftover = await evalTimeout(page, () => {
     const boxes = Array.from(document.querySelectorAll('[data-testid^="tweetTextarea_"]'));
     const hasText = boxes.some((b) => (b.textContent || '').trim().length > 0);
     const hasMedia = document.querySelectorAll('video').length > 0 || !!document.querySelector('[data-testid="attachments"]');
@@ -198,18 +341,20 @@ async function uploadOne(page, entry, dryRun) {
   });
   if (hasLeftover) {
     console.log('   • clearing a leftover draft in the composer…');
-    await page.evaluate(() => {
+    await evalTimeout(page, () => {
       const x = document.querySelector('[data-testid="app-bar-close"]') ||
         Array.from(document.querySelectorAll('[aria-label]')).find((e) => /^close$/i.test(e.getAttribute('aria-label') || ''));
       if (x) x.click();
     });
     await sleep(1200);
-    await page.evaluate(() => {
+    await evalTimeout(page, () => {
       const d = document.querySelector('[data-testid="confirmationSheetConfirm"]') ||
         Array.from(document.querySelectorAll('[role="button"],button,span')).find((e) => /^discard$/i.test((e.textContent || '').trim()));
       if (d) d.click();
     });
     await sleep(1500);
+    // Navigation resets any leftover state regardless of whether the evaluates
+    // above completed — a fresh composer is the goal.
     await page.goto('https://x.com/compose/post', { waitUntil: 'networkidle2' }).catch(() => {});
     await sleep(2500);
   }
@@ -225,30 +370,42 @@ async function uploadOne(page, entry, dryRun) {
   await page.keyboard.type(item.meta.text, { delay: 8 });
   await sleep(400);
 
-  // 3) Media via the composer's hidden file input.
+  // 3) Media via the composer's hidden file input. A carousel feeds SEVERAL images
+  // at once; a single reel/photo feeds one file.
   const fileInput = await waitForElement(page, () =>
     document.querySelector('[data-testid="fileInput"]') ||
     Array.from(document.querySelectorAll('input[type="file"]')).find((i) => /image|video/i.test(i.accept || '')) || null,
     { timeout: 8000, interval: 400 });
   if (!fileInput) throw new Error('Media file input not found.');
-  await fileInput.uploadFile(item.media);
-  console.log('   • media handed to X, waiting for it to process…');
-  // Wait until the media is TRULY ready before scheduling: X shows a progress bar
-  // while encoding and then a "<file>: Ready" label. Requiring "Ready" (not just
-  // the bar being gone) avoids scheduling a half-encoded clip — which X silently
-  // rejects (the post stays in the composer). On a slow/hotspot upload this can
-  // take a while; if it never becomes ready that's a connection problem.
-  const ingestDeadline = Date.now() + 300000; // up to 5 min for slow encodes
-  await sleep(4000);
-  while (Date.now() < ingestDeadline) {
-    const state = await page.evaluate(() => {
-      const busy = !!document.querySelector('[role="progressbar"], [data-testid="progressBar"]');
-      const t = document.body.innerText || '';
-      const ready = /:\s*Ready\b/i.test(t) || /\bReady\b/i.test(t);
-      return { busy, ready };
-    });
-    if (!state.busy && state.ready) break;
-    await sleep(2500);
+  if (item.images && item.images.length) {
+    await fileInput.uploadFile(...item.images);
+    console.log(`   • handing ${item.images.length} images (carousel) to X…`);
+    // Images ingest nigh-instantly (no encode bar); a short settle is enough — the
+    // schedule-picker enable check below is the real "ready" gate regardless.
+    await sleep(5000);
+  } else {
+    await fileInput.uploadFile(item.media);
+    console.log('   • media handed to X, waiting for it to process…');
+    // Wait until the media is TRULY ready before scheduling: X shows a progress
+    // bar while encoding and then a "<file>: Ready" label. Requiring "Ready" (not
+    // just the bar being gone) avoids scheduling a half-encoded clip — which X
+    // silently rejects (the post stays in the composer). On a slow/hotspot upload
+    // this can take a while; if it never becomes ready that's a connection problem.
+    const ingestDeadline = Date.now() + 300000; // up to 5 min for slow encodes
+    await sleep(4000);
+    while (Date.now() < ingestDeadline) {
+      const state = await page.evaluate(() => {
+        const busy = !!document.querySelector('[role="progressbar"], [data-testid="progressBar"]');
+        const t = document.body.innerText || '';
+        // Only the composer's own "<file>: Ready" label counts — a bare "Ready"
+        // anywhere (right-sidebar trends/ads) would falsely pass while the video
+        // is still uploading, so we require the filename-scoped form.
+        const ready = /:\s*Ready\b/i.test(t);
+        return { busy, ready };
+      });
+      if (!state.busy && state.ready) break;
+      await sleep(2500);
+    }
   }
   await sleep(1500);
 
@@ -316,13 +473,25 @@ async function uploadOne(page, entry, dryRun) {
   await setSelectAt(5, entry.ampm);
   await sleep(600);
 
-  // 6) Confirm the picker.
-  const confirmBtn = await waitForElement(page, () =>
-    document.querySelector('[data-testid="scheduledConfirmationPrimaryAction"]') ||
-    Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /^\s*confirm\s*$/i.test(b.textContent || '')) || null,
-    { timeout: 6000, interval: 400 });
-  if (confirmBtn) { await confirmBtn.click(); await sleep(1200); }
-  else console.warn('   ! Picker Confirm button not found.');
+  // 6) Confirm the picker. "Confirm" sometimes misses on a re-render, so after
+  // clicking we require the picker's six <select>s to DISAPPEAR (modal closed) and
+  // re-click Confirm if they don't. If the calendar stays open, the final tweetButton
+  // click below is swallowed and nothing schedules — the classic "uploaded but never
+  // clicked Schedule".
+  const pickerOpen = () => page.evaluate(() => document.querySelectorAll('select').length >= 6);
+  const findConfirm = () => document.querySelector('[data-testid="scheduledConfirmationPrimaryAction"]') ||
+    Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /^\s*confirm\s*$/i.test(b.textContent || '')) || null;
+  let pickerClosed = false;
+  for (let attempt = 0; attempt < 3 && !pickerClosed; attempt++) {
+    const cb = await waitForElement(page, findConfirm, { timeout: 6000, interval: 400 });
+    if (cb) { await cb.click(); await sleep(1000); }
+    else console.warn('   ! Picker Confirm button not found.');
+    // Allow the modal a moment to animate out, then re-check it closed.
+    const closedBy = Date.now() + 8000;
+    while (Date.now() < closedBy && await pickerOpen()) await sleep(500);
+    pickerClosed = !(await pickerOpen());
+  }
+  if (!pickerClosed) { console.warn('   ! schedule picker still open after Confirm — will try Schedule anyway'); }
 
   // Read back for the dry-run log.
   console.log(`   • picker set to: ${entry.dateLabel} ${entry.timeLabel}`);
@@ -333,35 +502,63 @@ async function uploadOne(page, entry, dryRun) {
   }
 
   // 7) Final "Schedule" button (tweetButton reads "Schedule" once a time is set).
-  const post = await waitForElement(page, () =>
-    document.querySelector('[data-testid="tweetButton"]') ||
-    Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /^\s*schedule\s*$/i.test(b.textContent || '')) || null,
-    { timeout: 6000, interval: 400 });
-  if (!post) throw new Error('Final Schedule button not found.');
-  // The final button stays DISABLED while the video is still encoding (slow on a
-  // hotspot). Wait until it's enabled before clicking, so we never silently fail.
-  const postEnabled = () => page.evaluate(() => {
-    const b = document.querySelector('[data-testid="tweetButton"]');
+  // Poll for it to render ENABLED with Schedule text (re-querying each tick so we
+  // never click a stale/disabled element), then click a fresh handle.
+  const finalState = () => page.evaluate(() => {
+    const b = document.querySelector('[data-testid="tweetButton"]') ||
+      Array.from(document.querySelectorAll('button,[role="button"]')).find((x) => /^\s*schedule\s*$/i.test(x.textContent || '')) || null;
     if (!b) return { found: false };
-    return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
+    const label = (b.textContent || '').trim(),
+          disabled = b.getAttribute('aria-disabled') === 'true' || b.disabled === true;
+    return { found: true, disabled, label };
   });
   const postDeadline = Date.now() + 300000; // up to 5 min for slow encodes
-  let psx = await postEnabled();
-  while (Date.now() < postDeadline && (!psx.found || psx.disabled)) { await sleep(2500); psx = await postEnabled(); }
+  let psx = await finalState();
+  while (Date.now() < postDeadline && (!psx.found || psx.disabled || !/schedule/i.test(psx.label))) { await sleep(2000); psx = await finalState(); }
+  if (!psx.found) throw new Error('Final Schedule button not found.');
   if (psx.found && psx.disabled) throw new Error('X Schedule button stayed disabled (video still encoding — slow connection?) — not scheduled.');
-  await post.click();
-  await sleep(4000);
-  // Verify FOR REAL: a successful schedule CLEARS the composer. Check that OUR
-  // specific text and any video are gone. (The old URL/tweetButton check gave
-  // false successes — the composer stayed and posts piled into a thread.)
-  const firstLine = item.meta.text.split('\n')[0].slice(0, 24);
-  const stillHasOurPost = await page.evaluate((needle) => {
-    const boxes = Array.from(document.querySelectorAll('[data-testid^="tweetTextarea_"]'));
-    const textPresent = needle && boxes.some((b) => (b.textContent || '').includes(needle));
-    const hasVideo = document.querySelectorAll('video').length > 0;
-    return textPresent || hasVideo;
-  }, firstLine);
-  if (stillHasOurPost) throw new Error('X post still in the composer after Schedule — NOT scheduled (check the schedule flow).');
+  if (!/schedule/i.test(psx.label)) throw new Error('X button still reads "' + psx.label + '" (was the schedule picker applied?) — not scheduled.');
+  // Success signal: a scheduled post CLOSES the whole compose modal, so the
+  // composer text box disappears. (The old check keyed on `<video>` anywhere on
+  // the page — but the home timeline BEHIND the modal is full of video posts, so
+  // it flagged failure on EVERY item, scheduled or not.) The click itself was the
+  // real miss: a single ElementHandle.click() on X's React button often doesn't
+  // submit (the pointer lands but React ignores it right after the picker's Confirm
+  // re-render). So click, wait for the modal to close, and if it's still open
+  // re-query a FRESH handle and try again — first a real mouse click, then a JS
+  // .click() fallback — until the composer is gone.
+  const composerOpen = () => page.evaluate(() =>
+    !!(document.querySelector('[data-testid="tweetTextarea_0"]') ||
+       document.querySelector('div[role="textbox"][contenteditable="true"]')));
+  const clickSchedule = async (useJs) => {
+    if (useJs) {
+      return page.evaluate(() => {
+        const b = document.querySelector('[data-testid="tweetButton"]') ||
+          Array.from(document.querySelectorAll('button,[role="button"]')).find((x) => /^\s*schedule\s*$/i.test(x.textContent || '')) || null;
+        if (b) { b.click(); return true; } return false;
+      });
+    }
+    const h = await waitForElement(page, () =>
+      document.querySelector('[data-testid="tweetButton"]') ||
+      Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => /^\s*schedule\s*$/i.test(b.textContent || '')) || null,
+      { timeout: 2000, interval: 300 });
+    if (h) { await h.click().catch(() => {}); return true; }
+    return false;
+  };
+  let scheduled = false, gated = false;
+  for (let attempt = 0; attempt < 4 && !scheduled; attempt++) {
+    await clickSchedule(attempt >= 2); // first two: real mouse click; then JS .click() fallback
+    // Wait up to ~10s for the modal to close (the schedule POST is async).
+    const by = Date.now() + 10000;
+    while (Date.now() < by && await composerOpen()) await sleep(600);
+    // Gate check FIRST - it navigates away from the composer, so checking
+    // composerOpen() before this would read the gate as a successful submit.
+    if (await dismissAccessGate(page)) { gated = true; break; }
+    scheduled = !(await composerOpen());
+    if (!scheduled) console.warn(`   ↻ Schedule click #${attempt + 1} didn't close the composer — retrying…`);
+  }
+  if (gated) throw new Error('X blocked the submit with its "Unlock more on X" access gate (account is under graduated access) — NOT scheduled.');
+  if (!scheduled) throw new Error('X post still in the composer after clicking Schedule — NOT scheduled (schedule submit was rejected).');
 
   console.log(`   ✓ Scheduled for ${entry.dateLabel} ${entry.timeLabel} → X`);
   return entry.date.toISOString();
@@ -381,12 +578,14 @@ async function uploadOne(page, entry, dryRun) {
 
   const debugUrl = `http://127.0.0.1:${args.port}`;
   console.log(`Connecting to Chrome on ${debugUrl}…`);
-  const browser = await puppeteer.connect({ browserURL: debugUrl, defaultViewport: null, protocolTimeout: 240000 });
+  const browser = await puppeteer.connect({ browserURL: debugUrl, defaultViewport: null, protocolTimeout: 600000 });
   const pages = await browser.pages();
   let page = pages.find((p) => /x\.com|twitter\.com/.test(p.url())) || pages[0];
   if (!page) { console.error('No usable tab. Open https://x.com/home in the debugged Chrome first.'); process.exit(1); }
   await page.bringToFront();
   page.on('dialog', async (d) => { try { await d.accept(); } catch { /* ignore */ } });
+  // Clear the access gate up front if the tab is already sitting on it.
+  await dismissAccessGate(page);
 
   // (Collision-read of the existing X schedule is not exposed cleanly on x.com;
   // --no-check is the default behaviour here — the ledger prevents double-posting.)
@@ -403,26 +602,68 @@ async function uploadOne(page, entry, dryRun) {
   for (const p of plan) console.log(`   ${p.dateLabel} ${p.timeLabel}  ←  ${p.item.key}`);
   console.log('════════════════════════════════════════════════════\n');
 
+  // Reset the composer to a clean, empty state between attempts/items. X restores
+  // unsent drafts, so a half-posted composer would otherwise grow into a thread.
+  const stabilize = async () => {
+    await page.goto(HOME_URL, { waitUntil: 'networkidle2' }).catch(() => {});
+    await sleep(1500);
+    await dismissAccessGate(page);
+    await page.goto('https://x.com/compose/post', { waitUntil: 'networkidle2' }).catch(() => {});
+    await sleep(2000);
+    await dismissAccessGate(page);
+  };
+
   let ok = 0, failed = 0;
   for (const entry of plan) {
-    try {
-      const result = await uploadOne(page, entry, args.dryRun);
-      if (result === 'dry-run') { console.log('\nDry run complete — watch the composer; if it looks right, re-run without --dry-run.'); break; }
-      ledgerStore.markScheduled(args.dir, ledger, entry.item.key, PLATFORM, { scheduledAt: result, text: entry.item.meta.text.slice(0, 80) });
-      if (args.deleteAfter && ledgerStore.allRequiredDone(ledger, entry.item.key, entry.item.media)) {
+    // X's composer is FLAKY per-step (the schedule picker/confirm occasionally
+    // re-renders, the file chooser hiccups); each usually succeeds on a fresh try.
+    // Retry the whole item a few times so a fleet run doesn't drop items to
+    // transient hiccups. The shared ledger still guards against dupes.
+    let result, lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try { result = await uploadOne(page, entry, args.dryRun); lastErr = null; break; }
+      catch (e) {
+        lastErr = e;
+        console.warn(`   ↻ attempt ${attempt}/3 failed for ${entry.item.key}: ${(e.message || '').split('\n')[0]}`);
+        await dumpFailure(page, entry, e, `attempt${attempt}`);
+        if (attempt < 3) await stabilize();
+      }
+    }
+    if (lastErr) {
+      failed++;
+      console.error(`   ✗ FAILED: ${entry.item.key} — ${lastErr.message}`);
+      // The access gate is an ACCOUNT-level block, not a per-item hiccup: once it
+      // has rejected a submit, every remaining item burns ~6 minutes of upload to
+      // hit the same wall. Stop the run and say so instead of grinding the backlog.
+      if (/graduated access/i.test(lastErr.message || '')) {
+        console.error('\n✗ X is refusing scheduled posts for this account ("Unlock more on X" / graduated access).');
+        console.error('  This is an account restriction, not a scheduler bug — nothing in this tool can bypass it.');
+        console.error(`  Aborting the run: ${plan.length - ok - failed} item(s) left unattempted, none marked in the ledger.`);
+        break;
+      }
+      await stabilize();
+      continue;
+    }
+    if (result === 'dry-run') { console.log('\nDry run complete — watch the composer; if it looks right, re-run without --dry-run.'); break; }
+    ledgerStore.markScheduled(args.dir, ledger, entry.item.key, PLATFORM, { scheduledAt: result, text: entry.item.meta.text.slice(0, 80) });
+    // Delete ONLY once done on every platform this item is due on. A carousel is
+    // an image post (Meta-only due), so it's freed once its platform set is done.
+    const mediaName = entry.item.media || (entry.item.images && entry.item.images[0]) || `${entry.item.key}.json`;
+    if (args.deleteAfter && ledgerStore.allRequiredDone(ledger, entry.item.key, mediaName)) {
+      if (entry.item.dir) { // a carousel = one whole posts/<name>/ folder
+        try { fs.rmSync(entry.item.dir, { recursive: true, force: true }); }
+        catch (e) { console.warn(`   ! could not delete ${path.basename(entry.item.dir)}: ${e.message}`); }
+        console.log(`   🗑  removed carousel ${entry.item.key} (done on all platforms)`);
+      } else {
         for (const f of [entry.item.media, entry.item.media.replace(MEDIA_RE, '.json')]) {
           try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) { console.warn(`   ! could not delete ${path.basename(f)}: ${e.message}`); }
         }
         console.log(`   🗑  removed ${entry.item.key} (done on all platforms)`);
       }
-      ok++;
-      await sleep(2000);
-    } catch (e) {
-      failed++;
-      console.error(`   ✗ FAILED: ${entry.item.key} — ${e.message}`);
-      await page.goto(HOME_URL, { waitUntil: 'networkidle2' }).catch(() => {});
-      await sleep(1500);
     }
+    ok++;
+    await stabilize();
+    await sleep(2000);
   }
   console.log(`\nDone. Scheduled ${ok}, failed ${failed}. Ledger: ${ledgerStore.ledgerPath(args.dir)}`);
 })();

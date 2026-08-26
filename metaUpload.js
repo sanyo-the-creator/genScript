@@ -579,25 +579,114 @@ async function switchContext(page, name) {
     if (b) b.click();
   });
   await sleep(1800);
-  // type the asset name into the search box
-  const typed = await page.evaluate(() => {
+  // Pick the asset row that ACTUALLY matches the name.
+  //
+  // Ordering matters here. We try the UNFILTERED list FIRST and only fall back to
+  // the search box, because Business Suite's asset search is fussy in ways that
+  // silently cost us the right Page (all verified live 2026-08-25):
+  //   - a query with punctuation ('Upshift: #1 Productivity App') returns No results;
+  //   - a two-token query ('Upshift 1') returns No results;
+  //   - even a clean one-token query ('Upshift') came back listing only the shorter
+  //     look-alike Page, hiding the one we asked for.
+  // With two assets on this login the unfiltered list already contains both rows, so
+  // searching buys nothing and loses correctness. The search stays as a fallback for
+  // logins with enough assets that the list is paginated.
+  //
+  // CRITICAL: the old fallback /instagram profile/i matched the home page's 'Connect
+  // an Instagram profile' onboarding banner when no real IG asset existed, navigated
+  // to onboarding, and caused a cascade of 'Execution context destroyed' errors. So
+  // the name must match and onboarding rows are excluded.
+  //
+  // The two Pages here are prefix-twins ('Upshift' and 'Upshift: #1 Productivity
+  // App'), so a plain substring test would let the SHORTER name select the LONGER
+  // Page and post to the wrong one. Score candidates and prefer an exact row, then
+  // the tightest match.
+  const pickRow = (nm) => page.evaluate((nm2) => {
     const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const inp = Array.from(document.querySelectorAll('input')).filter(vis).find((i) => /search for a business asset/i.test(i.placeholder || ''));
-    if (inp) { inp.focus(); return true; }
-    return false;
-  });
-  if (typed) { await page.keyboard.type(name, { delay: 30 }); await sleep(2200); }
-  // click the matching asset row
-  const picked = await page.evaluate((nm) => {
+    const norm = (t) => (t || '').replace(/\s+/g, ' ').trim();
+    const target = norm(nm2).toLowerCase();
+    const EXCLUDE = /incomplete|recommended onboarding|connect an? instagram|connect to instagram|get started|see all steps|see full plan|learn more/i;
+
+    // Anchor on the switcher's search box. Its rect tells us where the popup is, so
+    // we only consider rows INSIDE it. Without this anchor the page's own cover
+    // heading (also the Page name) is a candidate, and clicking it does nothing.
+    const input = Array.from(document.querySelectorAll('input')).filter(vis)
+      .find((i) => /search for a business asset/i.test(i.placeholder || ''));
+    const box = input ? input.getBoundingClientRect() : null;
+    const inPopup = (r) => !box || (r.top > box.top && Math.abs(r.left - box.left) < 400);
+
+    // Asset rows render as div[role="heading"] containing just the asset name; the row
+    // itself carries NO role at all (verified 2026-08-25 by walking 8 ancestors: all
+    // plain divs). The old selector list only looked at role=button/option/radio/li/a,
+    // which is why every switch silently found nothing. Keep those as a fallback in
+    // case Meta restores roles, but headings are the reliable handle today.
+    let cands = Array.from(document.querySelectorAll('div[role="heading"]')).filter(vis)
+      .filter((el) => inPopup(el.getBoundingClientRect()))
+      .map((el) => ({ el, t: norm(el.textContent) }))
+      .filter((c) => c.t && !EXCLUDE.test(c.t));
+    if (!cands.length) {
+      cands = Array.from(document.querySelectorAll('div[role="button"],[role="option"],[role="radio"],li,a')).filter(vis)
+        .map((el) => ({ el, t: norm(el.textContent) }))
+        .filter((c) => c.t && !EXCLUDE.test(c.t));
+    }
+
+    // Prefer an exact name. The two Pages on this login are prefix-twins ('Upshift'
+    // and 'Upshift: #1 Productivity App'), so a substring test alone would let the
+    // shorter name select the longer Page and post to the wrong one.
+    const exact = cands.find((c) => c.t.toLowerCase() === target);
+    const loose = cands.filter((c) => c.t.toLowerCase().includes(target)).sort((a, b) => a.t.length - b.t.length)[0];
+    const hit = exact || loose;
+    if (!hit) return null;
+
+    // Click the ROW, not the text: the heading itself is an inert label, so walk up
+    // to the first ancestor big enough to be the row container.
+    let el = hit.el;
+    for (let i = 0; i < 6 && el.parentElement; i++) {
+      const r = el.getBoundingClientRect();
+      if (r.width >= 200 && r.height >= 28) break;
+      el = el.parentElement;
+    }
+    el.click();
+    return hit.t.slice(0, 60);
+  }, nm);
+
+  let picked = await pickRow(name);
+
+  if (!picked) {
+    // Fallback: narrow the list with ONE clean token, then re-pick. The row matcher
+    // still requires the full name, so a loose search term cannot select the wrong
+    // asset.
+    const searchTerm = ((name.match(/[A-Za-z0-9_.]+/g) || [])[0] || '').slice(0, 20);
+    const focused = await page.evaluate(() => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const inp = Array.from(document.querySelectorAll('input')).filter(vis).find((i) => /search for a business asset/i.test(i.placeholder || ''));
+      if (inp) { inp.focus(); return true; }
+      return false;
+    });
+    if (focused && searchTerm) {
+      await page.keyboard.type(searchTerm, { delay: 30 });
+      await sleep(2500);
+      picked = await pickRow(name);
+    }
+  }
+  // Read back what the switcher DOES list. When the pick fails this is the single
+  // most useful thing to print: it shows at a glance whether we are in the wrong
+  // Business Suite login entirely (e.g. only Facebook Pages during an IG pass).
+  const assets = await page.evaluate(() => {
     const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const re = new RegExp(nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    const row = Array.from(document.querySelectorAll('div[role="button"],[role="option"],[role="radio"],li,a')).filter(vis)
-      .find((x) => re.test(x.textContent || '') || /instagram profile/i.test(x.textContent || ''));
-    if (row) { row.click(); return (row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 50); }
-    return null;
-  }, name);
+    const out = [];
+    for (const el of document.querySelectorAll('*')) {
+      if (el.children.length) continue;
+      if (!vis(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.left > 420 || r.top < 150) continue; // the switcher popup column
+      const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length < 60) out.push(t);
+    }
+    return [...new Set(out)];
+  }).catch(() => []);
   await sleep(4000);
-  return { picked, url: page.url() };
+  return { picked, url: page.url(), assets };
 }
 
 // ── One REEL (Instagram) ─────────────────────────────────────────────────────
@@ -853,6 +942,70 @@ async function uploadOne(page, entry, dryRun, targets) {
     console.log('   • text-only post (no media) — Facebook only, Instagram will be skipped by Meta.');
   }
 
+  // 4b) Facebook now routes any VIDEO handed to the generic composer into the
+  // dedicated "Create reel" wizard (Create -> Edit -> Share) - same URL, but the
+  // one-page composer's "Set date and time" switch does not exist there, and the
+  // caption typed before the media is dropped by the re-render. Verified live
+  // 2026-08-26 (Garry Wayne): the run sat on step 1 and logged date="?" time="?".
+  // So detect the wizard, re-enter the caption, walk to the Share step and pick its
+  // "Schedule" segment - from there the date/time controls are identical.
+  const reelWizard = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const sw = Array.from(document.querySelectorAll('[role="switch"]')).filter(vis)
+      .find((x) => /set date and time|^schedule/i.test(x.getAttribute('aria-label') || ''));
+    if (sw) return false;
+    return Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .some((b) => /^\s*next\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()));
+  });
+  if (reelWizard) {
+    console.log('   • composer switched to the "Create reel" wizard — walking Create → Edit → Share.');
+    // Dismiss the "Include more media in your posts" coach-mark if it is up; it
+    // overlaps the details panel and can swallow clicks.
+    await page.evaluate(() => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      for (const d of Array.from(document.querySelectorAll('[role="dialog"],[role="tooltip"]')).filter(vis)) {
+        const b = Array.from(d.querySelectorAll('div[role="button"],button')).filter(vis)
+          .find((x) => /^(done|got it|ok|close)$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+        if (b) b.click();
+      }
+    });
+    await sleep(800);
+
+    // Caption again — into the wizard's "Description" box (the pre-media one is gone).
+    const reelCap = await waitForElement(page, () => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const boxes = Array.from(document.querySelectorAll('[contenteditable="true"],textarea')).filter(vis);
+      return boxes.find((b) => /describe your reel|description|caption|viewers know/i.test(
+        b.getAttribute('aria-label') || b.getAttribute('aria-placeholder') || b.getAttribute('placeholder') || ''
+      )) || boxes[0] || null;
+    }, { timeout: 10000, interval: 400 });
+    if (reelCap) { await clearAndType(page, reelCap, caption); await reelCap.dispose(); await sleep(500); }
+    else console.warn('   ! reel description box not found — posting without a caption.');
+
+    // Next (Create→Edit), Next (Edit→Share).
+    for (const which of ['to Edit', 'to Share']) {
+      const n = await waitForElement(page, () => {
+        const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        return Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+          .find((b) => /^\s*next\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim())) || null;
+      }, { timeout: 20000, interval: 500 });
+      if (!n) throw new Error(`Reel wizard "Next" (${which}) not found.`);
+      await n.click(); await n.dispose(); await sleep(4000);
+    }
+
+    // Share step: click the "Schedule" segment (top of the page) to reveal date/time.
+    const picked = await page.evaluate(() => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const segs = Array.from(document.querySelectorAll('div[role="button"],div[role="radio"],button')).filter(vis)
+        .filter((b) => /^\s*schedule\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()));
+      if (!segs.length) return false;
+      segs.sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top)[0].click();
+      return true;
+    });
+    if (!picked) throw new Error('Reel wizard "Schedule" option not found on the Share step.');
+    await sleep(2500);
+  }
+
   // 5-7) Enable scheduling, then fill the date + the three time spinbuttons.
   // The control is a role="switch" labelled "Set date and time"; turning it on
   // reveals a masked mm/dd/yyyy date input and three role="spinbutton" segments
@@ -862,13 +1015,25 @@ async function uploadOne(page, entry, dryRun, targets) {
   // enable→date→time as a self-healing unit and retry until it verifiably sticks.
   // NOTE: getBoundingClientRect visibility, NOT offsetParent — the panel is a
   // fixed-position modal, so its inputs have offsetParent === null while visible.
-  const ensureSwitchOn = () => page.evaluate(() => {
+  const ensureSwitchOn = () => page.evaluate((isReel) => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const dateShowing = () => Array.from(document.querySelectorAll('input')).filter(vis)
+      .some((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
+    if (isReel) {
+      // Reel wizard: no switch — the "Schedule" segment reveals the fields.
+      if (!dateShowing()) {
+        const segs = Array.from(document.querySelectorAll('div[role="button"],div[role="radio"],button')).filter(vis)
+          .filter((b) => /^\s*schedule\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()));
+        if (segs.length) segs.sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top)[0].click();
+      }
+      return dateShowing();
+    }
     const s = Array.from(document.querySelectorAll('[role="switch"]'))
       .find((x) => /set date and time|^schedule/i.test(x.getAttribute('aria-label') || ''));
     if (!s) return false;
     if (s.getAttribute('aria-checked') !== 'true') s.click();
     return true;
-  });
+  }, reelWizard);
   const tm = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(entry.timeLabel);
   // The date field is a MASKED mm/dd/yyyy input: a typed "Aug 14, 2026" DISPLAYS
   // but reverts to today on blur (never commits). Typing the numeric mm/dd/yyyy
@@ -914,14 +1079,14 @@ async function uploadOne(page, entry, dryRun, targets) {
     }
 
     // Verify it stuck: switch on + our date + our hour.
-    confirmWhen = await page.evaluate(() => {
+    confirmWhen = await page.evaluate((isReel) => {
       const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
       const ins = Array.from(document.querySelectorAll('input')).filter(vis);
       const sw = Array.from(document.querySelectorAll('[role="switch"]')).find((x) => /set date and time/i.test(x.getAttribute('aria-label') || ''));
       const d = ins.find((i) => /mm\/dd\/yyyy/i.test(i.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(i.value || ''));
       const g = (a) => { const i = ins.find((x) => (x.getAttribute('aria-label') || '') === a); return i ? (i.getAttribute('aria-valuetext') || i.getAttribute('aria-valuenow') || '?') : '?'; };
-      return { on: sw ? sw.getAttribute('aria-checked') === 'true' : false, date: d ? d.value : '?', hours: g('hours'), time: `${g('hours')}:${g('minutes')} ${g('meridiem')}` };
-    });
+      return { on: isReel ? !!d : (sw ? sw.getAttribute('aria-checked') === 'true' : false), date: d ? d.value : '?', hours: g('hours'), time: `${g('hours')}:${g('minutes')} ${g('meridiem')}` };
+    }, reelWizard);
     const dateOk = confirmWhen.date === entry.dateLabel;
     const timeOk = !tm || confirmWhen.hours === String(Number(tm[1]));
     scheduled = confirmWhen.on && dateOk && timeOk;
@@ -945,13 +1110,15 @@ async function uploadOne(page, entry, dryRun, targets) {
   // rather than aborting the whole (otherwise-fine) schedule.
   const scheduleState = async () => {
     try {
-      return await page.evaluate(() => {
+      return await page.evaluate((isReel) => {
         const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-        const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
-          .find((x) => /^\s*schedule\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+        const all = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+          .filter((x) => /^\s*schedule\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()))
+          .sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top);
+        const b = isReel ? all[all.length - 1] : all[0];
         if (!b) return { found: false };
         return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
-      });
+      }, reelWizard);
     } catch (e) {
       console.log(`   … schedule-button probe hiccup (${(e.message || '').split('\n')[0].slice(0, 60)}) — retrying`);
       return { found: false };
@@ -974,13 +1141,15 @@ async function uploadOne(page, entry, dryRun, targets) {
   // composer is a FIXED-position modal, so the offsetParent-based finders (waitForText)
   // skip it → we were silently clicking nothing and the composer never closed (verified
   // failure). Retry a few times and re-verify the composer actually closed each time.
-  const clickSchedule = () => page.evaluate(() => {
+  const clickSchedule = () => page.evaluate((isReel) => {
     const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
-      .find((x) => /^\s*schedule( post)?\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim())
-        && x.getAttribute('aria-disabled') !== 'true' && x.disabled !== true);
+    const all = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .filter((x) => /^\s*schedule( post)?\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim())
+        && x.getAttribute('aria-disabled') !== 'true' && x.disabled !== true)
+      .sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top);
+    const b = isReel ? all[all.length - 1] : all[0];
     if (!b) return false; b.click(); return true;
-  });
+  }, reelWizard);
   const composerClosed = () => page.evaluate(() => !(/Post to|Create post|Schedule post/i.test(document.body.innerText || '') &&
     !!Array.from(document.querySelectorAll('div[role="button"],button')).find((b) => /^\s*schedule\s*$/i.test((b.textContent || '').trim()))));
   // TEMP DEBUG: dump the visible buttons + any alert/error text so we can see what
@@ -994,11 +1163,44 @@ async function uploadOne(page, entry, dryRun, targets) {
     const dialog = Array.from(document.querySelectorAll('[role="dialog"],[role="alertdialog"]')).filter(vis).map(d => (d.textContent || '').replace(/\s+/g, ' ').slice(0, 200));
     return { btns, err: err.trim().slice(0, 160), dialog };
   });
+  // Meta answers a successful Schedule with a dialog that says "Your post is
+  // scheduled" AND carries a boost/ads upsell - and that dialog keeps the composer
+  // mounted behind it. So composerClosed() reads false even though the post IS
+  // scheduled. Verified live 2026-08-26 on Jonathan Bale's carousels: every
+  // "Composer did not close after Schedule" failure had dialog text
+  // "Your post is scheduled...Reach a wider audience by boosting". Treating that as
+  // a failure marked scheduled posts failed, skipped the ledger write, and let the
+  // retry loop schedule the SAME post up to 3 times over. So check for the positive
+  // confirmation FIRST and dismiss it, before ever asking whether the composer closed.
+  const scheduleConfirmed = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const clean = (t) => (t || '').replace(/[​\s]+/g, ' ').trim();
+    const ok = /(your )?(post|reel|story) is scheduled/i;
+    const dlg = Array.from(document.querySelectorAll('[role="dialog"],[role="alertdialog"]')).filter(vis)
+      .find((d) => ok.test(clean(d.textContent)));
+    if (!dlg) return false;
+    // Dismiss it so the next item starts from a clean page.
+    const close = Array.from(dlg.querySelectorAll('div[role="button"],button')).filter(vis)
+      .find((b) => /^(close|done|ok|not now)$/i.test(clean(b.getAttribute('aria-label') || b.textContent)));
+    if (close) close.click();
+    return true;
+  });
   let closed = false;
   for (let i = 0; i < 3 && !closed; i++) {
     const did = await clickSchedule();
     await sleep(4000);
+    if (await scheduleConfirmed()) {
+      console.log('   ✓ Meta confirmed: scheduled (dismissed the boost upsell).');
+      closed = true;
+      await sleep(2000);
+      break;
+    }
     closed = await composerClosed();
+    if (!closed && reelWizard) {
+      // The wizard doesn't always tear down the composer chrome; leaving the Share
+      // step (no "Create reel" / "Reel details" left) is the reliable signal.
+      closed = await page.evaluate(() => !/create reel|reel details/i.test(document.body.innerText || ''));
+    }
     if (!closed) {
       const st = await dumpState();
       console.log(`   … Schedule click ${i + 1} (found=${did}) didn't close. buttons=${JSON.stringify(st.btns)}`);
@@ -1070,7 +1272,23 @@ async function uploadOne(page, entry, dryRun, targets) {
   if (args.assetName) {
     console.log(`Switching Business Suite context to "${args.assetName}"…`);
     const sw = await switchContext(page, args.assetName);
-    console.log(`  selected: ${sw.picked || '(no row matched — check --asset-name)'}  →  ${sw.url}`);
+    console.log(`  selected: ${sw.picked || '(NO asset row matched)'}  →  ${sw.url}`);
+    // ABORT if the asset wasn't found. Without this the run barrels on in the WRONG
+    // context and every item fails with a confusing "Execution context destroyed"
+    // cascade. For an Instagram pass the usual cause is that this Chrome is signed
+    // into the FACEBOOK Business Suite login, whose switcher only ever lists Pages.
+    // IG lives behind its own Business Suite login, so the fix is a login swap
+    // (IG_LOGIN_SWAP.md), not "connecting" anything.
+    if (!sw.picked) {
+      console.error(`\n✗ Could not switch to asset "${args.assetName}". It is not listed in this Business Suite's asset switcher.`);
+      console.error(`   Assets this login actually has: ${(sw.assets || []).join(', ') || '(none read)'}`);
+      console.error(`   If this is the Instagram pass: Instagram is NOT an asset of the Facebook login's`);
+      console.error(`   portfolio. Sign this debug Chrome into the INSTAGRAM Business Suite first, as`);
+      console.error(`   described in IG_LOGIN_SWAP.md, then re-run. Nothing was scheduled.`);
+      console.error(`   If this is a Facebook pass: check --asset-name matches a Page name exactly as`);
+      console.error(`   Settings > Profiles spells it.`);
+      process.exit(2);
+    }
   }
 
   let existing = [];

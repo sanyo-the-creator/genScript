@@ -28,6 +28,7 @@ const clipTool = require('./clipTool');
 const adbHelper = require('./adb_helper');
 const socialScheduler = require('./social_scheduler');
 const tiktokStudio = require('./tiktok_studio');
+const ledgerStore = require('./scheduleLedger');
 
 const PORT = 3000;
 const DEFAULT_FLOW_PORT = 9222;
@@ -86,6 +87,10 @@ const SCRAPER_URL = `http://127.0.0.1:${SCRAPER_PORT}`;
 const YT_CHARACTERS_FILE = path.join(__dirname, 'yt_characters.json');
 const YT_UPLOAD_SCRIPT = path.join(__dirname, 'ytUpload.js');
 const META_UPLOAD_SCRIPT = path.join(__dirname, 'metaUpload.js');
+const IG_UPLOAD_SCRIPT = path.join(__dirname, 'igUpload.js'); // dedicated Instagram scheduler (wraps metaUpload's IG pass)
+const X_UPLOAD_SCRIPT = path.join(__dirname, 'xUpload.js');
+const THREADS_UPLOAD_SCRIPT = path.join(__dirname, 'threadsUpload.js');
+const SCHEDULE_ALL_SCRIPT = path.join(__dirname, 'scheduleAll.js');
 const MOBILE_EMULATOR_SCRIPT = path.join(__dirname, 'mobileEmulate.js');
 
 // ---------------------------------------------------------------------------
@@ -201,25 +206,55 @@ function saveCharacters(list) {
   fs.writeFileSync(YT_CHARACTERS_FILE, JSON.stringify(list, null, 2));
 }
 // How many not-yet-posted videos sit in a character's inbox folder.
-function countPending(folder) {
-  try { return fs.readdirSync(folder).filter(f => /\.(mp4|webm|mov)$/i.test(f)).length; }
+// Respects the shared ledger: videos already scheduled on the given platform
+// (default: 'youtube') are NOT counted, so the UI shows the real backlog.
+function countPending(folder, platform = 'youtube') {
+  try {
+    const files = fs.readdirSync(folder).filter(f => /\.(mp4|webm|mov)$/i.test(f));
+    const led = ledgerStore.loadLedger(folder);
+    return files.filter(f => {
+      const key = f.replace(/\.(mp4|webm|mov)$/i, '');
+      return !ledgerStore.isScheduled(led, key, platform);
+    }).length;
+  }
   catch { return 0; }
 }
 // Meta also posts images and text-only posts (a .json with no sibling media), so
 // its "pending" count is broader than the video-only YouTube count.
-function countPendingMeta(folder) {
+// Also respects the ledger so already-scheduled items aren't counted.
+// `track` is the shared-ledger key this Meta surface records under: Facebook (and
+// the legacy combined "meta") use 'meta'; Instagram runs as its OWN independent
+// pass under 'meta-ig' (its own Business-Suite context), so counting IG's backlog
+// must look at that track — otherwise an item already on FB would wrongly hide it
+// from the IG count (and vice-versa). This is what lets FB and IG be scheduled
+// separately for the SAME item.
+function countPendingMeta(folder, track = 'meta') {
   try {
     const files = fs.readdirSync(folder);
+    const led = ledgerStore.loadLedger(folder);
     const media = files.filter(f => /\.(mp4|webm|mov|jpg|jpeg|png)$/i.test(f));
     const mediaBases = new Set(media.map(f => f.replace(/\.(mp4|webm|mov|jpg|jpeg|png)$/i, '')));
     // Text posts: .json sidecars (other than the ledger) with no paired media.
     const textPosts = files.filter(f => /\.json$/i.test(f) && f !== '.schedule-done.json'
       && !mediaBases.has(f.replace(/\.json$/i, '')));
-    return media.length + textPosts.length;
+    // Subtract items already scheduled on this Meta track.
+    const pendingMedia = media.filter(f => {
+      const key = f.replace(/\.(mp4|webm|mov|jpg|jpeg|png)$/i, '');
+      return !ledgerStore.isScheduled(led, key, track);
+    });
+    const pendingText = textPosts.filter(f => {
+      const key = f.replace(/\.json$/i, '');
+      return !ledgerStore.isScheduled(led, key, track);
+    });
+    return pendingMedia.length + pendingText.length;
   } catch { return 0; }
 }
+// Map a UI platform value to its pending count. 'fb'/'meta' use the 'meta' ledger
+// track; 'ig' uses its own 'meta-ig' track (separate context/pass).
 function countPendingFor(folder, platform) {
-  return platform === 'meta' ? countPendingMeta(folder) : countPending(folder);
+  if (platform === 'meta' || platform === 'fb') return countPendingMeta(folder, 'meta');
+  if (platform === 'ig') return countPendingMeta(folder, 'meta-ig');
+  return countPending(folder, platform);
 }
 function ytCharactersView() {
   return loadCharacters().map(c => ({ ...c, pending: countPending(c.folder), folderExists: fs.existsSync(c.folder) }));
@@ -1848,6 +1883,12 @@ const server = http.createServer(async (req, res) => {
         const v = String((p.handles && p.handles[k]) || '').trim().replace(/^@+/, '');
         if (v) handles[k] = v.slice(0, 64);
       }
+      // Persist which platforms are logged in so the scheduler dropdown and
+      // "All" mode know which networks to target after a page reload.
+      const loggedPlatforms = {};
+      for (const k of HANDLE_KEYS) {
+        loggedPlatforms[k] = !!(p.loggedPlatforms && p.loggedPlatforms[k]);
+      }
       if (!name) return sendJson(res, 400, { error: 'Name is required.' });
       if (!folder) return sendJson(res, 400, { error: 'Folder path is required.' });
       const list = loadCharacters();
@@ -1857,9 +1898,9 @@ const server = http.createServer(async (req, res) => {
       if (p.id) {
         const c = list.find(x => x.id === p.id);
         if (!c) return sendJson(res, 404, { error: 'Character not found.' });
-        Object.assign(c, { name, folder, port, handles });
+        Object.assign(c, { name, folder, port, handles, loggedPlatforms });
       } else {
-        list.push({ id: 'c' + Date.now().toString(36), name, folder, port, handles });
+        list.push({ id: 'c' + Date.now().toString(36), name, folder, port, handles, loggedPlatforms });
       }
       saveCharacters(list);
       broadcastYt();
@@ -1883,36 +1924,111 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Run scheduling for one character. Body: { id, platform?, perDay?, start?,
-  // dryRun?, tz?, targets? }. platform: 'youtube' (default) | 'meta'. One run per
-  // character at a time (both platforms drive the SAME debug Chrome on its port,
+  // dryRun?, tz?, targets? }. platform: 'youtube' (default) | 'meta' | 'x' | 'threads' | 'all'.
+  // One run per character at a time (both platforms drive the SAME debug Chrome on its port,
   // so they must not overlap); different characters still run in parallel.
   if (req.method === 'POST' && url.pathname === '/api/yt/schedule') {
     let body = '';
     req.on('data', c => (body += c));
     req.on('end', async () => {
       let p; try { p = JSON.parse(body); } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
-      const platform = p.platform === 'meta' ? 'meta' : 'youtube';
-      const isMeta = platform === 'meta';
-      const label = isMeta ? 'Meta' : 'YouTube';
       const c = loadCharacters().find(x => x.id === p.id);
       if (!c) return sendJson(res, 404, { error: 'Character not found.' });
       if (ytRuns.has(c.id)) return sendJson(res, 409, { error: `"${c.name}" is already scheduling.` });
       if (!fs.existsSync(c.folder)) return sendJson(res, 400, { error: 'Folder does not exist: ' + c.folder });
+
+      const platform = p.platform || 'youtube';
+
+      // ALL platform = sequential multi-platform via scheduleAll.js
+      if (platform === 'all') {
+        const logged = c.loggedPlatforms || {};
+        const enabledPlatforms = [];
+        if (logged.youtube) enabledPlatforms.push('youtube');
+        if (logged.facebook || logged.instagram) enabledPlatforms.push('fb', 'ig');
+        if (logged.x) enabledPlatforms.push('x');
+        if (logged.threads) enabledPlatforms.push('threads');
+
+        if (enabledPlatforms.length === 0) {
+          return sendJson(res, 400, { error: 'No platforms are marked as logged in for this character.' });
+        }
+
+        const perDay = Math.max(1, Math.min(25, parseInt(p.perDay) || 3));
+        const cliArgs = [SCHEDULE_ALL_SCRIPT, c.folder, `--port=${c.port}`, `--platforms=${enabledPlatforms.join(',')}`, `--per-day=${perDay}`];
+        if (p.start) cliArgs.push(`--start=${p.start}`);
+        if (p.tz) cliArgs.push(`--tz=${p.tz}`);
+        if (p.dryRun) cliArgs.push('--dry-run');
+
+        // Auto-launch if needed
+        let launchedByUs = false;
+        if (!(await isDebugChromeUp(c.port))) {
+          if (p.autoLaunch) {
+            try {
+              log(`▶ All: launching debug Chrome for "${c.name}" on port ${c.port}…`);
+              await launchDebugChrome(c.port, 'https://studio.youtube.com');
+              launchedByUs = true;
+              log(`  Chrome ready on port ${c.port}.`);
+            } catch (e) {
+              return sendJson(res, 400, { error: e.message || 'Failed to auto-launch Chrome.' });
+            }
+          } else {
+            return sendJson(res, 400, { error: `No debug Chrome on port ${c.port}. Tick "already logged in" to auto-launch it.` });
+          }
+        }
+
+        const child = spawn(process.execPath, cliArgs, { cwd: __dirname });
+        ytRuns.set(c.id, { child, name: c.name, port: c.port, platform: 'all' });
+        broadcastYt();
+        log(`▶ All: scheduling "${c.name}" across ${enabledPlatforms.join(', ')} (${perDay}/day)${p.dryRun ? ' [DRY RUN]' : ''}…`);
+        sendJson(res, 200, { ok: true });
+
+        const tag = `[${c.name}]`;
+        const pipe = (buf) => {
+          try { String(buf).split(/\r?\n/).forEach(l => l.trim() && log(`  ${tag} ${l.trim()}`)); }
+          catch { /* ignore */ }
+        };
+        child.stdout.on('data', pipe);
+        child.stderr.on('data', pipe);
+        child.on('close', async (code) => {
+          log(`■ All run for "${c.name}" finished (exit ${code}).`);
+          ytRuns.delete(c.id); broadcastYt();
+          if (launchedByUs) {
+            log(`  Closing the debug Chrome we opened for "${c.name}" (port ${c.port})…`);
+            const closed = await closeDebugChrome(c.port);
+            if (closed) log(`  Closed Chrome on port ${c.port}.`);
+          }
+        });
+        child.on('error', (e) => {
+          log(`✗ All run for "${c.name}" failed to start: ${e.message}`);
+          ytRuns.delete(c.id); broadcastYt();
+        });
+        return;
+      }
+
+      // Single platform scheduling. Facebook and Instagram are now SEPARATE options
+      // (the user logs each into Business Suite independently), but both are driven
+      // by metaUpload.js against the same debug Chrome — so they share the "isMeta"
+      // plumbing (open Business Suite, 25/day cap, meta pending count) and differ
+      // only in the flags built below (FB = --targets=fb; IG = its own reel + context
+      // + ledger track). The legacy combined 'meta' value still works (FB+IG cross-post).
+      const isFb = platform === 'fb';
+      const isIg = platform === 'ig';
+      const isMeta = platform === 'meta' || isFb || isIg;
+      const isX = platform === 'x';
+      const isThreads = platform === 'threads';
+      const label = isFb ? 'Facebook' : isIg ? 'Instagram' : (platform === 'meta') ? 'Meta' : isX ? 'X' : isThreads ? 'Threads' : 'YouTube';
+
       if (countPendingFor(c.folder, platform) === 0) {
         return sendJson(res, 400, { error: isMeta
           ? 'No posts (video/image/text) in this character\'s folder.'
           : 'No videos in this character\'s folder.' });
       }
-      // The launch/login target differs per platform: YouTube Studio vs Meta
-      // Business Suite. The SAME per-port Chrome profile can be signed into both,
-      // so one character/port serves both platforms — only the opened URL changes.
-      const openUrl = isMeta ? 'https://business.facebook.com/latest/home' : 'https://studio.youtube.com';
-      // Confirm this character's debug Chrome is up on its port — and, when the
-      // character is already logged in, auto-launch it (no cmd copy needed).
-      // Track whether WE launched it, so we only close what we opened when the
-      // run ends (a Chrome the user opened by hand is left untouched).
+
+      const openUrl = isMeta ? 'https://business.facebook.com/latest/home'
+                    : isX ? 'https://x.com/home'
+                    : 'https://studio.youtube.com';
+
       let launchedByUs = false;
-      if (!(await isDebugChromeUp(c.port))) {
+      if (!isThreads && !(await isDebugChromeUp(c.port))) {
         if (p.autoLaunch) {
           try {
             log(`▶ ${label}: launching debug Chrome for "${c.name}" on port ${c.port} → ${openUrl}…`);
@@ -1926,25 +2042,69 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, 400, { error: `No debug Chrome on port ${c.port}. Tick "already logged in" to auto-launch it, or launch this character's Chrome manually first.` });
         }
       }
+
       const maxPerDay = isMeta ? 25 : 15;
       const perDay = Math.max(1, Math.min(maxPerDay, parseInt(p.perDay) || 3));
       let cliArgs;
+
       if (isMeta) {
-        const targets = Array.isArray(p.targets) && p.targets.length ? p.targets.join(',') : 'fb,ig';
-        // Reels and posts get their own daily caps (default to the shared perDay).
         const clampMeta = v => Math.max(1, Math.min(25, parseInt(v) || perDay));
         const reelsPerDay = clampMeta(p.reelsPerDay);
         const postsPerDay = clampMeta(p.postsPerDay);
-        cliArgs = [META_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`,
-          `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`, `--targets=${targets}`];
+        if (isIg) {
+          // Instagram = the DEDICATED igUpload.js scheduler (a thin wrapper over
+          // metaUpload's verified IG pass: --targets=ig + switch to the IG asset +
+          // reel composer + its own 'meta-ig' ledger track). igUpload owns those
+          // flags; we only pass folder/port/pacing + the per-character IG asset name.
+          //
+          // IMPORTANT (login swap): Instagram lives in a SEPARATE Business Suite
+          // LOGIN, not as an asset inside the Facebook login's portfolio. Verified
+          // 2026-08-25 on Jonathan Bale: the FB login's Settings > Profiles lists
+          // only Facebook Pages, and there is no business portfolio at all — so the
+          // IG asset can never appear in that switcher no matter what is "connected".
+          // The debug Chrome must therefore be signed into the INSTAGRAM Business
+          // Suite before this pass runs. See IG_LOGIN_SWAP.md. If it isn't,
+          // metaUpload aborts cleanly (exit 2) with the swap instructions.
+          const igAsset = c.igAssetName || (c.handles && c.handles.instagram);
+          if (!igAsset) {
+            return sendJson(res, 400, { error: `No Instagram profile name set for "${c.name}". Add "igAssetName" (the IG handle as it appears in Business Suite, e.g. jonathanbale.upshift) to this character, then retry. It is never guessed — a wrong name would schedule to somebody else's account.` });
+          }
+          cliArgs = [IG_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`,
+            `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`,
+            `--ig-asset-name=${igAsset}`];
+          if (c.igMention) cliArgs.push(`--ig-mention=${c.igMention}`);
+        } else if (isFb) {
+          // Facebook-only pass: the post composer accepts 9:16, so no --reel needed.
+          //
+          // PIN THE PAGE. A login can hold several similarly named Pages (Jonathan
+          // Bale's has both "Upshift" and "Upshift: #1 Productivity App"), and
+          // without --asset-name metaUpload composes into whichever asset Business
+          // Suite happens to have active — i.e. it silently posts to the wrong Page.
+          // c.fbAssetName is the Page name exactly as Settings > Profiles shows it.
+          cliArgs = [META_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`,
+            `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`, '--targets=fb', '--no-check'];
+          if (c.fbAssetName) cliArgs.push(`--asset-name=${c.fbAssetName}`);
+        } else {
+          // Legacy combined 'meta' = FB + IG cross-post in one composer entry.
+          const targets = Array.isArray(p.targets) && p.targets.length ? p.targets.join(',') : 'fb,ig';
+          cliArgs = [META_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`,
+            `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`, `--targets=${targets}`];
+          if (c.fbAssetName) cliArgs.push(`--asset-name=${c.fbAssetName}`); // same wrong-Page guard as the fb pass
+        }
+      } else if (isX) {
+        cliArgs = [X_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`];
+      } else if (isThreads) {
+        cliArgs = [THREADS_UPLOAD_SCRIPT, c.folder, `--per-day=${perDay}`];
       } else {
-        // Thumbnails are skipped: Studio's custom-thumbnail tile isn't reliably
-        // found (and these channels may lack the privilege), so setting it only
-        // slows each upload and logs a warning. Always run --no-thumbnail.
-        cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`, '--no-thumbnail'];
+        // Thumbnails ON: mobile (phone-width) mode is the default in ytUpload.js so
+        // the custom-thumbnail tile appears even on UNVERIFIED channels. The final
+        // Schedule click is made robust (fresh-handle retries + ledger-first) so the
+        // flakier mobile footer never causes duplicate scheduling.
+        cliArgs = [YT_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`, `--per-day=${perDay}`];
       }
+
       if (p.start) cliArgs.push(`--start=${p.start}`);
-      if (p.tz) cliArgs.push(`--tz=${p.tz}`); // target publish timezone (default US Eastern)
+      if (p.tz) cliArgs.push(`--tz=${p.tz}`);
       if (p.dryRun) cliArgs.push('--dry-run'); else cliArgs.push('--delete-after');
 
       const child = spawn(process.execPath, cliArgs, { cwd: __dirname });
