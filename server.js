@@ -296,7 +296,7 @@ function buildPrompt(cfg, task) {
     // tone is picked the hand is dropped from the unchanged list and the recolour
     // is stated first, as change (1).
     const SKIN_TONES = {
-      white: 'pale white Caucasian skin (fair, light pinkish, clearly a white person’s hand)',
+      white: 'pale fair white European/Caucasian skin — light pinkish-beige with no brown, olive or tan undertone at all, the skin of a light-skinned white person',
       brown: 'medium brown mixed-race skin (clearly brown, noticeably lighter than black skin)',
       black: 'dark brown / black skin',
     };
@@ -782,9 +782,13 @@ function buildTasks(cfg) {
       // Fall back to the original file if the copy fails (names may still clash).
     }
 
-    // Always shuffle so a partial count picks reference photos at random
-    // (e.g. 7 of 15) instead of the first N in folder order.
-    const pics = shuffle(povFiles);
+    // cfg.povFile pins the batch to one specific POV photo (used for testing a
+    // prompt change against a known reference); otherwise always shuffle so a
+    // partial count picks reference photos at random (e.g. 7 of 15) instead of
+    // the first N in folder order.
+    const pics = cfg.povFile && povFiles.includes(cfg.povFile)
+      ? [cfg.povFile]
+      : shuffle(povFiles);
     const target = count || pics.length;
     const tasks = [];
     let i = 0;
