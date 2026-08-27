@@ -228,14 +228,14 @@
       },
       {
         "id": "sub_14_3",
-        "name": "Brand C",
+        "name": "Jon Gainzzzz",
         "accounts": {
           "instagram": {
             "username": "",
             "accountIndex": 1
           },
           "tiktok": {
-            "username": "",
+            "username": "jon.gainzzz",
             "accountIndex": 1
           },
           "threads": {
@@ -313,6 +313,91 @@
       },
       {
         "id": "sub_11_3",
+        "name": "Brand C",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "profile_12",
+    "grapheneUserId": 12,
+    "name": "Muzi",
+    "subAccounts": [
+      {
+        "id": "sub_12_1",
+        "name": "Brand A",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_12_2",
+        "name": "Brand B",
+        "accounts": {
+          "instagram": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "tiktok": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "threads": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "x": {
+            "username": "",
+            "accountIndex": 1
+          },
+          "youtube": {
+            "channelName": "",
+            "port": 9222
+          }
+        }
+      },
+      {
+        "id": "sub_12_3",
         "name": "Brand C",
         "accounts": {
           "instagram": {

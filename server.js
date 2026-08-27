@@ -313,17 +313,45 @@ function buildPrompt(cfg, task) {
     const changeList = changes.map((c, i) => `(${i + 1}) ${c}`).join('; ');
     return `Two images are attached: the first is an app screenshot, the second is a real POV photo of a person holding a phone. Keep the POV photo as it is — ${unchanged} must all stay completely unchanged. Exactly ${changes.length} change${changes.length > 1 ? 's' : ''}, and nothing else: ${changeList}. Map the screenshot onto the phone display so it follows the exact perspective, angle, tilt and rotation of the phone in the photo, filling the screen edge to edge inside the bezels. Add realistic screen brightness, subtle glare and reflections, and match the ambient lighting and color temperature so the screen looks like it is genuinely displaying this app. Do not stretch, crop or distort the screenshot's content beyond the perspective warp needed to sit flat on the screen — every element of the app UI must stay legible and correctly proportioned. Apart from the change${changes.length > 1 ? 's' : ''} listed above, everything in the photo must remain identical to the original. The result must look like a completely natural, unedited real photograph.`;
   }
+  if (task.isCharacterCreate) {
+    // One-shot: turn the base character into the chopped version. The character
+    // is "@"-mentioned so Flow attaches it from the prompt itself.
+    const base = (cfg.characterName || 'Untitled Character').replace(/^@/, '');
+    return `update our ${mention(base)} so he has 35% bodyfat, acne, greasy messy hair, bloated puffy face.`;
+  }
   if (task.isRefSwap) {
     let charName = cfg.characterName || 'Untitled Character';
     if (charName.startsWith('@')) {
       charName = charName.substring(1);
     }
     const isFemale = cfg.gender === 'women' || cfg.gender === 'female' || (cfg.folderName && cfg.folderName.includes('women')) || (task.folderName && task.folderName.includes('women'));
+    const isChopped = !!cfg.isChopped || !!task.isChopped || (cfg.folderName && cfg.folderName.includes('chopped')) || (task.folderName && task.folderName.includes('chopped'));
+
+    // Shared tail — identical for every swap variant so the chopped version
+    // behaves exactly like the classic one.
+    const BLEND = `ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment.`;
+    const PHONE = `if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
+
+    const OPEN = `swap character on refference image with ${charName}. keep the outfit as it is on refference image.`;
+
+    // Point at each attached asset BY NAME via a real Flow "@" mention, so the
+    // prompt never depends on which chip happened to be attached first.
+    // refImageName is only set for the folder-driven swap packs; without it we
+    // fall back to plain wording.
+    const CHAR = mention(charName);
+    const REF = task.refImageName ? mention(task.refImageName) : 'the reference picture';
+
+    if (isChopped) {
+      // Keep this SHORT — the simple one-liner with both assets "@"-tagged
+      // outperforms every longer variant we tried. The chopped look itself
+      // lives in the Flow character, so nothing about it is described here.
+      return `swap character on ${REF} with our ${CHAR}, dont add any accessories like glasses, airpods, or headphones.`;
+    }
 
     if (isFemale) {
-      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep the body of ${charName} ABSOLUTELY unchanged during the generations. Keep it consistent always, so the new body on the refference image is actually our ${charName}'s body, the only thing you can change is the hairstyle. keep the haircolor consistent to our character but you can use hairstyle on refference image. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
+      return `${OPEN} IMPORTANT: keep the body of ${charName} ABSOLUTELY unchanged during the generations. Keep it consistent always, so the new body on the refference image is actually our ${charName}'s body, the only thing you can change is the hairstyle. keep the haircolor consistent to our character but you can use hairstyle on refference image. ${BLEND} ${PHONE}`;
     } else {
-      return `swap character on refference image with ${charName}. keep the outfit as it is on refference image. IMPORTANT: keep the body of ${charName} ABSOLUTELY unchanged during the generations. Keep it consistent always, so the new body on the refference image is actually our ${charName}'s body. ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment. if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
+      return `${OPEN} IMPORTANT: keep the body of ${charName} ABSOLUTELY unchanged during the generations. Keep it consistent always, so the new body on the refference image is actually our ${charName}'s body. ${BLEND} ${PHONE}`;
     }
   }
 
@@ -703,12 +731,65 @@ async function resetComposer(page) {
 }
 
 // Type the prompt into the (already-empty) editor.
+// Placeholder tokens a prompt can embed to point at a specific ATTACHED asset.
+// setPromptText replaces each with a real Flow "@" mention bound to that asset,
+// so the model is told *by name* which image is which instead of having to infer
+// it from attachment order. Falls back to the plain asset name if the mention
+// picker doesn't come up.
+const MENTION_OPEN = '\u2039@';   // ‹@name›  — cannot collide with prompt text
+const MENTION_CLOSE = '\u203a';
+const mention = (name) => `${MENTION_OPEN}${name}${MENTION_CLOSE}`;
+
+// Types "@", waits for Flow's asset dropdown, picks the entry matching `name`.
+// Returns true if a real mention node was inserted.
+async function insertMention(page, name) {
+  const bare = name.replace(/\.(jpg|jpeg|png|webp)$/i, '');
+  // Slate needs to settle before the "@" or the trigger is swallowed and no
+  // dropdown opens — this is why typing the prompt at delay 0 broke mentions.
+  await sleep(600);
+  await page.keyboard.type('@', { delay: 0 });
+  await sleep(700);
+  await page.keyboard.type(bare, { delay: 20 });
+
+  // Wait for the matching option in the mention dropdown.
+  let opt = null;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    opt = await findCharacterOption(page, bare);
+    if (opt) break;
+    await sleep(200);
+  }
+  if (!opt) {
+    // No picker — undo the typed "@name" and leave the plain name behind.
+    for (let i = 0; i < bare.length + 1; i++) await page.keyboard.press('Backspace');
+    await page.keyboard.type(bare, { delay: 0 });
+    log(`Mention picker did not match "${bare}" — used plain text instead.`);
+    return false;
+  }
+  await opt.click();
+  await opt.dispose();
+  await sleep(400);
+  return true;
+}
+
 async function setPromptText(page, text) {
   const input = await findElement(page, () =>
     document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]'));
   if (!input) return false;
   await input.click();
-  await page.keyboard.type(text, { delay: 0 });
+
+  if (text.includes(MENTION_OPEN)) {
+    // Split into alternating text / mention segments and type them in order.
+    const parts = text.split(new RegExp(`${MENTION_OPEN}([^${MENTION_CLOSE}]+)${MENTION_CLOSE}`));
+    for (let i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      if (i % 2 === 1) await insertMention(page, parts[i]);
+      else await page.keyboard.type(parts[i], { delay: 0 });
+    }
+  } else {
+    await page.keyboard.type(text, { delay: 0 });
+  }
+
   await input.dispose();
   return true;
 }
@@ -809,6 +890,15 @@ function buildTasks(cfg) {
     return tasks;
   }
 
+  if (cfg.isCharacterCreate) {
+    const n = Math.max(1, count || 1);
+    return Array.from({ length: n }, () => ({
+      isCharacterCreate: true,
+      env: 'Chopped character creation',
+      pose: 'generate at 16:9, then restore 9:16',
+    }));
+  }
+
   if (Array.isArray(cfg.refPics) && cfg.refPics.length) {
     const pics = cfg.shuffle ? shuffle(cfg.refPics) : cfg.refPics.slice();
     const target = count || pics.length;
@@ -818,6 +908,7 @@ function buildTasks(cfg) {
       const pic = pics[i % pics.length];
       tasks.push({
         isRefSwap: true,
+        isChopped: !!cfg.isChopped || (cfg.folderName && cfg.folderName.includes('chopped')),
         refImageName: pic,
         folderName: cfg.folderName || 'men_ref_pics',
         env: `Ref pic: ${pic}`,
@@ -966,6 +1057,128 @@ async function generateScreenSwap(page, cfg, task) {
 }
 
 // Fire one generation with EXACTLY 2 reference images attached (Character + Ref Image).
+// ── Aspect-ratio switch in the composer settings popover ─────────────────────
+// The ratio lives behind the model chip ("🍌 Nano Banana 2 · crop_9_16 · x2");
+// inside the popover each ratio is a button[role="tab"] labelled "16:9", "9:16"…
+async function setAspectRatio(page, ratio) {
+  const wanted = ratio.replace(':', '_');
+  const current = () => page.evaluate(() => {
+    const b = Array.from(document.querySelectorAll('button')).find(x => /crop_\d/.test(x.innerHTML));
+    return b ? ((b.innerHTML.match(/crop_(\d+_\d+)/) || [])[1] || '') : '';
+  });
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if ((await current()) === wanted) { log(`Aspect ratio is ${ratio}.`); return true; }
+
+    const trigger = await findElement(page, () =>
+      Array.from(document.querySelectorAll('button')).find(b => /crop_\d/.test(b.innerHTML)));
+    if (!trigger) { await sleep(600); continue; }
+    await trigger.click();
+    await trigger.dispose();
+    await sleep(1200);
+
+    // Real mouse click on the ratio tab — a synthetic .click() inside evaluate()
+    // doesn't register with the popover's handler.
+    const tab = await findElement(page, (r) => {
+      const wraps = Array.from(document.querySelectorAll('[data-radix-popper-content-wrapper],[role="dialog"],[role="menu"]'));
+      const w = wraps.find(x => /16:9/.test(x.innerText));
+      if (!w) return null;
+      return Array.from(w.querySelectorAll('button[role="tab"]')).find(b => b.textContent.trim().endsWith(r)) || null;
+    }, ratio);
+    if (tab) { await tab.click(); await tab.dispose(); await sleep(900); }
+    await closePicker(page);
+    await sleep(500);
+    if ((await current()) === wanted) { log(`Aspect ratio set to ${ratio}.`); return true; }
+  }
+  log(`Could not set aspect ratio to ${ratio}.`);
+  return false;
+}
+
+// Rename the newest tile in All Media (the sheet we just generated). Flow's
+// media context menu has "Rename", which opens a small dialog with one input
+// and a Done button — no character object involved.
+async function renameLatestMedia(page, newName) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const box = await page.evaluate(() => {
+      const r = Array.from(document.querySelectorAll('img'))
+        .map(i => i.getBoundingClientRect())
+        .filter(r => r.width > 120 && r.top > 60)
+        .sort((a, b) => a.top - b.top || a.left - b.left)[0];
+      return r ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+    });
+    if (!box) { await sleep(1000); continue; }
+
+    await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2, { button: 'right' });
+    await sleep(1200);
+
+    const item = await findElement(page, () => {
+      const menus = Array.from(document.querySelectorAll('[role="menu"],[data-radix-popper-content-wrapper]'));
+      for (const m of menus) {
+        const it = Array.from(m.querySelectorAll('*')).find(e => /Rename/.test(e.textContent || '') && e.querySelectorAll('*').length <= 2);
+        if (it) return it;
+      }
+      return null;
+    });
+    if (!item) { await closePicker(page); continue; }
+    await item.click();
+    await item.dispose();
+    await sleep(1200);
+
+    const input = await findElement(page, () => {
+      const d = document.querySelector('[role="dialog"]');
+      return d ? d.querySelector('input') : null;
+    });
+    if (!input) { await closePicker(page); continue; }
+    // Clear the old name for real. Neither a triple-click nor Cmd+A reliably
+    // selects inside this dialog — the caret lands mid-text and the new name
+    // gets spliced into the old one — so select via the DOM, then delete key by
+    // key until the field is actually empty.
+    await input.click();
+    await page.evaluate(el => { el.focus(); el.setSelectionRange(0, el.value.length); }, input);
+    await page.keyboard.press('Backspace');
+    for (let i = 0; i < 80; i++) {
+      const len = await page.evaluate(el => el.value.length, input);
+      if (!len) break;
+      await page.keyboard.press('End');
+      await page.keyboard.press('Backspace');
+    }
+    const leftover = await page.evaluate(el => el.value, input);
+    if (leftover) { log(`Rename field would not clear ("${leftover}") — retrying.`); await input.dispose(); await closePicker(page); continue; }
+
+    await page.keyboard.type(newName, { delay: 20 });
+    const typed = await page.evaluate(el => el.value, input);
+    await input.dispose();
+    if (typed !== newName) { log(`Rename field reads "${typed}" instead of "${newName}" — retrying.`); await closePicker(page); continue; }
+    await sleep(300);
+
+    // Enter commits the rename — clicking the dialog's "Done" button did not.
+    await page.keyboard.press('Enter');
+    await sleep(1000);
+    await closePicker(page);
+    await sleep(600);
+    log(`Renamed the new media to "${newName}".`);
+    return true;
+  }
+  log(`Could not rename the new media to "${newName}".`);
+  return false;
+}
+
+// Flow shows a "NN%" badge on each tile while it renders. Generation is done
+// once no percentage badge is left on the page (or we hit the timeout).
+async function waitForGenerationDone(page, timeoutMs = 240000) {
+  const deadline = Date.now() + timeoutMs;
+  await sleep(4000); // let the placeholder tiles appear first
+  while (Date.now() < deadline) {
+    if (state.stopRequested) throw new Error('STOP_REQUESTED');
+    const busy = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('*')).some(e => e.children.length === 0 && /^\d{1,3}%$/.test((e.textContent || '').trim())));
+    if (!busy) { log('Generation finished.'); return true; }
+    await sleep(3000);
+  }
+  log('Timed out waiting for the generation to finish.');
+  return false;
+}
+
 async function generateOne(page, cfg, task) {
   if (task.isScreenSwap) return await generateScreenSwap(page, cfg, task);
 
@@ -973,14 +1186,42 @@ async function generateOne(page, cfg, task) {
   // 1. Reliably wipe any leftover text/chip first (removes chip)
   await resetComposer(page);
 
+  // Build the prompt up front: when it names the character with a real Flow "@"
+  // mention, typing the prompt attaches the character itself, so hunting for it
+  // in the asset picker first is redundant (and fails when the picker's label
+  // doesn't match the typed name).
+  const built = buildPrompt(cfg, task);
+  const promptString = typeof built === 'string' ? built : JSON.stringify(built);
+  const charName = (cfg.characterName || 'Untitled Character').replace(/^@/, '');
+  const charViaMention = promptString.includes(mention(charName));
+
   if (state.stopRequested) throw new Error('STOP_REQUESTED');
-  // 2. Attach Image 1: Character reference asset (Untitled Character)
-  if (!(await addCharacterReference(page, cfg.characterName))) {
+  // 2. Attach Image 1: Character reference asset — unless the prompt's own
+  //    "@" mention will add it.
+  if (charViaMention) {
+    log(`Character "${charName}" is mentioned in the prompt — skipping the asset-picker attach.`);
+  } else if (!(await addCharacterReference(page, cfg.characterName))) {
     log('Skipping this prompt — character reference not attached.');
     return false;
   }
 
   if (state.stopRequested) throw new Error('STOP_REQUESTED');
+  // Chopped character creation: no reference picture — just the character, the
+  // prompt, and a 16:9 generation that we flip back to 9:16 once it's done.
+  if (task.isCharacterCreate) {
+    await setAspectRatio(page, '16:9');
+    if (!(await setPromptText(page, promptString))) { log('Skipping — could not set prompt text.'); return false; }
+    const started = await fireGenerate(page);
+    if (started) {
+      try {
+        await waitForGenerationDone(page);
+        await renameLatestMedia(page, cfg.choppedName || 'Chopped character');
+      } catch (e) { await setAspectRatio(page, '9:16'); throw e; }
+    }
+    await setAspectRatio(page, '9:16');
+    return started;
+  }
+
   // 3. Attach Image 2: Reference picture from uploaded asset library
   const sceneMode = Array.isArray(cfg.scenes) && cfg.scenes.length;
   if (task.isRefSwap && task.refImageName) {
@@ -1006,15 +1247,19 @@ async function generateOne(page, cfg, task) {
     log(`Note: composer has ${refCount} chip(s) attached.`);
   }
 
-  const built = buildPrompt(cfg, task);
-  const promptString = typeof built === 'string' ? built : JSON.stringify(built);
   if (!(await setPromptText(page, promptString))) { log('Skipping — could not set prompt text.'); return false; }
 
   // If the chip vanished (e.g. an editor glitch), re-add it instead of skipping.
+  // On the mention path insertMention already handled it (falling back to plain
+  // text if the picker missed), so don't abort the generation over a chip count.
   if ((await countCharacterChips(page)) === 0) {
     if (state.stopRequested) throw new Error('STOP_REQUESTED');
-    log('Character chip missing before generate — re-adding.');
-    if (!(await addCharacterReference(page, cfg.characterName))) { log('Could not re-add character — skipping.'); return false; }
+    if (charViaMention) {
+      log('No character chip after the prompt mention — generating with the mention text as-is.');
+    } else {
+      log('Character chip missing before generate — re-adding.');
+      if (!(await addCharacterReference(page, cfg.characterName))) { log('Could not re-add character — skipping.'); return false; }
+    }
   }
 
   return await fireGenerate(page);
@@ -1574,14 +1819,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/ref-pics') {
+    const folderParam = url.searchParams.get('folder');
     const gender = url.searchParams.get('gender') || 'men';
-    const folder = path.join(__dirname, `${gender}_ref_pics`);
+    const folderName = folderParam ? folderParam.replace(/[^a-z0-9_-]/gi, '') : `${gender}_ref_pics`;
+    const folder = path.join(__dirname, folderName);
     if (!fs.existsSync(folder)) {
-      return sendJson(res, 200, { files: [], folder: `${gender}_ref_pics` });
+      return sendJson(res, 200, { files: [], folder: folderName });
     }
     try {
       const files = fs.readdirSync(folder).filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f));
-      return sendJson(res, 200, { files, folder: `${gender}_ref_pics` });
+      return sendJson(res, 200, { files, folder: folderName });
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
     }
@@ -1717,7 +1964,8 @@ const server = http.createServer(async (req, res) => {
       const hasScenes = Array.isArray(cfg.scenes) && cfg.scenes.length;
       const isRefSwap = Array.isArray(cfg.refPics) && cfg.refPics.length;
       const isScreenSwap = cfg.isScreenSwap && cfg.gender && cfg.screenshotFile;
-      if (!hasScenes && !isRefSwap && !isScreenSwap && (!cfg.environments?.length || !cfg.poses?.length)) {
+      const isCharCreate = !!cfg.isCharacterCreate;
+      if (!hasScenes && !isRefSwap && !isScreenSwap && !isCharCreate && (!cfg.environments?.length || !cfg.poses?.length)) {
         return sendJson(res, 400, { error: 'Pick at least one environment and one pose.' });
       }
       cfg.count = Math.max(0, parseInt(payload.count) || 0);
