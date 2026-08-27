@@ -137,6 +137,13 @@
       <select id="ssCategory"><option value="">Loading…</option></select>
       <label>Screenshot</label>
       <select id="ssScreenshot"><option value="">Pick a category first</option></select>
+      <label>Hand skin tone</label>
+      <select id="ssSkinTone">
+        <option value="">Keep as in the photo</option>
+        <option value="white">✋🏻 White / fair</option>
+        <option value="brown">✋🏽 Brown / mixed (medium)</option>
+        <option value="black">✋🏿 Dark brown / black</option>
+      </select>
       <div class="row" style="margin-top:10px; align-items:flex-end">
         <div style="max-width:150px"><label style="margin-top:0">Images (0 = all refs)</label><input type="number" id="ssCount" value="0" min="0" /></div>
         <div><button id="ssQueueBtn" class="primary" style="width:100%">➕ Queue screen swap</button></div>
@@ -936,12 +943,14 @@ document.getElementById('ssQueueBtn').onclick = async () => {
     category: povState.category,
     screenshotFile: shot.name,
     screenshotLabel: shot.label,
+    skinTone: document.getElementById('ssSkinTone').value || '',
     aspectRatio: '9:16',
     shuffle: false,
     waitSeconds: parseInt(val('waitSeconds')) || 35,
     jitterSeconds: parseInt(val('jitterSeconds')) || 15,
   };
-  const label = `🖼️ Screen Swap: ${shot.label} → ${povState.gender.toUpperCase()} · ${target}× (${povState.povRefs.length} POV photos)`;
+  const skinLabel = cfg.skinTone ? ` · ${cfg.skinTone} skin` : '';
+  const label = `🖼️ Screen Swap: ${shot.label} → ${povState.gender.toUpperCase()} · ${target}×${skinLabel} (${povState.povRefs.length} POV photos)`;
   const r = await fetch('/api/queue/add', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ count: target, label, config: cfg, port: selectedPort() }),

@@ -291,7 +291,27 @@ function clean(obj) {
 
 function buildPrompt(cfg, task) {
   if (task.isScreenSwap) {
-    return `Two images are attached: the first is an app screenshot, the second is a real POV photo of a person holding a phone. Keep the POV photo EXACTLY as it is — the same person, hand, fingers, pose, face, body, outfit, background, lighting and camera angle, must all stay completely unchanged. Two changes only, and nothing else: (1) the phone itself must be a silver iPhone 17 in a clear MagSafe case — render its frame, bezels, camera island, thickness and the transparent case realistically at the exact same position, size, angle and grip as the phone already in the photo, so the hand and fingers keep holding it identically; (2) replace whatever is currently shown on the phone's screen with the attached app screenshot. Map the screenshot onto the phone display so it follows the exact perspective, angle, tilt and rotation of the phone in the photo, filling the screen edge to edge inside the bezels. Add realistic screen brightness, subtle glare and reflections, and match the ambient lighting and color temperature so the screen looks like it is genuinely displaying this app. Do not stretch, crop or distort the screenshot's content beyond the perspective warp needed to sit flat on the screen — every element of the app UI must stay legible and correctly proportioned. Everything outside the phone screen must remain identical to the original photo. The result must look like a completely natural, unedited real photograph.`;
+    // Optional recolour of the visible skin. The model ignores a skin instruction
+    // tacked on at the end (the "keep the hand unchanged" clause wins), so when a
+    // tone is picked the hand is dropped from the unchanged list and the recolour
+    // is stated first, as change (1).
+    const SKIN_TONES = {
+      white: 'pale white Caucasian skin (fair, light pinkish, clearly a white person’s hand)',
+      brown: 'medium brown mixed-race skin (clearly brown, noticeably lighter than black skin)',
+      black: 'dark brown / black skin',
+    };
+    const skin = SKIN_TONES[cfg.skinTone];
+    const unchanged = skin
+      ? 'the same background, ground, grass, outfit, sleeve, cable, lighting, shadows and camera angle, and the exact same hand shape, pose, finger placement and grip'
+      : 'the same person, hand, fingers, pose, face, body, outfit, background, lighting and camera angle';
+    const changes = [];
+    if (skin) {
+      changes.push(`the skin of the hand, fingers, wrist and any visible forearm MUST be repainted as ${skin} — this is a required change, do not keep the original skin tone. Recolour only: identical hand anatomy, pose, fingers, knuckles, nails, grip, and the same shadows and highlights, with photorealistic skin texture consistent across every visible patch of skin`);
+    }
+    changes.push("the phone must be a silver iPhone 17 in a clear MagSafe case — render its frame, bezels, camera island, thickness and the transparent case realistically at the exact same position, size, angle and grip as the phone already in the photo, so the hand and fingers keep holding it identically");
+    changes.push("replace whatever is currently shown on the phone's screen with the attached app screenshot");
+    const changeList = changes.map((c, i) => `(${i + 1}) ${c}`).join('; ');
+    return `Two images are attached: the first is an app screenshot, the second is a real POV photo of a person holding a phone. Keep the POV photo as it is — ${unchanged} must all stay completely unchanged. Exactly ${changes.length} change${changes.length > 1 ? 's' : ''}, and nothing else: ${changeList}. Map the screenshot onto the phone display so it follows the exact perspective, angle, tilt and rotation of the phone in the photo, filling the screen edge to edge inside the bezels. Add realistic screen brightness, subtle glare and reflections, and match the ambient lighting and color temperature so the screen looks like it is genuinely displaying this app. Do not stretch, crop or distort the screenshot's content beyond the perspective warp needed to sit flat on the screen — every element of the app UI must stay legible and correctly proportioned. Apart from the change${changes.length > 1 ? 's' : ''} listed above, everything in the photo must remain identical to the original. The result must look like a completely natural, unedited real photograph.`;
   }
   if (task.isRefSwap) {
     let charName = cfg.characterName || 'Untitled Character';
