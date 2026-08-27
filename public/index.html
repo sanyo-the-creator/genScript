@@ -416,6 +416,20 @@ const PACKS = {
         physique: 'lean muscular athletic build',
         sweat: 'dry',
       } },
+    { title: '🧪 Chopped Character Creation', desc: 'One generation: takes your base character (Character name field), prompts “update our @character so he has 35% bodyfat, acne, greasy messy hair, bloated puffy face”, switches the composer to 16:9 for the render, then flips it back to 9:16 when it finishes. Use the result to make the “Chopped character” in Flow.',
+      config: {
+        isCharacterCreate: true,
+        waitSeconds: 5,
+        jitterSeconds: 0,
+      } },
+    { title: '🧟 Chopped Men Reference Image Swap (Body Swap)', desc: 'Iterates through ALL reference pictures in the folder (chopped_men_ref_pics). Plain body swap using the “Chopped character” from the Flow project — the chopped look comes from the character itself, not from prompt modifiers.',
+      config: {
+        isRefSwapPack: true,
+        isChopped: true,
+        characterName: 'Chopped character',
+        folderName: 'chopped_men_ref_pics',
+        sweat: 'dry',
+      } },
     { title: '🪞 Gym Mirror Pack (Body Swap)', desc: 'Body-swaps your character into the SlideSmith “mirror” photo pack (gym mirror / physique checks). Same engine as Reference Image Swap — one output per pack image.',
       config: {
         isRefSwapPack: true,
@@ -832,17 +846,20 @@ async function addPack(p, bgRef) {
   const cfg = { ...packBaseDefaults(), ...p.config };
   if (p.config.isRefSwapPack) {
     try {
-      const endpoint = p.config.mirrorSource ? '/api/mirror-pics' : `/api/ref-pics?gender=${gender}`;
+      const endpoint = p.config.mirrorSource
+        ? '/api/mirror-pics'
+        : (p.config.folderName ? `/api/ref-pics?folder=${encodeURIComponent(p.config.folderName)}` : `/api/ref-pics?gender=${gender}`);
       const res = await fetch(endpoint);
       const data = await res.json();
+      const folderName = data.folder || p.config.folderName || `${gender}_ref_pics`;
       if (!data.files || !data.files.length) {
         alert(p.config.mirrorSource
           ? 'No images found in the SlideSmith “mirror” photo pack.'
-          : `No reference pictures found in folder ${gender}_ref_pics/`);
+          : `No reference pictures found in folder ${folderName}/`);
         return;
       }
       cfg.refPics = data.files;
-      cfg.folderName = data.folder || `${gender}_ref_pics`;
+      cfg.folderName = folderName;
     } catch (e) {
       alert('Error fetching reference pictures: ' + (e.message || e));
       return;
@@ -850,7 +867,7 @@ async function addPack(p, bgRef) {
   }
   cfg.backgroundRef = bgRef || '';
   const totalPics = cfg.refPics ? cfg.refPics.length : 0;
-  const targetCount = p.config.isRefSwapPack ? totalPics : (userCount || 10);
+  const targetCount = p.config.isCharacterCreate ? 1 : (p.config.isRefSwapPack ? totalPics : (userCount || 10));
   const label = `${p.title.replace(/^[^\s]+\s/, '')} — ` + (cfg.refPics ? `${targetCount}× (${totalPics} ref pics in folder)` : `${targetCount}×`) + (cfg.backgroundRef ? ` · 🖼 ${cfg.backgroundRef}` : '');
   const r = await fetch('/api/queue/add', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -1,784 +1,892 @@
 [
   {
-    "id": "task_1787313077370_0",
+    "id": "task_1787571935648_0",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "6 hobbies that make you noticeably manlier\n\nPick up a hobby and become the man you want to be. 💪🛠️\n\n#manhood #hobbies #selfimprovement",
+    "caption": "4 hobbies to become dangerously intelligent\n\nIt's time to get smarter, guys! 📚🧠\n\n#intelligence #selfimprovement #hobbies",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 21,
+      "d": 25,
       "h": 15,
       "mi": 8
     },
-    "scheduledTime": "2026-08-21T15:08:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077370_0",
+    "scheduledTime": "2026-08-25T15:08:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571935648_0",
+    "fileName": "4-hobbies-to-become-dangerously-intellig",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T11:47:57.043Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571935751_1",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "4 hobbies to become dangerously intelligent\n\nReady to get smarter? Start with these hobbies! 📚♟️\n\n#selfimprovement #smartlife #hobbies",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 25,
+      "h": 18,
+      "mi": 3
+    },
+    "scheduledTime": "2026-08-25T18:03:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571935751_1",
+    "fileName": "4-hobbies-to-become-dangerously-intellig-2",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T11:50:05.995Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571935846_2",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "5 best ways to change yourself\n\nReady to make a real change? Start here! 💪\n\n#selfimprovement #productivity #motivation",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 25,
+      "h": 20,
+      "mi": 52
+    },
+    "scheduledTime": "2026-08-25T20:52:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571935846_2",
+    "fileName": "5-best-ways-to-change-yourself",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T11:52:23.584Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571935968_3",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "5 signs you're going to make it\n\nRecognizing these signs can change your life! 💪🔥\n\n#selfimprovement #productivity #mindset",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 26,
+      "h": 15,
+      "mi": 1
+    },
+    "scheduledTime": "2026-08-26T15:01:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571935968_3",
+    "fileName": "5-signs-you-re-going-to-make-it",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T11:54:37.525Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571936080_4",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "5 signs you're going to make it\n\nRecognizing these signs means you’re on the right path! 🚀💪\n\n#selfimprovement #mindset #productivity",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 26,
+      "h": 17,
+      "mi": 53
+    },
+    "scheduledTime": "2026-08-26T17:53:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936080_4",
+    "fileName": "5-signs-you-re-going-to-make-it-2",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T11:56:50.885Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571936218_5",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "5 things to AVOID if you want to gain muscle",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 26,
+      "h": 20,
+      "mi": 52
+    },
+    "scheduledTime": "2026-08-26T20:52:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936218_5",
+    "fileName": "5-things-to-avoid-if-you-want-to-gain-mu",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T11:58:54.347Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571936281_6",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "6 hobbies that make you noticeably manlier\n\nWant to stand out? Start building these skills today! 💪\n\n#selfimprovement #masculinity #hobbies",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 27,
+      "h": 15,
+      "mi": 1
+    },
+    "scheduledTime": "2026-08-27T15:01:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936281_6",
     "fileName": "6-hobbies-that-make-you-noticeably-manli",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T11:53:28.898Z"
+        "postedAt": "2026-08-24T12:01:08.634Z"
       }
     }
   },
   {
-    "id": "task_1787313077402_1",
+    "id": "task_1787571936408_7",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "6 hobbies that make you noticeably manlier\n\nReady to become more respected? Start with these hobbies! 💪🔥\n\n#manliness #hobbies #selfimprovement",
+    "caption": "7 rules to stop wasting your life\n\nImplement these rules to reclaim your life! 🏋️‍♂️🚀\n\n#selfimprovement #productivity #mindset",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 21,
-      "h": 17,
-      "mi": 51
+      "d": 27,
+      "h": 18,
+      "mi": 5
     },
-    "scheduledTime": "2026-08-21T17:51:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077402_1",
-    "fileName": "6-hobbies-that-make-you-noticeably-manli-2",
+    "scheduledTime": "2026-08-27T18:05:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936408_7",
+    "fileName": "7-rules-to-stop-wasting-your-life",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T11:55:34.776Z"
+        "postedAt": "2026-08-24T12:03:35.599Z"
       }
     }
   },
   {
-    "id": "task_1787313077421_2",
+    "id": "task_1787571936570_8",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "6 hobbies that make you noticeably manlier\n\nFind your edge and take action today! 💪\n\n#manliness #selfimprovement #hobbies",
+    "caption": "8 rules to stop wasting your life\n\nTime to take action and stop the scroll! 💪📅\n\n#selfimprovement #personaldevelopment #motivation",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 21,
+      "d": 27,
       "h": 20,
-      "mi": 52
+      "mi": 54
     },
-    "scheduledTime": "2026-08-21T20:52:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077421_2",
-    "fileName": "6-hobbies-that-make-you-noticeably-manli-3",
+    "scheduledTime": "2026-08-27T20:54:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936570_8",
+    "fileName": "8-rules-to-stop-wasting-your-life",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T11:57:38.627Z"
+        "postedAt": "2026-08-24T12:06:01.705Z"
       }
     }
   },
   {
-    "id": "task_1787313077440_3",
+    "id": "task_1787571936732_9",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "6 hobbies that make you noticeably manlier\n\nWhich hobby will you start with? 🛠️🏋️‍♂️\n\n#manliness #selfimprovement #hobbies",
+    "caption": "Exercises I REGRET not doing earlier",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 22,
-      "h": 15,
-      "mi": 4
+      "d": 28,
+      "h": 14,
+      "mi": 58
     },
-    "scheduledTime": "2026-08-22T15:04:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077440_3",
-    "fileName": "6-hobbies-that-make-you-noticeably-manli-4",
+    "scheduledTime": "2026-08-28T14:58:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936732_9",
+    "fileName": "exercises-i-regret-not-doing-earlier",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T11:59:45.799Z"
+        "postedAt": "2026-08-24T12:08:02.568Z"
       }
     }
   },
   {
-    "id": "task_1787313077457_4",
+    "id": "task_1787571936784_10",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "How I broke free from 🌽 addiction for good\n\nYou can turn this around. Start now! 🔥\n\n#breakfree #selfimprovement #strongmind",
+    "caption": "Fake Rich vs Real Rich For Men\n\nAre you ready to choose real? 🚀💪\n\n#selfimprovement #mindset #productivity",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 22,
+      "d": 28,
       "h": 18,
       "mi": 10
     },
-    "scheduledTime": "2026-08-22T18:10:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077457_4",
-    "fileName": "how-i-broke-free-from-addiction-for-good",
+    "scheduledTime": "2026-08-28T18:10:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936784_10",
+    "fileName": "fake-rich-vs-real-rich-for-men",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T12:01:43.286Z"
+        "postedAt": "2026-08-24T12:10:19.236Z"
       }
     }
   },
   {
-    "id": "task_1787313077468_5",
+    "id": "task_1787571936934_11",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "How I finally quit 🌽 after years of struggle\n\nIt's time to take the first step. You've got this! 💪\n\n#quitcorn #mindset #motivation",
+    "caption": "Gym apps ranked\n(worst to best)",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 22,
-      "h": 20,
-      "mi": 54
-    },
-    "scheduledTime": "2026-08-22T20:54:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077468_5",
-    "fileName": "how-i-finally-quit-after-years-of-strugg",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:03:34.919Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077476_6",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I finally quit 🌽 for good and what really helped.\n\nTake the first step today! 💪🔥\n\n#quitting #selfimprovement #mindset",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 23,
-      "h": 14,
-      "mi": 59
-    },
-    "scheduledTime": "2026-08-23T14:59:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077476_6",
-    "fileName": "how-i-finally-quit-for-good-and-what-rea",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:05:30.082Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077486_7",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I got 90 days 🌽 free and loved it\n\nMake the commitment — it’s worth it! 🌟\n\n#90days #motivation #menswellbeing",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 23,
-      "h": 17,
-      "mi": 56
-    },
-    "scheduledTime": "2026-08-23T17:56:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077486_7",
-    "fileName": "how-i-got-90-days-free-and-loved-it",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:07:23.935Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077495_8",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Rules to become rich young\n\nBuilding wealth takes discipline, but you can start now! 💪💰\n\n#wealthbuilding #younginvestors #financialfreedom",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 23,
+      "d": 28,
       "h": 21,
-      "mi": 2
+      "mi": 10
     },
-    "scheduledTime": "2026-08-23T21:02:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077495_8",
-    "fileName": "rules-to-become-rich-young",
+    "scheduledTime": "2026-08-28T21:10:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571936934_11",
+    "fileName": "gym-apps-ranked-worst-to-best",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T12:09:28.232Z"
+        "postedAt": "2026-08-24T12:12:26.611Z"
       }
     }
   },
   {
-    "id": "task_1787313077520_9",
+    "id": "task_1787571937000_12",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "Rules to become rich young\n\nWealth isn’t just about saving—it's about smart living. 💰💪\n\n#wealthbuilding #productivity #youngentrepreneurs",
+    "caption": "Here are 8 things to do instead of mindlessly scrolling.\n\nDon’t let your time slip away! Start today. 🚶‍♂️📚\n\n#productivity #selfimprovement #hobbies",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 24,
-      "h": 14,
-      "mi": 50
+      "d": 29,
+      "h": 15,
+      "mi": 3
     },
-    "scheduledTime": "2026-08-24T14:50:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077520_9",
-    "fileName": "rules-to-become-rich-young-2",
+    "scheduledTime": "2026-08-29T15:03:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937000_12",
+    "fileName": "here-are-8-things-to-do-instead-of-mindl",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T12:11:42.749Z"
+        "postedAt": "2026-08-24T12:14:53.340Z"
       }
     }
   },
   {
-    "id": "task_1787313077538_10",
+    "id": "task_1787571937128_13",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "Rules to become rich young\n\nBuilding wealth starts with smart choices 💪💰\n\n#wealthbuilding #financialfreedom #investinyourself",
+    "caption": "Hobbies that will 10x your aura\n\nChoose a hobby and transform yourself! 💪📚\n\n#selfimprovement #hobbies #masculinity",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 24,
+      "d": 29,
       "h": 17,
-      "mi": 59
-    },
-    "scheduledTime": "2026-08-24T17:59:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077538_10",
-    "fileName": "rules-to-become-rich-young-3",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:13:50.925Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077566_11",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Rules to become rich young\n\nReady to build wealth? Start shifting your focus! 💪📈\n\n#wealthbuilding #financialfreedom #youngentrepreneurs",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 24,
-      "h": 20,
       "mi": 56
     },
-    "scheduledTime": "2026-08-24T20:56:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077566_11",
-    "fileName": "rules-to-become-rich-young-4",
+    "scheduledTime": "2026-08-29T17:56:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937128_13",
+    "fileName": "hobbies-that-will-10x-your-aura",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T12:15:59.381Z"
+        "postedAt": "2026-08-24T12:17:15.411Z"
       }
     }
   },
   {
-    "id": "task_1787313077589_12",
+    "id": "task_1787571937223_14",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "Rules to become rich young\n\nBuilding wealth takes discipline and smart choices. Start today! 💰📈\n\n#wealthbuilding #financialfreedom #youngentrepreneurs",
+    "caption": "How I changed my entire life in one year at 21\n\nReady for a total turnaround? 🌟 Let's get started!\n\n#selfimprovement #motivation #fitness",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 25,
-      "h": 14,
-      "mi": 59
-    },
-    "scheduledTime": "2026-08-25T14:59:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077589_12",
-    "fileName": "rules-to-become-rich-young-5",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:18:07.740Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077709_13",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "This is how I quit 🌽 and got my life back\n\nIt's time to get your life back! Let's go! 🚀\n\n#recovery #menshealth #personaldevelopment",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 25,
-      "h": 18,
-      "mi": 9
-    },
-    "scheduledTime": "2026-08-25T18:09:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077709_13",
-    "fileName": "this-is-how-i-quit-and-got-my-life-back",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:20:07.642Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077721_14",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Uncomfortable habits that will build extreme confidence.\n\nConfidence isn't built in comfort zones. Step out and grow! 💪🔥\n\n#confidence #selfimprovement #masculinity",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 25,
+      "d": 29,
       "h": 20,
-      "mi": 55
+      "mi": 57
     },
-    "scheduledTime": "2026-08-25T20:55:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077721_14",
-    "fileName": "uncomfortable-habits-that-will-build-ext",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:22:19.244Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077749_15",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Uncomfortable habits that will build extreme confidence.\n\nThese habits might feel rough at first, but they’re worth it 💪. Commit to change!\n\n#confidence #selfimprovement #growth",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 26,
-      "h": 14,
-      "mi": 51
-    },
-    "scheduledTime": "2026-08-26T14:51:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077749_15",
-    "fileName": "uncomfortable-habits-that-will-build-ext-2",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:24:36.641Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077802_16",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Uncomfortable habits that will build extreme confidence\n\nConfidence isn’t built overnight, it takes small, consistent actions. 💪🚀\n\n#confidence #selfimprovement #habits",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 26,
-      "h": 17,
-      "mi": 58
-    },
-    "scheduledTime": "2026-08-26T17:58:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077802_16",
-    "fileName": "uncomfortable-habits-that-will-build-ext-3",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:26:45.907Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077831_17",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "Uncomfortable habits that will build extreme confidence\n\nTackle these habits and see how your confidence grows! 💪\n\n#confidence #selfimprovement #habits",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 26,
-      "h": 20,
-      "mi": 54
-    },
-    "scheduledTime": "2026-08-26T20:54:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077831_17",
-    "fileName": "uncomfortable-habits-that-will-build-ext-4",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:28:56.207Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787313077856_18",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "uncomfortable habits that will build extreme confidence\n\nBuild your confidence by getting uncomfortable! 💪 #Confidence #PersonalGrowth #Mindset\n\n#Confidence #PersonalGrowth #Mindset",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 27,
-      "h": 14,
-      "mi": 52
-    },
-    "scheduledTime": "2026-08-27T14:52:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787313077856_18",
-    "fileName": "uncomfortable-habits-that-will-build-ext-5",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:31:12.409Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035070_0",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nTransform your life step by step! 💪🔥\n\n#transformation #motivation #selfimprovement",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 27,
-      "h": 15,
-      "mi": 8
-    },
-    "scheduledTime": "2026-08-27T15:08:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035070_0",
+    "scheduledTime": "2026-08-29T20:57:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937223_14",
     "fileName": "how-i-changed-my-entire-life-in-one-year",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T12:42:48.006Z"
+        "postedAt": "2026-08-24T12:19:30.108Z"
       }
     }
   },
   {
-    "id": "task_1787316035093_1",
+    "id": "task_1787571937311_15",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "How I changed my entire life in one year at 21\n\nReal change takes effort, but it’s worth it. 💪 Keep pushing!\n\n#selfimprovement #motivation #mindset",
+    "caption": "How I changed my entire life in one year at 21\n\nReady for a change? Let’s make it happen! 💪📈\n\n#selfimprovement #habits #motivation",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
-      "d": 27,
-      "h": 17,
-      "mi": 55
+      "d": 30,
+      "h": 15,
+      "mi": 3
     },
-    "scheduledTime": "2026-08-27T17:55:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035093_1",
+    "scheduledTime": "2026-08-30T15:03:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937311_15",
     "fileName": "how-i-changed-my-entire-life-in-one-year-2",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T12:44:57.370Z"
+        "postedAt": "2026-08-24T12:21:48.234Z"
       }
     }
   },
   {
-    "id": "task_1787316035133_2",
+    "id": "task_1787571937406_16",
     "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
+    "subAccountId": "sub_14_1",
     "platforms": [
       "tiktok"
     ],
-    "caption": "How I changed my entire life in one year at 21\n\nYou really can turn your life around! 💪🚀\n\n#lifechange #motivation #productivity",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 27,
-      "h": 21,
-      "mi": 9
-    },
-    "scheduledTime": "2026-08-27T21:09:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035133_2",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-3",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:47:05.876Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035180_3",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nTake the first step and change your life! 💪📈\n\n#transformation #motivation #selfimprovement",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 28,
-      "h": 15,
-      "mi": 4
-    },
-    "scheduledTime": "2026-08-28T15:04:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035180_3",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-4",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:49:16.536Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035207_4",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nYour turnaround is in your hands. 💪🔥\n\n#selfimprovement #motivation #transformation",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 28,
-      "h": 17,
-      "mi": 57
-    },
-    "scheduledTime": "2026-08-28T17:57:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035207_4",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-5",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:51:24.563Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035231_5",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nYour turnaround is waiting. You got this! 💪🏽\n\n#motivation #transformation #growth",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 28,
-      "h": 20,
-      "mi": 52
-    },
-    "scheduledTime": "2026-08-28T20:52:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035231_5",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-6",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:53:30.562Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035259_6",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nReady for a change? Let’s make it happen 💪 #motivation #transformation #selfimprovement\n\n#lifechange #productivity #selfgrowth",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 29,
-      "h": 15,
-      "mi": 2
-    },
-    "scheduledTime": "2026-08-29T15:02:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035259_6",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-7",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T12:57:18.596Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035285_7",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nTransform your life starting now! 💪📈\n\n#lifechange #motivation #selfimprovement",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 29,
-      "h": 18,
-      "mi": 5
-    },
-    "scheduledTime": "2026-08-29T18:05:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035285_7",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-8",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T13:00:20.527Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035333_8",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nYou can turn it all around too! 💪📈\n\n#selfimprovement #motivation #lifestyle",
-    "phoneWall": {
-      "y": 2026,
-      "mo": 8,
-      "d": 29,
-      "h": 21,
-      "mi": 8
-    },
-    "scheduledTime": "2026-08-29T21:08:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035333_8",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-9",
-    "mediaType": "slideshow",
-    "status": "success",
-    "results": {
-      "tiktok": {
-        "status": "success",
-        "postedAt": "2026-08-21T13:02:31.355Z"
-      }
-    }
-  },
-  {
-    "id": "task_1787316035397_9",
-    "profileId": "profile_14",
-    "subAccountId": "sub_14_2",
-    "platforms": [
-      "tiktok"
-    ],
-    "caption": "How I changed my entire life in one year at 21\n\nHere's how to turn your life around! 🚀💪\n\n#motivation #selfimprovement #productivity",
+    "caption": "How I quit scrolling and started living my life again.\n\nReady to take your life back? 📲✌️\n\n#selfimprovement #digitaldetox #mindfulness",
     "phoneWall": {
       "y": 2026,
       "mo": 8,
       "d": 30,
-      "h": 15,
-      "mi": 9
+      "h": 18,
+      "mi": 0
     },
-    "scheduledTime": "2026-08-30T15:09:00",
-    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787316035397_9",
-    "fileName": "how-i-changed-my-entire-life-in-one-year-10",
+    "scheduledTime": "2026-08-30T18:00:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937406_16",
+    "fileName": "how-i-quit-scrolling-and-started-living-",
     "mediaType": "slideshow",
     "status": "success",
     "results": {
       "tiktok": {
         "status": "success",
-        "postedAt": "2026-08-21T13:05:03.863Z"
+        "postedAt": "2026-08-24T12:23:58.682Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571937535_17",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "How to actually get BIG in the gym",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 30,
+      "h": 20,
+      "mi": 51
+    },
+    "scheduledTime": "2026-08-30T20:51:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937535_17",
+    "fileName": "how-to-actually-get-big-in-the-gym",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:26:14.045Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571937732_18",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "How to become great\n\nGet serious about becoming great! 💪🔥\n\n#selfimprovement #motivation #productivity",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 31,
+      "h": 14,
+      "mi": 50
+    },
+    "scheduledTime": "2026-08-31T14:50:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937732_18",
+    "fileName": "how-to-become-great",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:28:42.490Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571937870_19",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "How to Win Your 20s\n\nIt's time to take action and make the most of your youth! 💪\n\n#SelfImprovement #Productivity #LifeGoals",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 31,
+      "h": 17,
+      "mi": 56
+    },
+    "scheduledTime": "2026-08-31T17:56:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571937870_19",
+    "fileName": "how-to-win-your-20s",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:31:01.397Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938010_20",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "I quit 🌽 after struggling for years, and here's how I did it.\n\nTake the first step toward a better you! 💪🌟\n\n#selfimprovement #guytalk #motivation",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 8,
+      "d": 31,
+      "h": 20,
+      "mi": 53
+    },
+    "scheduledTime": "2026-08-31T20:53:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938010_20",
+    "fileName": "i-quit-after-struggling-for-years-and-he",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:33:08.611Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938109_21",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "only S-Tier triceps exercises you need",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 1,
+      "h": 14,
+      "mi": 58
+    },
+    "scheduledTime": "2026-09-01T14:58:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938109_21",
+    "fileName": "only-s-tier-triceps-exercises-you-need",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:35:24.896Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938229_22",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "rating splits I’ve tried as a gym rat who transformed his body",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 1,
+      "h": 18,
+      "mi": 4
+    },
+    "scheduledTime": "2026-09-01T18:04:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938229_22",
+    "fileName": "rating-splits-i-ve-tried-as-a-gym-rat-wh",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:37:32.271Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938286_23",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "Rules to become rich young\n\nReady to kickstart your wealth-building journey? 💪\n\n#wealthbuilding #selfimprovement #productivity",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 1,
+      "h": 21,
+      "mi": 5
+    },
+    "scheduledTime": "2026-09-01T21:05:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938286_23",
+    "fileName": "rules-to-become-rich-young",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:39:49.823Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938454_24",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "Stop wasting your time and get your edge back now.\n\nIt's time to make real changes. 💪📚\n\n#selfimprovement #hobbies #getfit",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 2,
+      "h": 15,
+      "mi": 9
+    },
+    "scheduledTime": "2026-09-02T15:09:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938454_24",
+    "fileName": "stop-wasting-your-time-and-get-your-edge",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:42:09.295Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938559_25",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "The Bruce Wayne Lifestyle\n\nBuild like Bruce Wayne, and let your actions do the talking. 💪\n\n#selfimprovement #productivity #lifegoals",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 2,
+      "h": 18,
+      "mi": 7
+    },
+    "scheduledTime": "2026-09-02T18:07:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938559_25",
+    "fileName": "the-bruce-wayne-lifestyle",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:44:35.908Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938643_26",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "the morning routine to ascend\n\nSmall changes lead to big wins ☀️💪\n\n#morningroutine #selfimprovement #productivity",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 2,
+      "h": 21,
+      "mi": 2
+    },
+    "scheduledTime": "2026-09-02T21:02:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938643_26",
+    "fileName": "the-morning-routine-to-ascend",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:46:58.951Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938803_27",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "things to do instead of mindlessly scrolling\n\nBreak the cycle and take action! 💪📚\n\n#selfimprovement #discipline #productivehabits",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 3,
+      "h": 15,
+      "mi": 10
+    },
+    "scheduledTime": "2026-09-03T15:10:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938803_27",
+    "fileName": "things-to-do-instead-of-mindlessly-scrol",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:49:26.750Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571938954_28",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "Top 5 exercises that actually changed my physique",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 3,
+      "h": 18,
+      "mi": 8
+    },
+    "scheduledTime": "2026-09-03T18:08:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571938954_28",
+    "fileName": "top-5-exercises-that-actually-changed-my",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:51:48.428Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571939040_29",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "top 5 gym splits that actually work...",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 3,
+      "h": 21,
+      "mi": 4
+    },
+    "scheduledTime": "2026-09-03T21:04:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571939040_29",
+    "fileName": "top-5-gym-splits-that-actually-work",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:54:00.935Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571939098_30",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "Want to become a 10/10? Stop wasting time and pick a hobby.\n\nIt’s time to make moves 💪📚\n\n#selfimprovement #hobbies #motivation",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 4,
+      "h": 15,
+      "mi": 5
+    },
+    "scheduledTime": "2026-09-04T15:05:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571939098_30",
+    "fileName": "want-to-become-a-10-10-stop-wasting-time",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:56:23.106Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571939197_31",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "Want to rebuild your life from the ground up? Here’s how I did it.\n\nRebuild yourself, one small step at a time. 💪💥\n\n#selfimprovement #motivation #discipline",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 4,
+      "h": 17,
+      "mi": 56
+    },
+    "scheduledTime": "2026-09-04T17:56:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571939197_31",
+    "fileName": "want-to-rebuild-your-life-from-the-groun",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T12:58:38.424Z"
+      }
+    }
+  },
+  {
+    "id": "task_1787571939286_32",
+    "profileId": "profile_14",
+    "subAccountId": "sub_14_1",
+    "platforms": [
+      "tiktok"
+    ],
+    "caption": "You can rebuild yourself starting today if you want to.\n\nIt's time to get back on track. Make a change today! 💪\n\n#selfimprovement #menshealth #mindset",
+    "phoneWall": {
+      "y": 2026,
+      "mo": 9,
+      "d": 4,
+      "h": 20,
+      "mi": 56
+    },
+    "scheduledTime": "2026-09-04T20:56:00",
+    "mediaPath": "/Users/alexpoole/Documents/genScript/public/media_library/task_1787571939286_32",
+    "fileName": "you-can-rebuild-yourself-starting-today-",
+    "mediaType": "slideshow",
+    "status": "success",
+    "results": {
+      "tiktok": {
+        "status": "success",
+        "postedAt": "2026-08-24T13:00:56.593Z"
       }
     }
   }
