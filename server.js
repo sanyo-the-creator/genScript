@@ -319,6 +319,17 @@ function buildPrompt(cfg, task) {
     const base = (cfg.characterName || 'Untitled Character').replace(/^@/, '');
     return `update our ${mention(base)} so he has 35% bodyfat, acne, greasy messy hair, bloated puffy face.`;
   }
+  if (task.isCoupleSwap) {
+    // Couple photo: keep the whole scene, swap both faces/bodies. All three
+    // assets are "@"-mentioned so the model is told by name which is which:
+    // the couple reference, the girl, and our male character.
+    const charName = (cfg.characterName || 'Untitled Character').replace(/^@/, '');
+    const REF = mention(task.refImageName);
+    const GIRL = mention(task.girlFile);
+    const CHAR = mention(charName);
+    return `on ${REF} we can see girl and a boy. replace boy with our ${CHAR} and replace girl with ${GIRL}. keep outfits, pose, facial expressions, enviroment, light and angle EXACTLY as it is on ${REF}.`;
+  }
+
   if (task.isRefSwap) {
     let charName = cfg.characterName || 'Untitled Character';
     if (charName.startsWith('@')) {
@@ -430,9 +441,20 @@ async function clickButtonWithText(page, text) {
   if (!h) return false;
   await h.click(); await h.dispose(); return true;
 }
+// Pick the dropdown/picker row for `name`. A plain `includes` match is not
+// enough once one asset name is a prefix of another ("girl" also matches
+// "girl2".."girl7"), so exact and whole-word matches win over a substring hit.
 function findCharacterOption(page, name) {
-  return findElement(page, (n) =>
-    Array.from(document.querySelectorAll('[role="option"]')).find(el => el.textContent.includes(n)) || null, name);
+  return findElement(page, (n) => {
+    const opts = Array.from(document.querySelectorAll('[role="option"]'));
+    const label = el => (el.textContent || '').trim();
+    const bare = t => t.replace(/\.(jpg|jpeg|png|webp)$/i, '').trim();
+    return opts.find(el => label(el) === n)
+      || opts.find(el => bare(label(el)) === n)
+      || opts.find(el => new RegExp(`(^|[^a-z0-9])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i').test(label(el)))
+      || opts.find(el => label(el).includes(n))
+      || null;
+  }, name);
 }
 function countCharacterChips(page) {
   return page.evaluate(() => {
@@ -897,6 +919,33 @@ function buildTasks(cfg) {
       env: 'Chopped character creation',
       pose: 'generate at 16:9, then restore 9:16',
     }));
+  }
+
+  if (cfg.isCoupleSwap && Array.isArray(cfg.refPics) && cfg.refPics.length) {
+    // One generation per couple reference photo, all sharing a single randomly
+    // picked girl from the girl folder.
+    const pics = shuffle(cfg.refPics);
+    const girls = Array.isArray(cfg.girlPics) && cfg.girlPics.length ? cfg.girlPics : [];
+    // ONE girl for the whole batch — picked at random, uploaded once, reused on
+    // every generation so the couple keeps the same woman throughout.
+    const girl = girls.length ? girls[Math.floor(Math.random() * girls.length)] : '';
+    const target = count || pics.length;
+    const tasks = [];
+    let i = 0;
+    while (tasks.length < target) {
+      const pic = pics[i % pics.length];
+      tasks.push({
+        isCoupleSwap: true,
+        refImageName: pic,
+        folderName: cfg.folderName || 'couple_ref_pics',
+        girlFile: girl,
+        girlFolder: cfg.girlFolder || 'women_ref_couple_swap',
+        env: `Couple ref: ${pic}`,
+        pose: 'Couple swap (girl + character)',
+      });
+      i++;
+    }
+    return tasks;
   }
 
   if (Array.isArray(cfg.refPics) && cfg.refPics.length) {
@@ -1377,6 +1426,10 @@ async function runWorkerForPort(port) {
       // Pre-upload phase: upload reference pictures into Google Flow asset library if needed
       if (Array.isArray(batch.config.refPics) && batch.config.refPics.length) {
         await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics);
+        // Couple pack: only the one girl this batch picked gets uploaded.
+        if (batch.config.isCoupleSwap && tasks.length && tasks[0].girlFile && !state.stopRequested) {
+          await uploadAllRefImages(page, tasks[0].girlFolder, [tasks[0].girlFile]);
+        }
       } else if (batch.config.isScreenSwap && tasks.length) {
         // Pre-upload the chosen screenshot + the ENTIRE POV folder (not just this
         // batch's random subset) so the library stabilises after the first batch

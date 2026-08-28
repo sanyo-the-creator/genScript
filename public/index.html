@@ -437,6 +437,13 @@ const PACKS = {
         folderName: 'chopped_men_ref_pics',
         sweat: 'dry',
       } },
+    { title: '💑 Couple Photo Pack', desc: 'Iterates through ALL couple reference pictures (couple_ref_pics). Each one is paired with a random girl from women_ref_couple_swap: the girl in the photo becomes her, the man becomes your character. Environment, scene, light and outfits stay exactly as on the reference.',
+      config: {
+        isRefSwapPack: true,
+        isCoupleSwap: true,
+        folderName: 'couple_ref_pics',
+        girlFolder: 'women_ref_couple_swap',
+      } },
     { title: '🪞 Gym Mirror Pack (Body Swap)', desc: 'Body-swaps your character into the SlideSmith “mirror” photo pack (gym mirror / physique checks). Same engine as Reference Image Swap — one output per pack image.',
       config: {
         isRefSwapPack: true,
@@ -867,6 +874,16 @@ async function addPack(p, bgRef) {
       }
       cfg.refPics = data.files;
       cfg.folderName = folderName;
+      if (p.config.isCoupleSwap) {
+        const gRes = await fetch(`/api/ref-pics?folder=${encodeURIComponent(p.config.girlFolder || 'women_ref_couple_swap')}`);
+        const gData = await gRes.json();
+        if (!gData.files || !gData.files.length) {
+          alert(`No girl pictures found in folder ${p.config.girlFolder || 'women_ref_couple_swap'}/`);
+          return;
+        }
+        cfg.girlPics = gData.files;
+        cfg.girlFolder = gData.folder || p.config.girlFolder;
+      }
     } catch (e) {
       alert('Error fetching reference pictures: ' + (e.message || e));
       return;
