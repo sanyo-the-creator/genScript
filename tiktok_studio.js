@@ -163,6 +163,7 @@ function wallToNaiveIso(wall) {
 }
 
 let SIZE = { w: 1080, h: 2400 };
+function setSize(s) { SIZE = s || getSize(); return SIZE; }
 const X = (r) => Math.round(r * SIZE.w);
 const Y = (r) => Math.round(r * SIZE.h);
 
@@ -284,38 +285,127 @@ function deleteImages(userId, ids) {
 }
 
 // ── Grid selection ────────────────────────────────────────────────────────────
-// Taps the selection circles of the first `count` cells in reading order.
-// Assumes the gallery holds ONLY this post's slides (so reading order == slide
-// order because we reverse-pushed). Handles up to a full screen (~12); for more,
-// scrolls and continues. TikTok slideshows cap at 35 images.
-async function selectSlides(count) {
-  const { cols, rowTopY, rowPitch } = R.pickerCircles;
-  let selected = 0;
-  let rowsPerScreen = 4; // visible rows before needing a scroll
-  while (selected < count) {
-    // Tap each selection circle individually with a real settle gap — batching
-    // these into one adb call is faster but flaky if the picker is still settling
-    // (it can end up selecting only the first cell). Reliability wins here.
-    for (let row = 0; row < rowsPerScreen && selected < count; row++) {
-      for (let col = 0; col < 3 && selected < count; col++) {
-        checkStop();
-        tap(cols[col], rowTopY + row * rowPitch);
-        await sleep(300);
-        selected++;
-      }
-    }
-    if (selected < count) {
-      // scroll up by ~ (rowsPerScreen-1) rows so newly revealed cells align to the grid
-      const startY = Y(rowTopY + (rowsPerScreen - 1) * rowPitch);
-      const endY = Y(rowTopY);
-      swipeAbs(X(0.5), startY, X(0.5), endY, 500);
-      await sleep(1200);
-      // after the first screen, the grid is scrolled: keep using the same rows,
-      // but the first fully-visible row is now what was last partially shown.
-      rowsPerScreen = 3;
-    }
-  }
+// Reads the picker's live "Next (N)" counter — the only trustworthy source of
+// how many slides are actually selected.
+function pickerCount(xml) {
+  const m = (xml || '').match(/text="Next \((\d+)\)"/);
+  return m ? +m[1] : 0;
 }
+// True once the media grid is actually on screen (not a splash, not the Create
+// tab). Cheap guard against blind-tapping into the wrong screen.
+function pickerIsOpen(xml) {
+  return /text="Next/.test(xml || '');
+}
+
+// Every node in the dump as {x1,y1,x2,y2,w,h,text,cls,clickable}.
+function nodesOf(xml) {
+  const out = [];
+  for (const chunk of (xml || '').split('<node ')) {
+    const b = chunk.match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/);
+    if (!b) continue;
+    const t = chunk.match(/text="([^"]*)"/);
+    const c = chunk.match(/class="([^"]*)"/);
+    const x1 = +b[1], y1 = +b[2], x2 = +b[3], y2 = +b[4];
+    out.push({ x1, y1, x2, y2, w: x2 - x1, h: y2 - y1,
+               text: t ? t[1] : '',
+               cls: c ? c[1] : '',
+               clickable: /clickable="true"/.test(chunk) });
+  }
+  return out;
+}
+
+// The scrollable media grid's bounds. Everything below it (the "Selected"
+// thumbnail tray and the Next bar) overlays the screen, so a tap there hits the
+// tray instead of a cell.
+function gridBounds(nodes) {
+  const g = nodes.find((n) => /GridView|RecyclerView/.test(n.cls) && n.w > SIZE.w * 0.9 && n.h > SIZE.h * 0.4);
+  return g || { x1: 0, y1: Math.round(SIZE.h * 0.16), x2: SIZE.w, y2: Math.round(SIZE.h * 0.8) };
+}
+
+// The selection circles currently on screen, in reading order.
+//
+// Each grid cell contains its own small Button node that IS the circle — the
+// dump gives its exact bounds, so we never have to guess an offset inside the
+// cell. Tapping anywhere else in the cell opens the photo preview instead of
+// selecting it, which is exactly what the old ratio-based version kept doing.
+// A selected circle carries the slide number as its text ("1", "2", …); an
+// unselected one is blank. That is also how we read selection state back
+// without trusting a running count.
+function selectCircles(xml) {
+  const nodes = nodesOf(xml);
+  const grid = gridBounds(nodes);
+  const out = [];
+  const seen = new Set();
+  for (const n of nodes) {
+    if (!/Button/.test(n.cls) || !n.clickable) continue;
+    if (n.w < 40 || n.w > 100 || n.h < 40 || n.h > 100) continue;
+    if (Math.abs(n.w - n.h) > 12) continue;                      // must be round-ish
+    if (n.y1 < grid.y1 - 5 || n.y2 > grid.y2 + 5) continue;      // inside the grid only
+    const cx = Math.round((n.x1 + n.x2) / 2);
+    const cy = Math.round((n.y1 + n.y2) / 2);
+    const k = `${cx},${cy}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ cx, cy, selected: /^\d+$/.test(n.text) });
+  }
+  out.sort((a, b) => (Math.abs(a.cy - b.cy) > 40 ? a.cy - b.cy : a.cx - b.cx));
+  return out;
+}
+
+// Selects the first `count` slides in reading order.
+// Assumes the gallery holds ONLY this post's slides (so reading order == slide
+// order because we reverse-pushed). TikTok slideshows cap at 35 images.
+//
+// One tap per pass, re-reading the screen every time, because the grid MOVES
+// underneath a batch of taps: selecting the first slide opens the "Selected"
+// tray, which shrinks the grid (usable bottom 2158 → 1926) and shifts the rows.
+// Coordinates gathered before the first tap are stale by the second, which is
+// why the old fixed-block-then-fixed-scroll version stalled at 12 for any
+// count above that — its post-scroll taps landed on already-selected cells.
+// Every tap is verified against the "Next (N)" counter.
+async function selectSlides(count) {
+  let xml = uiDump();
+  if (!pickerIsOpen(xml)) throw new Error('Media picker is not open — cannot select slides');
+
+  let selected = pickerCount(xml);
+  let stalls = 0;
+
+  while (selected < count && stalls < 10) {
+    checkStop();
+    const circles = selectCircles(xml);
+    const target = circles.find((c) => !c.selected);
+
+    if (target) {
+      adbLoose(`shell input tap ${target.cx} ${target.cy}`);
+      await sleep(450);
+      xml = uiDump();
+      const now = pickerCount(xml);
+      if (now > selected) { selected = now; stalls = 0; }
+      else { stalls++; }
+      continue;
+    }
+
+    if (!circles.length) { stalls++; await sleep(700); xml = uiDump(); continue; }
+
+    // Everything on screen is already selected: scroll one grid-height-minus-a-row
+    // further down. Scrolling less than the visible span guarantees no cell is
+    // skipped over unselected.
+    const grid = gridBounds(nodesOf(xml));
+    const before = circles.map((c) => `${c.cy}:${c.selected ? 1 : 0}`).join(',');
+    swipeAbs(X(0.5), grid.y2 - 120, X(0.5), grid.y1 + 120, 700);
+    await sleep(1400);
+    xml = uiDump();
+    const after = selectCircles(xml).map((c) => `${c.cy}:${c.selected ? 1 : 0}`).join(',');
+    if (after === before) stalls++;   // list would not move: end of the gallery
+    else stalls = 0;
+  }
+
+  if (selected < count) {
+    throw new Error(`Only ${selected} of ${count} slides could be selected`);
+  }
+  console.log(`   ✓ ${selected}/${count} slides selected`);
+}
+
 
 // ── Random favourite sound ────────────────────────────────────────────────────
 // Rows visible in the favourites list below soundRowTopY.
@@ -480,14 +570,37 @@ function splitTitleCaption(fullText) {
 // Hashtags automatically appended to EVERY TikTok post for reach.
 const ALWAYS_TAGS = ['#fyp', '#foryoupage'];
 
-// Appends ALWAYS_TAGS to a caption, skipping any that are already present
-// (case-insensitive). Returns the caption with the extra tags on a new line.
+// TikTok Studio's description box accepts at most FIVE hashtags. Typing a sixth
+// '#' is silently swallowed — the word stays but loses its hash, so a caption
+// that already carries 4 tags plus both ALWAYS_TAGS posts a bare "foryoupage".
+// Verified live on the device: 5 tags type through, the 6th '#' never lands.
+const MAX_TAGS = 5;
+
+function countTags(text) {
+  return ((text || '').match(/#[^\s#]+/g) || []).length;
+}
+
+// Appends as many ALWAYS_TAGS as fit under the 5-hashtag cap, skipping any that
+// are already present (case-insensitive, whole-tag). With the source captions
+// this means: 4 tags in the txt → only #fyp is added; fewer than 4 → both are
+// added; 5 or more → none, since the app would eat them anyway.
 function withAlwaysTags(caption) {
-  const existing = (caption || '').toLowerCase();
-  const toAdd = ALWAYS_TAGS.filter((t) => !existing.includes(t.toLowerCase()));
-  if (!toAdd.length) return caption || '';
   const base = (caption || '').trim();
-  return base ? `${base}\n${toAdd.join(' ')}` : toAdd.join(' ');
+  const has = (t) => new RegExp(`${t}(?![^\\s#])`, 'i').test(base);
+  let room = MAX_TAGS - countTags(base);
+  const toAdd = [];
+  for (const t of ALWAYS_TAGS) {
+    if (room <= 0) break;
+    if (has(t)) continue;
+    toAdd.push(t);
+    room--;
+  }
+  if (!toAdd.length) return base;
+  if (!base) return toAdd.join(' ');
+  // Appended on the SAME line as the caption's own hashtags, never on a new one:
+  // pressing Enter straight after a hashtag lets TikTok's suggestion dropdown
+  // swallow the newline and commit whatever tag it had highlighted.
+  return `${base} ${toAdd.join(' ')}`;
 }
 
 async function typeCaption(caption) {
@@ -495,7 +608,11 @@ async function typeCaption(caption) {
   // source txt, and fewer Enter presses means fewer chances to misfire.
   const lines = (caption || '').split('\n').map((l) => l.replace(/\s+$/, ''));
   for (let li = 0; li < lines.length; li++) {
-    if (lines[li].trim()) { typeLineRaw(lines[li]); await sleep(250); }
+    // A line that ends on a hashtag leaves TikTok's tag-suggestion dropdown open;
+    // the trailing space closes it so the following Enter is a real newline
+    // instead of picking a suggestion.
+    const line = /#[^\s#]+$/.test(lines[li].trim()) ? `${lines[li]} ` : lines[li];
+    if (line.trim()) { typeLineRaw(line); await sleep(250); }
     if (li < lines.length - 1) { key(66); await sleep(150); } // Enter between lines
   }
 }
@@ -600,4 +717,6 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
   }
 }
 
-module.exports = { scheduleSlideshow, nextPhoneSlots, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast };
+module.exports = { scheduleSlideshow, nextPhoneSlots, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast,
+                   // exported for the device test-harness / calibration runs
+                   selectSlides, withAlwaysTags, countTags, splitTitleCaption, uiDump, pickerCount, setSize };
