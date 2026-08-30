@@ -546,6 +546,61 @@ async function typeCaption(caption) {
   }
 }
 
+// ── Leaving the editor ────────────────────────────────────────────────────────
+// Exact-text lookup of a node in the dump. This is NOT the geometry guessing
+// that broke slide selection in 3a5d914: we match a node by its literal label
+// and tap the centre of that label's own bounds. If the label is absent we fall
+// back to the measured ratio rather than tapping something we guessed at.
+function nodeByText(xml, label) {
+  for (const chunk of (xml || '').split('<node ')) {
+    const t = chunk.match(/text="([^"]*)"/);
+    if (!t || t[1] !== label) continue;
+    const b = chunk.match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/);
+    if (!b) continue;
+    return { cx: Math.round((+b[1] + +b[3]) / 2), cy: Math.round((+b[2] + +b[4]) / 2) };
+  }
+  return null;
+}
+function tapAbs(x, y) { adbLoose(`shell input tap ${x} ${y}`); }
+
+const inTextEditor = (xml) => dumpHas(xml, 'Add text', 'Text style', 'Text-to-speech');
+// Both markers are the ones the post-page steps already tap by ratio:
+// R.titleField is the "Add a catchy title" field, R.schedulePostRow the
+// "Schedule post" row. If neither is present we are not on the post page.
+const onPostPage   = (xml) => dumpHas(xml, 'Add a catchy title', 'Schedule post');
+
+// Leaves the editor for the post page.
+//
+// The blind tap on R.editorNext was landing on the slideshow canvas once the
+// sound sheet had closed, which opens the per-photo text editor instead of
+// advancing. So: back out of any text editor first, then tap the real "Next"
+// node from the dump, then confirm we actually reached the post page.
+async function leaveEditor() {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    checkStop();
+    let xml = uiDump();
+
+    // A stray tap may already have opened the text editor — back out before
+    // anything else, or "Next" here means "done editing text", not "post".
+    if (inTextEditor(xml)) {
+      console.log('   ⚠️  text editor open — backing out');
+      key(4); await sleep(1500);
+      xml = uiDump();
+    }
+    if (onPostPage(xml)) return;
+
+    const next = nodeByText(xml, 'Next');
+    if (next) tapAbs(next.cx, next.cy);
+    else      tap(...R.editorNext);          // measured fallback
+    await sleep(5000);
+
+    const after = uiDump();
+    if (onPostPage(after)) return;
+    console.log(`   ⚠️  still not on the post page (attempt ${attempt}/3)`);
+  }
+  throw new Error('Could not leave the editor — "Next" never reached the post page');
+}
+
 // ── Full slideshow schedule ───────────────────────────────────────────────────
 // mediaFiles: absolute paths, already in slide order (1..N).
 // scheduledTime: ISO string / Date.
@@ -598,7 +653,7 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
 
     // 6. Leave the editor → post page.
     checkStop();
-    tap(...R.editorNext);          await sleep(5000); shot('06_postpage');
+    await leaveEditor();                                shot('06_postpage');
 
     // 7. Open Schedule, set the time, confirm. Always phone-local wall clock.
     let sch = schedule;
