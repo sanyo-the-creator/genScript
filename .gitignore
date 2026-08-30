@@ -29,3 +29,4 @@ generated_clips/
 public/media_library/
 public/slideshow_uploads/
 
+.claude/worktrees/
