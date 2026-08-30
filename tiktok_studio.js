@@ -390,17 +390,95 @@ function gridCells(xml) {
   return cells;
 }
 
+// The slide number TikTok has stamped on a cell, or null if it is unselected.
+// These badges are real text nodes sitting on the circle, so they let us verify
+// the ORDER of the selection, not merely how many are selected.
+function badgeAt(xml, cell) {
+  for (const chunk of (xml || '').split('<node ')) {
+    const t = chunk.match(/text="(\d+)"/);
+    if (!t) continue;
+    const b = chunk.match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/);
+    if (!b) continue;
+    const cx = (+b[1] + +b[3]) / 2, cy = (+b[2] + +b[4]) / 2;
+    if (cx >= cell.x1 && cx <= cell.x2 && cy >= cell.y1 && cy <= cell.y2) return +t[1];
+  }
+  return null;
+}
+
+// Selects `count` slides that all fit on ONE screen (<= 12 cells; our
+// slideshows cap at 9, so this is the normal path and no scrolling happens).
+//
+// Cell i must end up carrying badge i+1. Tapping in reading order is not enough
+// on its own -- a tap that misses the circle opens the preview, and recovering
+// from it can land the slide in the wrong position -- so each cell is confirmed
+// to hold its expected number before moving on, and repaired if not.
+async function selectOnOneScreen(count, xml) {
+  for (let i = 0; i < count; i++) {
+    let placed = false;
+
+    for (let attempt = 0; attempt < 4 && !placed; attempt++) {
+      checkStop();
+      const cells = gridCells(xml);
+      if (i >= cells.length) throw new Error(`Only ${cells.length} slides are on screen, need ${count}`);
+      const cell = cells[i];
+      const cx = cell.x2 - CIRCLE_DX;
+      const cy = cell.y1 + CIRCLE_DY;
+
+      const badge = badgeAt(xml, cell);
+      if (badge === i + 1) { placed = true; break; }   // already correct
+
+      // Wrong number on this cell: clear it, then re-tap so it takes the next
+      // number in sequence.
+      if (badge !== null) {
+        adbLoose(`shell input tap ${cx} ${cy}`);
+        await sleep(350);
+        xml = uiDump();
+        if (!onGrid(xml)) xml = await backToPicker();
+      }
+
+      adbLoose(`shell input tap ${cx} ${cy}`);
+      await sleep(350);
+      xml = uiDump();
+      if (!onGrid(xml)) xml = await backToPicker();
+
+      placed = badgeAt(xml, gridCells(xml)[i] || cell) === i + 1;
+    }
+
+    if (!placed) throw new Error(`Slide ${i + 1} would not take position ${i + 1}`);
+  }
+
+  // Final proof: every cell 1..count carries its own number, and the picker
+  // agrees on the total.
+  const cells = gridCells(xml);
+  const got = [];
+  for (let i = 0; i < count; i++) got.push(badgeAt(xml, cells[i]));
+  const wanted = Array.from({ length: count }, (_, i) => i + 1);
+  if (got.join(',') !== wanted.join(',')) {
+    throw new Error(`Slides selected out of order: got [${got.join(',')}]`);
+  }
+  const n = pickerCount(xml);
+  if (n !== count) throw new Error(`Picker counts ${n} selected, expected ${count}`);
+  console.log(`   \u2713 ${count}/${count} slides selected in order`);
+}
+
 // Selects the first `count` slides in reading order. Assumes the gallery holds
 // ONLY this post's slides (reading order == slide order, because we
 // reverse-pushed). TikTok slideshows cap at 35 images.
 //
-// Every tap is judged by the picker's "Next (N)" counter, never by counting
-// taps. The old loop did `selected++` per tap and scrolled 3 rows after
-// selecting 4, so the first tap after each scroll toggled a cell back OFF.
+// Every tap is judged by what the app actually did -- the badge numbers, or the
+// "Next (N)" counter -- never by counting taps. The old loop did `selected++`
+// per tap and scrolled 3 rows after selecting 4, so the first tap after each
+// scroll toggled a cell back OFF.
 async function selectSlides(count) {
   let xml = uiDump();
   if (!onGrid(xml)) xml = await backToPicker();
 
+  // Everything on one screen (the usual case: our slideshows hold at most 9).
+  // No scrolling, and the order is verified cell by cell.
+  if (count <= gridCells(xml).length) return selectOnOneScreen(count, xml);
+
+  // More slides than fit on screen: fall back to scrolling, verified against
+  // the "Next (N)" counter. Order is not badge-checked on this path.
   let selected = pickerCount(xml);
   let stalls = 0;
 
@@ -413,31 +491,24 @@ async function selectSlides(count) {
       const cx = cell.x2 - CIRCLE_DX;
       const cy = cell.y1 + CIRCLE_DY;
 
-      // Retry the SAME cell rather than moving on: a tap that misses the circle
-      // opens the preview, and the old loop advanced anyway, leaving that photo
-      // unselected for good.
       for (let attempt = 0; attempt < 3; attempt++) {
         checkStop();
         adbLoose(`shell input tap ${cx} ${cy}`);
         await sleep(350);
 
         let now = uiDump();
-        // Never read the count off a screen that is not the grid: the preview
-        // has its own "Next" with no number, which reads back as 0 selected.
         if (!onGrid(now)) now = await backToPicker();
 
         const n = pickerCount(now);
         xml = now;
-        if (n > selected) { selected = n; break; }    // selected, next cell
-        if (n < selected) { selected = n; continue; } // we cleared one, retry
-        break;                                        // unchanged: empty cell
+        if (n > selected) { selected = n; break; }
+        if (n < selected) { selected = n; continue; }
+        break;
       }
     }
 
     if (selected >= count) break;
 
-    // Scroll roughly one screen. The exact distance no longer matters: cell
-    // positions are re-read from the dump after every scroll.
     const grid = gridBounds(xml) || { y1: Y(0.17), y2: Y(0.80) };
     swipeAbs(X(0.5), grid.y2 - 60, X(0.5), grid.y1 + 60, 600);
     await sleep(1400);
@@ -447,9 +518,7 @@ async function selectSlides(count) {
     stalls = selected > before ? 0 : stalls + 1;
   }
 
-  if (selected < count) {
-    throw new Error(`Only ${selected} of ${count} slides could be selected`);
-  }
+  if (selected < count) throw new Error(`Only ${selected} of ${count} slides could be selected`);
   console.log(`   \u2713 ${selected}/${count} slides selected`);
 }
 
@@ -556,6 +625,56 @@ async function setScheduleWheels(dayOffset, hour, minute) {
     for (let i = 0; i < (59 - minute); i++) { wheelDownStep(w.minute); await sleep(280); }
   }
   await sleep(400);
+}
+
+// The post page's "Schedule post" row shows the chosen time as plain text
+// ("Sep 2, 16:10"). The wheels themselves are custom-drawn and unreadable, so
+// this row is the ONLY way to find out what was actually set.
+function scheduleRowLabel(xml) {
+  const m = (xml || '').match(/text="((?:Today|Tomorrow|[A-Z][a-z]{2} \d{1,2}), \d{1,2}:\d{2})"/);
+  return m ? m[1] : null;
+}
+function labelTime(label) {
+  const m = label && label.match(/(\d{1,2}):(\d{2})$/);
+  return m ? { hour: +m[1], minute: +m[2] } : null;
+}
+
+// Confirms the schedule row really says the requested time, and nudges the
+// wheels by the exact difference if not.
+//
+// A blind fling cannot be trusted: wheelFlingMin reached 0 on one run and
+// stopped at 10 on the next, and nothing noticed because the wheel values never
+// appear in the dump. Reading the row back turns a guess into a measurement,
+// and each pass steps by the precise delta, so it converges.
+async function verifyScheduleTime(hour, minute) {
+  const want = `${hour}:${String(minute).padStart(2, '0')}`;
+
+  for (let pass = 1; pass <= 3; pass++) {
+    const xml = uiDump();
+    const label = scheduleRowLabel(xml);
+    const got = labelTime(label);
+    if (!got) throw new Error('Could not read the scheduled time back from the post page');
+    if (got.hour === hour && got.minute === minute) {
+      console.log(`   \u2713 scheduled ${label}`);
+      return;
+    }
+
+    console.log(`   \u26a0\ufe0f  schedule reads ${label}, want ${want} \u2014 correcting`);
+    tap(...R.schedulePostRow);
+    await sleep(3200);
+    const w = wheelBounds(uiDump()) || wheelBoundsFallback();
+
+    const dh = hour - got.hour;
+    for (let i = 0; i < Math.abs(dh); i++) { (dh > 0 ? wheelUpStep : wheelDownStep)(w.hour); await sleep(270); }
+    const dm = minute - got.minute;
+    for (let i = 0; i < Math.abs(dm); i++) { (dm > 0 ? wheelUpStep : wheelDownStep)(w.minute); await sleep(270); }
+
+    await sleep(400);
+    tap(...R.wheelDoneBtn);
+    await sleep(3000);
+  }
+
+  throw new Error(`Schedule time never settled on ${want}`);
 }
 
 // ── Caption typing ────────────────────────────────────────────────────────────
@@ -761,7 +880,8 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
     tap(...R.schedulePostRow);     await sleep(3500); shot('07_wheels');
     await setScheduleWheels(dayOffset, sch.hour, sch.minute);
     shot('08_wheels_set');
-    tap(...R.wheelDoneBtn);        await sleep(3000); shot('09_scheduled');
+    tap(...R.wheelDoneBtn);        await sleep(3000);
+    await verifyScheduleTime(sch.hour, sch.minute);     shot('09_scheduled');
 
     // 8. Fill the two separate fields: TITLE (first line) and CAPTION (the rest +
     //    the always-on #fyp #foryoupage). NOTE: do NOT press BACK to hide the
