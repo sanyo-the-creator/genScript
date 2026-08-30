@@ -269,37 +269,77 @@ function deleteImages(userId, ids) {
 }
 
 // ── Grid selection ────────────────────────────────────────────────────────────
+// The picker's "Next (N)" label is the only honest record of how many slides
+// are selected. Reading it is an exact text match, not geometry guessing.
+function pickerCount(xml) {
+  const m = (xml || '').match(/text="Next \((\d+)\)"/);
+  return m ? +m[1] : 0;
+}
+
 // Taps the selection circles of the first `count` cells in reading order.
 // Assumes the gallery holds ONLY this post's slides (so reading order == slide
-// order because we reverse-pushed). Handles up to a full screen (~12); for more,
-// scrolls and continues. TikTok slideshows cap at 35 images.
+// order because we reverse-pushed). TikTok slideshows cap at 35 images.
+//
+// The circle ratios below are measured and correct — verified on device against
+// a live dump: cells are 353px at rows y=385/747/1109 (pitch 362), and
+// cols/rowTopY/rowPitch resolve to the centre of each cell's circle. Do NOT
+// replace them with bounds scraped from the dump (that was 3a5d914: it tapped
+// the photo, opened the preview, and stalled at slide 1).
+//
+// What WAS broken: the old loop did `selected++` per tap, counting taps rather
+// than selections, and then scrolled 3 rows after selecting 4. The first tap
+// after every scroll therefore landed on an already-selected cell and toggled
+// it back OFF, so the count crept instead of climbing.
+//
+// Now every tap is checked against "Next (N)":
+//   count went up   -> the cell was selected, move on
+//   count went down -> the cell was already selected and we just cleared it,
+//                      so tap once more to restore it and move on
+//   count unchanged -> empty cell (past the end of the gallery)
+// That makes the exact scroll distance irrelevant: any overlap self-corrects.
 async function selectSlides(count) {
   const { cols, rowTopY, rowPitch } = R.pickerCircles;
-  let selected = 0;
-  let rowsPerScreen = 4; // visible rows before needing a scroll
-  while (selected < count) {
-    // Tap each selection circle individually with a real settle gap — batching
-    // these into one adb call is faster but flaky if the picker is still settling
-    // (it can end up selecting only the first cell). Reliability wins here.
-    for (let row = 0; row < rowsPerScreen && selected < count; row++) {
+  const ROWS_PER_SCREEN = 4;
+
+  let xml = uiDump();
+  let selected = pickerCount(xml);
+  let stalls = 0;
+
+  while (selected < count && stalls < 6) {
+    const before = selected;
+
+    for (let row = 0; row < ROWS_PER_SCREEN && selected < count; row++) {
       for (let col = 0; col < 3 && selected < count; col++) {
         checkStop();
-        tap(cols[col], rowTopY + row * rowPitch);
-        await sleep(300);
-        selected++;
+        const y = rowTopY + row * rowPitch;
+        tap(cols[col], y);
+        await sleep(350);
+        let now = pickerCount(uiDump());
+
+        if (now < selected) {
+          // Already selected — our tap cleared it. Put it back.
+          tap(cols[col], y);
+          await sleep(350);
+          now = pickerCount(uiDump());
+        }
+        selected = now;
       }
     }
-    if (selected < count) {
-      // scroll up by ~ (rowsPerScreen-1) rows so newly revealed cells align to the grid
-      const startY = Y(rowTopY + (rowsPerScreen - 1) * rowPitch);
-      const endY = Y(rowTopY);
-      swipeAbs(X(0.5), startY, X(0.5), endY, 500);
-      await sleep(1200);
-      // after the first screen, the grid is scrolled: keep using the same rows,
-      // but the first fully-visible row is now what was last partially shown.
-      rowsPerScreen = 3;
-    }
+
+    if (selected >= count) break;
+
+    // Scroll a full screen of rows. Overlap or shortfall is harmless now that
+    // each tap verifies itself, so this only has to move roughly one screen.
+    swipeAbs(X(0.5), Y(rowTopY + ROWS_PER_SCREEN * rowPitch), X(0.5), Y(rowTopY), 500);
+    await sleep(1200);
+    selected = pickerCount(uiDump());
+    stalls = selected > before ? 0 : stalls + 1;
   }
+
+  if (selected < count) {
+    throw new Error(`Only ${selected} of ${count} slides could be selected`);
+  }
+  console.log(`   \u2713 ${selected}/${count} slides selected`);
 }
 
 // ── Random favourite sound ────────────────────────────────────────────────────
