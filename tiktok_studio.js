@@ -195,7 +195,8 @@ const R = {
   soundRowPitch:  0.055,
   soundClose:     [0.500, 0.130],   // tap HIGH on the preview to dismiss the sheet (above any slide text)
   createTab:      [0.500, 0.955],   // "Create" bottom-nav tab
-  editorNext:     [0.733, 0.940],   // "Next" leaving the editor
+  editorNext:     [0.733, 0.940],   // "Next" leaving the editor (node centre 796,2257)
+  textDone:       [0.919, 0.094],   // "Done" closing the on-photo text editor (node centre 992,225)
   titleField:     [0.489, 0.255],   // "Add a catchy title" field on the post page
   schedulePostRow:[0.233, 0.488],   // "Schedule post" row on the post page
   wheelHourX:     0.544,
@@ -487,19 +488,44 @@ async function pickRandomFavoriteSound() {
 // ── Schedule wheel ────────────────────────────────────────────────────────────
 // A single controlled up-swipe of one item increases the value; a low-zone
 // down-swipe of one item decreases it. Values can't be read back, so we anchor.
-function wheelUpStep(colX) {           // one item up (increase), safe anywhere
-  const x = X(colX);
-  swipeAbs(x, Y(R.wheelSelY), x, Y(R.wheelSelY - R.wheelStep), 260);
+// The three schedule wheels are SeekBar nodes, and their bounds ARE in the dump
+// even though their values are not (the numbers are custom-drawn, so the wheel
+// can never be read back -- only driven). Reading the bounds is what matters:
+// the old flings used fixed ratios, and wheelFlingMin started at Y(0.58)=1392,
+// ABOVE the wheel's top edge (1456). It never grabbed the wheel, so "minute 0"
+// silently came out as whatever the wheel happened to be showing (3, live).
+function wheelBounds(xml) {
+  const out = [];
+  for (const c of (xml || '').split('<node ')) {
+    if (!/class="[^"]*SeekBar[^"]*"/.test(c)) continue;
+    const b = c.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
+    if (!b) continue;
+    out.push({ x1: +b[1], y1: +b[2], x2: +b[3], y2: +b[4] });
+  }
+  out.sort((a, b) => a.x1 - b.x1);
+  if (out.length !== 3) return null;
+  return { day: out[0], hour: out[1], minute: out[2] };
 }
-function wheelDownStep(colX) {          // one item down (decrease), LOW ZONE only
-  const x = X(colX);
-  swipeAbs(x, Y(R.wheelSelY - R.wheelStep), x, Y(R.wheelSelY), 260);
+// Fallback wheels from the measured ratios, used only if the dump gives nothing.
+function wheelBoundsFallback() {
+  const y1 = Math.round(0.607 * SIZE.h), y2 = Math.round(0.829 * SIZE.h);
+  const col = (rx, w) => ({ x1: Math.round(rx * SIZE.w) - w, y1, x2: Math.round(rx * SIZE.w) + w, y2 });
+  return { day: col(R.wheelDayX, 136), hour: col(R.wheelHourX, 79), minute: col(R.wheelMinX, 79) };
 }
-// Single strong fling to slam a wheel to an extreme. The wheel CLAMPS at its
-// min/max, so an over-strong fling can't overshoot. Down-flings start in the LOW
-// zone (below the sheet handle) so they don't grab and dismiss the bottom sheet.
-function wheelFlingMax(colX) { const x = X(colX); swipeAbs(x, Y(0.80), x, Y(0.42), 160); } // up → 23/59
-function wheelFlingMin(colX) { const x = X(colX); swipeAbs(x, Y(0.58), x, Y(0.78), 160); } // down → 0
+
+const wheelCX = (w) => Math.round((w.x1 + w.x2) / 2);
+const wheelMidY = (w) => Math.round((w.y1 + w.y2) / 2);
+const wheelStepPx = () => Math.round(R.wheelStep * SIZE.h);
+
+// One item up (increase) / down (decrease). Both stay inside the wheel.
+function wheelUpStep(w)   { const x = wheelCX(w), m = wheelMidY(w), d = wheelStepPx(); swipeAbs(x, m, x, m - d, 260); }
+function wheelDownStep(w) { const x = wheelCX(w), m = wheelMidY(w), d = wheelStepPx(); swipeAbs(x, m - d, x, m, 260); }
+
+// Slam a wheel to an extreme. The wheel CLAMPS at min/max, so an over-strong
+// fling cannot overshoot. Both flings start and end INSIDE the wheel's own
+// bounds -- that is the whole fix.
+function wheelFlingMax(w) { const x = wheelCX(w); swipeAbs(x, w.y2 - 50, x, w.y1 + 30, 160); }
+function wheelFlingMin(w) { const x = wheelCX(w); swipeAbs(x, w.y1 + 50, x, w.y2 - 30, 160); }
 
 // Sets the three wheels to dayOffset / hour(0-23) / minute(0-59).
 // Anchor to the NEAREST extreme, then single-step the short remaining distance.
@@ -507,25 +533,27 @@ function wheelFlingMin(colX) { const x = X(colX); swipeAbs(x, Y(0.58), x, Y(0.78
 // into one call is faster on paper but the rapid-fire swipes don't reliably
 // register on the wheel (and the long single call looks like a 10s freeze).
 async function setScheduleWheels(dayOffset, hour, minute) {
+  const w = wheelBounds(uiDump()) || wheelBoundsFallback();
+
   // DAY: dialog opens on Today; step up dayOffset times.
-  for (let i = 0; i < dayOffset; i++) { wheelUpStep(R.wheelDayX); await sleep(280); }
+  for (let i = 0; i < dayOffset; i++) { wheelUpStep(w.day); await sleep(280); }
   await sleep(250);
 
   // HOUR: slam to 23 (max), then step down (23 - hour).
-  for (let i = 0; i < 4; i++) { wheelFlingMax(R.wheelHourX); await sleep(320); }
+  for (let i = 0; i < 4; i++) { wheelFlingMax(w.hour); await sleep(320); }
   await sleep(450);
-  for (let i = 0; i < (23 - hour); i++) { wheelDownStep(R.wheelHourX); await sleep(280); }
+  for (let i = 0; i < (23 - hour); i++) { wheelDownStep(w.hour); await sleep(280); }
   await sleep(300);
 
   // MINUTE: anchor to whichever edge is closer, then step.
   if (minute <= 30) {
-    for (let i = 0; i < 5; i++) { wheelFlingMin(R.wheelMinX); await sleep(320); }
+    for (let i = 0; i < 5; i++) { wheelFlingMin(w.minute); await sleep(320); }
     await sleep(450);
-    for (let i = 0; i < minute; i++) { wheelUpStep(R.wheelMinX); await sleep(280); }
+    for (let i = 0; i < minute; i++) { wheelUpStep(w.minute); await sleep(280); }
   } else {
-    for (let i = 0; i < 4; i++) { wheelFlingMax(R.wheelMinX); await sleep(320); }
+    for (let i = 0; i < 4; i++) { wheelFlingMax(w.minute); await sleep(320); }
     await sleep(450);
-    for (let i = 0; i < (59 - minute); i++) { wheelDownStep(R.wheelMinX); await sleep(280); }
+    for (let i = 0; i < (59 - minute); i++) { wheelDownStep(w.minute); await sleep(280); }
   }
   await sleep(400);
 }
@@ -615,6 +643,54 @@ async function typeCaption(caption) {
   }
 }
 
+// ── Editor screens ────────────────────────────────────────────────────────────
+// Three screens are easy to confuse, so each is identified by nodes that only
+// it has (all measured from live dumps):
+//   editor      -> "Next" + "Your Story"
+//   text editor -> "Done" + a style name (Classic/Elegance/Retro/Vintage)
+//   post page   -> "Add a catchy title" / "Schedule post"
+function onEditor(xml) {
+  return /text="Next"/.test(xml || '') && /text="Your Story"/.test(xml || '');
+}
+function inTextEditor(xml) {
+  return /text="Done"/.test(xml || '')
+      && /text="(Classic|Elegance|Retro|Vintage)"/.test(xml || '');
+}
+function onPostPage(xml) {
+  return /text="Add a catchy title"/.test(xml || '') || /text="Schedule post"/.test(xml || '');
+}
+
+// Leaves the editor for the post page.
+//
+// The sound step can drop us into the on-photo TEXT editor: once the sound
+// sheet has closed, R.soundClose lands on the slide preview, which opens it.
+// The old flow never checked, so step 6's "Next" tap ran on the wrong screen
+// and every later step -- schedule, title, caption -- was typed into a text
+// overlay burned onto the photo, while the run still reported success.
+//
+// So: close the text editor first, then advance, then CONFIRM the post page.
+async function leaveEditor() {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    checkStop();
+    let xml = uiDump();
+    if (onPostPage(xml)) return;
+
+    if (inTextEditor(xml)) {
+      console.log('   \u26a0\ufe0f  text editor open \u2014 closing it');
+      tap(...R.textDone);
+      await sleep(1800);
+      xml = uiDump();
+      if (onPostPage(xml)) return;
+    }
+
+    tap(...R.editorNext);
+    await sleep(5000);
+    if (onPostPage(uiDump())) return;
+    console.log(`   \u26a0\ufe0f  not on the post page yet (attempt ${attempt}/3)`);
+  }
+  throw new Error('Could not leave the editor \u2014 never reached the post page');
+}
+
 // ── Full slideshow schedule ───────────────────────────────────────────────────
 // mediaFiles: absolute paths, already in slide order (1..N).
 // scheduledTime: ISO string / Date.
@@ -667,7 +743,7 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
 
     // 6. Leave the editor → post page.
     checkStop();
-    tap(...R.editorNext);          await sleep(5000); shot('06_postpage');
+    await leaveEditor();                                shot('06_postpage');
 
     // 7. Open Schedule, set the time, confirm. Always phone-local wall clock.
     let sch = schedule;
@@ -707,6 +783,12 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
 
     // 9. Finalize — the button reads "Schedule" once a time is set.
     tap(...R.finalizeBtn);         await sleep(7000); shot('11_done');
+    // Confirm it actually left the post page. Without this the run reports
+    // success whenever nothing throws -- which is how a slideshow that never
+    // got scheduled at all was reported as scheduled.
+    if (onPostPage(uiDump())) {
+      throw new Error('Finalize did not go through \u2014 still on the post page');
+    }
     console.log('✅ TikTok slideshow scheduled.');
   } finally {
     // 10. Remove the slides from the gallery again.
