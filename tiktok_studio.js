@@ -50,6 +50,27 @@ function adbLoose(args) {
   try { return adb(args); } catch { return ''; }
 }
 
+// Dumps the current view hierarchy. Returns '' if the dump fails, so callers
+// see "no nodes" rather than throwing mid-flow.
+// Dumps the current view hierarchy, or '' if the screen would not settle.
+//
+// `uiautomator dump` prints "ERROR: could not get idle state." and STILL EXITS
+// 0 when the screen is animating (the photo preview does this). The old version
+// then cat'd the file from the previous successful dump and returned it as if
+// it were current — so every check ran against a screen that was no longer
+// displayed, and taps were computed from stale cell bounds. Delete the file
+// first and require the success line, so a failed dump reads as '' not as the
+// last screen.
+function uiDump() {
+  try {
+    adbLoose('shell rm -f /sdcard/ts_ui.xml');
+    const out = adb('shell uiautomator dump /sdcard/ts_ui.xml 2>&1');
+    if (!/dumped to/i.test(out)) return '';
+    const xml = adb('shell cat /sdcard/ts_ui.xml');
+    return /<hierarchy/.test(xml) ? xml : '';
+  } catch { return ''; }
+}
+
 function getSize() {
   const out = adb('shell wm size');
   const m = out.match(/(\d+)x(\d+)/);
@@ -160,6 +181,9 @@ function screencap(file) { execSync(`adb exec-out screencap -p > "${file}"`, { s
 const R = {
   uploadBtn:      [0.500, 0.263],   // "+ Upload" on the Create screen
   pickerNext:     [0.500, 0.936],   // "Next (N)" in the media picker
+  pickerBack:     [0.068, 0.083],   // top-left Close (X) in the picker (desc="Close", measured [42,167][105,230])
+  previewBack:    [0.055, 0.065],   // chevron "<" top-left of the photo preview
+  previewSelect:  [0.841, 0.065],   // "Select" top-right of the photo preview (node centre 908,157)
   pickerCircles: {                  // selection circle centres per grid cell
     cols: [0.288, 0.619, 0.951],
     rowTopY: 0.180,                 // first row circle Y
@@ -276,63 +300,149 @@ function pickerCount(xml) {
   return m ? +m[1] : 0;
 }
 
-// Taps the selection circles of the first `count` cells in reading order.
-// Assumes the gallery holds ONLY this post's slides (so reading order == slide
-// order because we reverse-pushed). TikTok slideshows cap at 35 images.
+// Which screen are we on?
 //
-// The circle ratios below are measured and correct — verified on device against
-// a live dump: cells are 353px at rows y=385/747/1109 (pitch 362), and
-// cols/rowTopY/rowPitch resolve to the centre of each cell's circle. Do NOT
-// replace them with bounds scraped from the dump (that was 3a5d914: it tapped
-// the photo, opened the preview, and stalled at slide 1).
-//
-// What WAS broken: the old loop did `selected++` per tap, counting taps rather
-// than selections, and then scrolled 3 rows after selecting 4. The first tap
-// after every scroll therefore landed on an already-selected cell and toggled
-// it back OFF, so the count crept instead of climbing.
-//
-// Now every tap is checked against "Next (N)":
-//   count went up   -> the cell was selected, move on
-//   count went down -> the cell was already selected and we just cleared it,
-//                      so tap once more to restore it and move on
-//   count unchanged -> empty cell (past the end of the gallery)
-// That makes the exact scroll distance irrelevant: any overlap self-corrects.
-async function selectSlides(count) {
-  const { cols, rowTopY, rowPitch } = R.pickerCircles;
-  const ROWS_PER_SCREEN = 4;
+// Two traps here, both learned the hard way:
+//   * the photo preview has its own "Next" button, so testing for "Next" is
+//     true on BOTH screens (and the preview's carries no count, so it reads
+//     back as 0 selected);
+//   * the preview is an OVERLAY — the GridView stays in the hierarchy behind
+//     it — so testing for a GridView is true on both screens too.
+// What only the preview has is its "Select" control (top-right, measured at
+// centre 908,157). That is the discriminator.
+function onPreview(xml) {
+  return /text="Select"/.test(xml || '');
+}
+function onGrid(xml) {
+  return !!xml && !onPreview(xml) && /class="[^"]*GridView[^"]*"/.test(xml);
+}
 
+// Gets back to the grid from wherever a stray tap landed. On a photo preview we
+// press its own "Select" first: the tap was meant to select that cell anyway,
+// so this turns the miss into the intended result instead of losing the photo.
+// "Select" is shown only while the photo is NOT yet selected, so its presence
+// is exactly the "still needs selecting" signal.
+async function backToPicker() {
+  for (let i = 0; i < 4; i++) {
+    const xml = uiDump();
+    if (onGrid(xml)) return xml;
+
+    if (onPreview(xml)) {
+      console.log('   \u21a9\ufe0f  preview opened \u2014 selecting here, then going back');
+      tap(...R.previewSelect);
+      await sleep(700);
+      tap(...R.previewBack);
+    } else if (i === 0) {
+      // Dump would not settle (the preview animates): assume the preview and
+      // use its back chevron.
+      tap(...R.previewBack);
+    } else {
+      key(4);
+    }
+    await sleep(1300);
+  }
+  return uiDump();
+}
+
+// The media grid's own bounds. Anything below it (the "Selected" tray, the
+// Next bar) overlays the screen, so a tap there hits the tray, not a cell.
+function gridBounds(xml) {
+  const m = (xml || '').match(/class="[^"]*GridView[^"]*"[^>]*bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/)
+         || (xml || '').match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"[^>]*class="[^"]*GridView[^"]*"/);
+  if (!m) return null;
+  return { x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4] };
+}
+
+// Circle centre relative to its cell, measured on device: the taps that this
+// resolves to are the very ones that selected 7/7 (cell [5,385][359,742] -> 311,432).
+const CIRCLE_DX = 48;   // left of the cell's right edge
+const CIRCLE_DY = 47;   // below the cell's top edge
+
+// The fully-visible grid cells, in reading order.
+//
+// Read from the dump because a scroll does NOT land the rows back on the fixed
+// ratios: the list clamps at the end, so after scrolling the rows sit at an
+// arbitrary offset and a fixed-ratio tap hits the photo body instead of its
+// circle — which opens the preview and is exactly where selection used to wedge.
+//
+// This matches the CELL (a clickable ~cell-width square inside the grid), which
+// is large and unambiguous, then applies the measured offset above. It is not
+// 3a5d914's mistake of hunting for a small "Button" node that was never the
+// circle at all.
+function gridCells(xml) {
+  const grid = gridBounds(xml);
+  if (!grid) return [];
+  const cells = [];
+  for (const chunk of (xml || '').split('<node ')) {
+    if (!/clickable="true"/.test(chunk)) continue;
+    const b = chunk.match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/);
+    if (!b) continue;
+    const x1 = +b[1], y1 = +b[2], x2 = +b[3], y2 = +b[4];
+    const w = x2 - x1, h = y2 - y1;
+    if (w < SIZE.w * 0.25 || w > SIZE.w * 0.40) continue;   // ~1/3 screen wide
+    if (Math.abs(w - h) > 40) continue;                     // square-ish
+    if (y1 < grid.y1 - 2 || y2 > grid.y2 + 2) continue;     // fully inside the grid
+    if (cells.some((c) => c.x1 === x1 && c.y1 === y1)) continue;
+    cells.push({ x1, y1, x2, y2 });
+  }
+  cells.sort((a, b) => (Math.abs(a.y1 - b.y1) > 40 ? a.y1 - b.y1 : a.x1 - b.x1));
+  return cells;
+}
+
+// Selects the first `count` slides in reading order. Assumes the gallery holds
+// ONLY this post's slides (reading order == slide order, because we
+// reverse-pushed). TikTok slideshows cap at 35 images.
+//
+// Every tap is judged by the picker's "Next (N)" counter, never by counting
+// taps. The old loop did `selected++` per tap and scrolled 3 rows after
+// selecting 4, so the first tap after each scroll toggled a cell back OFF.
+async function selectSlides(count) {
   let xml = uiDump();
+  if (!onGrid(xml)) xml = await backToPicker();
+
   let selected = pickerCount(xml);
   let stalls = 0;
 
   while (selected < count && stalls < 6) {
     const before = selected;
+    const cells = gridCells(xml);
 
-    for (let row = 0; row < ROWS_PER_SCREEN && selected < count; row++) {
-      for (let col = 0; col < 3 && selected < count; col++) {
+    for (const cell of cells) {
+      if (selected >= count) break;
+      const cx = cell.x2 - CIRCLE_DX;
+      const cy = cell.y1 + CIRCLE_DY;
+
+      // Retry the SAME cell rather than moving on: a tap that misses the circle
+      // opens the preview, and the old loop advanced anyway, leaving that photo
+      // unselected for good.
+      for (let attempt = 0; attempt < 3; attempt++) {
         checkStop();
-        const y = rowTopY + row * rowPitch;
-        tap(cols[col], y);
+        adbLoose(`shell input tap ${cx} ${cy}`);
         await sleep(350);
-        let now = pickerCount(uiDump());
 
-        if (now < selected) {
-          // Already selected — our tap cleared it. Put it back.
-          tap(cols[col], y);
-          await sleep(350);
-          now = pickerCount(uiDump());
-        }
-        selected = now;
+        let now = uiDump();
+        // Never read the count off a screen that is not the grid: the preview
+        // has its own "Next" with no number, which reads back as 0 selected.
+        if (!onGrid(now)) now = await backToPicker();
+
+        const n = pickerCount(now);
+        xml = now;
+        if (n > selected) { selected = n; break; }    // selected, next cell
+        if (n < selected) { selected = n; continue; } // we cleared one, retry
+        break;                                        // unchanged: empty cell
       }
     }
 
     if (selected >= count) break;
 
-    // Scroll a full screen of rows. Overlap or shortfall is harmless now that
-    // each tap verifies itself, so this only has to move roughly one screen.
-    swipeAbs(X(0.5), Y(rowTopY + ROWS_PER_SCREEN * rowPitch), X(0.5), Y(rowTopY), 500);
-    await sleep(1200);
-    selected = pickerCount(uiDump());
+    // Scroll roughly one screen. The exact distance no longer matters: cell
+    // positions are re-read from the dump after every scroll.
+    const grid = gridBounds(xml) || { y1: Y(0.17), y2: Y(0.80) };
+    swipeAbs(X(0.5), grid.y2 - 60, X(0.5), grid.y1 + 60, 600);
+    await sleep(1400);
+    xml = uiDump();
+    if (!onGrid(xml)) xml = await backToPicker();
+    selected = pickerCount(xml);
     stalls = selected > before ? 0 : stalls + 1;
   }
 
@@ -605,4 +715,6 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
   }
 }
 
-module.exports = { scheduleSlideshow, nextPhoneSlots, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast };
+module.exports = { scheduleSlideshow, nextPhoneSlots, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast,
+                   // exported for on-device calibration / selection test runs
+                   selectSlides, pickerCount, deleteImages };
