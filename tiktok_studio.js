@@ -285,8 +285,8 @@ function deleteImages(userId, ids) {
 }
 
 // ── Grid selection ────────────────────────────────────────────────────────────
-// Reads the picker's live "Next (N)" counter — the only trustworthy source of
-// how many slides are actually selected.
+// Reads the picker's live "Next (N)" counter. Used only to REPORT/verify the
+// result — never to drive taps.
 function pickerCount(xml) {
   const m = (xml || '').match(/text="Next \((\d+)\)"/);
   return m ? +m[1] : 0;
@@ -297,115 +297,44 @@ function pickerIsOpen(xml) {
   return /text="Next/.test(xml || '');
 }
 
-// Every node in the dump as {x1,y1,x2,y2,w,h,text,cls,clickable}.
-function nodesOf(xml) {
-  const out = [];
-  for (const chunk of (xml || '').split('<node ')) {
-    const b = chunk.match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/);
-    if (!b) continue;
-    const t = chunk.match(/text="([^"]*)"/);
-    const c = chunk.match(/class="([^"]*)"/);
-    const x1 = +b[1], y1 = +b[2], x2 = +b[3], y2 = +b[4];
-    out.push({ x1, y1, x2, y2, w: x2 - x1, h: y2 - y1,
-               text: t ? t[1] : '',
-               cls: c ? c[1] : '',
-               clickable: /clickable="true"/.test(chunk) });
-  }
-  return out;
-}
-
-// The scrollable media grid's bounds. Everything below it (the "Selected"
-// thumbnail tray and the Next bar) overlays the screen, so a tap there hits the
-// tray instead of a cell.
-function gridBounds(nodes) {
-  const g = nodes.find((n) => /GridView|RecyclerView/.test(n.cls) && n.w > SIZE.w * 0.9 && n.h > SIZE.h * 0.4);
-  return g || { x1: 0, y1: Math.round(SIZE.h * 0.16), x2: SIZE.w, y2: Math.round(SIZE.h * 0.8) };
-}
-
-// The selection circles currently on screen, in reading order.
-//
-// Each grid cell contains its own small Button node that IS the circle — the
-// dump gives its exact bounds, so we never have to guess an offset inside the
-// cell. Tapping anywhere else in the cell opens the photo preview instead of
-// selecting it, which is exactly what the old ratio-based version kept doing.
-// A selected circle carries the slide number as its text ("1", "2", …); an
-// unselected one is blank. That is also how we read selection state back
-// without trusting a running count.
-function selectCircles(xml) {
-  const nodes = nodesOf(xml);
-  const grid = gridBounds(nodes);
-  const out = [];
-  const seen = new Set();
-  for (const n of nodes) {
-    if (!/Button/.test(n.cls) || !n.clickable) continue;
-    if (n.w < 40 || n.w > 100 || n.h < 40 || n.h > 100) continue;
-    if (Math.abs(n.w - n.h) > 12) continue;                      // must be round-ish
-    if (n.y1 < grid.y1 - 5 || n.y2 > grid.y2 + 5) continue;      // inside the grid only
-    const cx = Math.round((n.x1 + n.x2) / 2);
-    const cy = Math.round((n.y1 + n.y2) / 2);
-    const k = `${cx},${cy}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push({ cx, cy, selected: /^\d+$/.test(n.text) });
-  }
-  out.sort((a, b) => (Math.abs(a.cy - b.cy) > 40 ? a.cy - b.cy : a.cx - b.cx));
-  return out;
-}
-
-// Selects the first `count` slides in reading order.
+// Taps the selection circles of the first `count` cells in reading order.
 // Assumes the gallery holds ONLY this post's slides (so reading order == slide
-// order because we reverse-pushed). TikTok slideshows cap at 35 images.
+// order because we reverse-pushed). Handles up to a full screen (~12); for more,
+// scrolls and continues. TikTok slideshows cap at 35 images.
 //
-// One tap per pass, re-reading the screen every time, because the grid MOVES
-// underneath a batch of taps: selecting the first slide opens the "Selected"
-// tray, which shrinks the grid (usable bottom 2158 → 1926) and shifts the rows.
-// Coordinates gathered before the first tap are stale by the second, which is
-// why the old fixed-block-then-fixed-scroll version stalled at 12 for any
-// count above that — its post-scroll taps landed on already-selected cells.
-// Every tap is verified against the "Next (N)" counter.
+// DO NOT replace these fixed ratio coordinates with bounds scraped from the UI
+// dump. That was tried in 3a5d914 ("tap the real select circles"): the dump's
+// small square Buttons are not the circles on this device, so the first tap
+// landed on the photo and opened the preview viewer, and selection never got
+// past slide 1. The ratios below are the version that works on device.
 async function selectSlides(count) {
-  let xml = uiDump();
-  if (!pickerIsOpen(xml)) throw new Error('Media picker is not open — cannot select slides');
-
-  let selected = pickerCount(xml);
-  let stalls = 0;
-
-  while (selected < count && stalls < 10) {
-    checkStop();
-    const circles = selectCircles(xml);
-    const target = circles.find((c) => !c.selected);
-
-    if (target) {
-      adbLoose(`shell input tap ${target.cx} ${target.cy}`);
-      await sleep(450);
-      xml = uiDump();
-      const now = pickerCount(xml);
-      if (now > selected) { selected = now; stalls = 0; }
-      else { stalls++; }
-      continue;
+  const { cols, rowTopY, rowPitch } = R.pickerCircles;
+  let selected = 0;
+  let rowsPerScreen = 4; // visible rows before needing a scroll
+  while (selected < count) {
+    // Tap each selection circle individually with a real settle gap — batching
+    // these into one adb call is faster but flaky if the picker is still settling
+    // (it can end up selecting only the first cell). Reliability wins here.
+    for (let row = 0; row < rowsPerScreen && selected < count; row++) {
+      for (let col = 0; col < 3 && selected < count; col++) {
+        checkStop();
+        tap(cols[col], rowTopY + row * rowPitch);
+        await sleep(300);
+        selected++;
+      }
     }
-
-    if (!circles.length) { stalls++; await sleep(700); xml = uiDump(); continue; }
-
-    // Everything on screen is already selected: scroll one grid-height-minus-a-row
-    // further down. Scrolling less than the visible span guarantees no cell is
-    // skipped over unselected.
-    const grid = gridBounds(nodesOf(xml));
-    const before = circles.map((c) => `${c.cy}:${c.selected ? 1 : 0}`).join(',');
-    swipeAbs(X(0.5), grid.y2 - 120, X(0.5), grid.y1 + 120, 700);
-    await sleep(1400);
-    xml = uiDump();
-    const after = selectCircles(xml).map((c) => `${c.cy}:${c.selected ? 1 : 0}`).join(',');
-    if (after === before) stalls++;   // list would not move: end of the gallery
-    else stalls = 0;
+    if (selected < count) {
+      // scroll up by ~ (rowsPerScreen-1) rows so newly revealed cells align to the grid
+      const startY = Y(rowTopY + (rowsPerScreen - 1) * rowPitch);
+      const endY = Y(rowTopY);
+      swipeAbs(X(0.5), startY, X(0.5), endY, 500);
+      await sleep(1200);
+      // after the first screen, the grid is scrolled: keep using the same rows,
+      // but the first fully-visible row is now what was last partially shown.
+      rowsPerScreen = 3;
+    }
   }
-
-  if (selected < count) {
-    throw new Error(`Only ${selected} of ${count} slides could be selected`);
-  }
-  console.log(`   ✓ ${selected}/${count} slides selected`);
 }
-
 
 // ── Random favourite sound ────────────────────────────────────────────────────
 // Rows visible in the favourites list below soundRowTopY.
