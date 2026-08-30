@@ -50,21 +50,6 @@ function adbLoose(args) {
   try { return adb(args); } catch { return ''; }
 }
 
-// Dumps the current window's UI hierarchy as XML. Used to *verify* which screen
-// we're on before blind-tapping — a tap that lands on the slide preview instead
-// of the sound pill silently opens the text editor and everything after it goes
-// into the wrong place.
-function uiDump() {
-  try {
-    adb('shell uiautomator dump /sdcard/ts_ui.xml');
-    return adb('shell cat /sdcard/ts_ui.xml');
-  } catch { return ''; }
-}
-function dumpHas(xml, ...needles) {
-  const low = xml.toLowerCase();
-  return needles.some((n) => low.includes(n.toLowerCase()));
-}
-
 function getSize() {
   const out = adb('shell wm size');
   const m = out.match(/(\d+)x(\d+)/);
@@ -163,7 +148,6 @@ function wallToNaiveIso(wall) {
 }
 
 let SIZE = { w: 1080, h: 2400 };
-function setSize(s) { SIZE = s || getSize(); return SIZE; }
 const X = (r) => Math.round(r * SIZE.w);
 const Y = (r) => Math.round(r * SIZE.h);
 
@@ -285,28 +269,10 @@ function deleteImages(userId, ids) {
 }
 
 // ── Grid selection ────────────────────────────────────────────────────────────
-// Reads the picker's live "Next (N)" counter. Used only to REPORT/verify the
-// result — never to drive taps.
-function pickerCount(xml) {
-  const m = (xml || '').match(/text="Next \((\d+)\)"/);
-  return m ? +m[1] : 0;
-}
-// True once the media grid is actually on screen (not a splash, not the Create
-// tab). Cheap guard against blind-tapping into the wrong screen.
-function pickerIsOpen(xml) {
-  return /text="Next/.test(xml || '');
-}
-
 // Taps the selection circles of the first `count` cells in reading order.
 // Assumes the gallery holds ONLY this post's slides (so reading order == slide
 // order because we reverse-pushed). Handles up to a full screen (~12); for more,
 // scrolls and continues. TikTok slideshows cap at 35 images.
-//
-// DO NOT replace these fixed ratio coordinates with bounds scraped from the UI
-// dump. That was tried in 3a5d914 ("tap the real select circles"): the dump's
-// small square Buttons are not the circles on this device, so the first tap
-// landed on the photo and opened the preview viewer, and selection never got
-// past slide 1. The ratios below are the version that works on device.
 async function selectSlides(count) {
   const { cols, rowTopY, rowPitch } = R.pickerCircles;
   let selected = 0;
@@ -337,82 +303,35 @@ async function selectSlides(count) {
 }
 
 // ── Random favourite sound ────────────────────────────────────────────────────
-// Rows visible in the favourites list below soundRowTopY.
-const SOUND_ROWS_VISIBLE = 7;
-
-// Makes sure the sound sheet is actually open. Tapping the "♫ …" pill while the
-// editor is still animating misses it and lands on the slide preview, which opens
-// the text/caption editor instead. So: verify with a UI dump, back out of any
-// editor we opened by mistake, and retry.
-async function openSoundSheet() {
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    let xml = uiDump();
-    // Did a previous attempt drop us into the text editor / some other overlay?
-    if (dumpHas(xml, 'Add text', 'Text style', 'Done', 'Text-to-speech')
-        && !dumpHas(xml, 'Favorites', 'Add sound')) {
-      key(4);                      // BACK — leave the text editor
-      await sleep(1200);
-      key(4);                      // and any leftover keyboard/overlay
-      await sleep(1200);
-      xml = uiDump();
-    }
-    if (dumpHas(xml, 'Favorites', 'Discover', 'Playlists')) return true; // sheet already open
-    tap(...R.soundTitle);
-    await sleep(3500);
-    xml = uiDump();
-    if (dumpHas(xml, 'Favorites', 'Discover', 'Playlists')) return true;
-    console.log(`   ⚠️  sound sheet did not open (attempt ${attempt}), retrying…`);
-    await sleep(1500);
-  }
-  throw new Error('Could not open the sound sheet');
-}
-
 async function pickRandomFavoriteSound() {
-  // Let the editor's slide-preview animation settle before touching anything.
+  // Let the editor's slide-preview animation settle first — tapping the sound
+  // pill while the editor is still transitioning misses it, and the following
+  // taps then land on the slide's text and open the text editor by mistake.
   await sleep(2500);
-  await openSoundSheet();
-
+  tap(...R.soundTitle);            // open the sound sheet
+  await sleep(3500);
   tap(...R.favoritesTab);          // switch to the user's saved/favourite sounds
   await sleep(2500);
-
-  // Scroll a RANDOM number of pages into the list so every favourite has a fair
-  // chance — a fixed half-screen scroll always lands on the same middle rows.
-  const pages = Math.floor(Math.random() * 6);          // 0…5 pages deep
-  for (let p = 0; p < pages; p++) {
-    const dist = Y(R.soundRowPitch * (SOUND_ROWS_VISIBLE - 1));
-    swipeAbs(X(0.5), Y(0.85), X(0.5), Y(0.85) - dist, 420);
-    await sleep(900);
+  // Optionally scroll a random amount so we're not always picking near the top.
+  if (Math.random() < 0.5) {
+    const dist = 300 + Math.floor(Math.random() * 500);
+    swipeAbs(X(0.5), Y(0.75), X(0.5), Y(0.75) - dist, 450);
+    await sleep(1500);
   }
-  // Plus a random partial-row jitter so we don't always land grid-aligned.
-  const jitter = Math.floor(Math.random() * Y(R.soundRowPitch * 3));
-  if (jitter > 40) {
-    swipeAbs(X(0.5), Y(0.85), X(0.5), Y(0.85) - jitter, 400);
-    await sleep(900);
-  }
-  await sleep(1200);
-
   // Pick a favourite by tapping TWO DIFFERENT rows in a row. TikTok often
   // pre-recommends a sound; if the one we tap happens to equal it, the tap
   // TOGGLES it OFF (leaving "Add sound"). Tapping a *different* row always
   // switches the applied sound, so the second, distinct tap is guaranteed to
-  // leave a favourite applied. Both rows are drawn from the whole visible list.
-  const idx1 = Math.floor(Math.random() * SOUND_ROWS_VISIBLE);
-  let idx2 = Math.floor(Math.random() * SOUND_ROWS_VISIBLE);
-  if (idx2 === idx1) idx2 = (idx1 + 1) % SOUND_ROWS_VISIBLE;
+  // leave a favourite applied.
+  const idx1 = Math.floor(Math.random() * 5);
+  let idx2 = Math.floor(Math.random() * 5);
+  if (idx2 === idx1) idx2 = (idx1 + 1) % 5;
   tap(0.333, R.soundRowTopY + idx1 * R.soundRowPitch);
   await sleep(1500);
   tap(0.333, R.soundRowTopY + idx2 * R.soundRowPitch);   // final applied sound
   await sleep(1800);
   tap(...R.soundClose);            // dismiss the sheet back to the editor
   await sleep(2000);
-
-  // If that close-tap (or an earlier stray tap) opened the text editor, back out
-  // so the editor's "Next" button is where the next step expects it.
-  const xml = uiDump();
-  if (dumpHas(xml, 'Add text', 'Text style', 'Text-to-speech')) {
-    console.log('   ⚠️  stray text editor open — backing out');
-    key(4); await sleep(1500);
-  }
 }
 
 // ── Schedule wheel ────────────────────────────────────────────────────────────
@@ -546,61 +465,6 @@ async function typeCaption(caption) {
   }
 }
 
-// ── Leaving the editor ────────────────────────────────────────────────────────
-// Exact-text lookup of a node in the dump. This is NOT the geometry guessing
-// that broke slide selection in 3a5d914: we match a node by its literal label
-// and tap the centre of that label's own bounds. If the label is absent we fall
-// back to the measured ratio rather than tapping something we guessed at.
-function nodeByText(xml, label) {
-  for (const chunk of (xml || '').split('<node ')) {
-    const t = chunk.match(/text="([^"]*)"/);
-    if (!t || t[1] !== label) continue;
-    const b = chunk.match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/);
-    if (!b) continue;
-    return { cx: Math.round((+b[1] + +b[3]) / 2), cy: Math.round((+b[2] + +b[4]) / 2) };
-  }
-  return null;
-}
-function tapAbs(x, y) { adbLoose(`shell input tap ${x} ${y}`); }
-
-const inTextEditor = (xml) => dumpHas(xml, 'Add text', 'Text style', 'Text-to-speech');
-// Both markers are the ones the post-page steps already tap by ratio:
-// R.titleField is the "Add a catchy title" field, R.schedulePostRow the
-// "Schedule post" row. If neither is present we are not on the post page.
-const onPostPage   = (xml) => dumpHas(xml, 'Add a catchy title', 'Schedule post');
-
-// Leaves the editor for the post page.
-//
-// The blind tap on R.editorNext was landing on the slideshow canvas once the
-// sound sheet had closed, which opens the per-photo text editor instead of
-// advancing. So: back out of any text editor first, then tap the real "Next"
-// node from the dump, then confirm we actually reached the post page.
-async function leaveEditor() {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    checkStop();
-    let xml = uiDump();
-
-    // A stray tap may already have opened the text editor — back out before
-    // anything else, or "Next" here means "done editing text", not "post".
-    if (inTextEditor(xml)) {
-      console.log('   ⚠️  text editor open — backing out');
-      key(4); await sleep(1500);
-      xml = uiDump();
-    }
-    if (onPostPage(xml)) return;
-
-    const next = nodeByText(xml, 'Next');
-    if (next) tapAbs(next.cx, next.cy);
-    else      tap(...R.editorNext);          // measured fallback
-    await sleep(5000);
-
-    const after = uiDump();
-    if (onPostPage(after)) return;
-    console.log(`   ⚠️  still not on the post page (attempt ${attempt}/3)`);
-  }
-  throw new Error('Could not leave the editor — "Next" never reached the post page');
-}
-
 // ── Full slideshow schedule ───────────────────────────────────────────────────
 // mediaFiles: absolute paths, already in slide order (1..N).
 // scheduledTime: ISO string / Date.
@@ -653,7 +517,7 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
 
     // 6. Leave the editor → post page.
     checkStop();
-    await leaveEditor();                                shot('06_postpage');
+    tap(...R.editorNext);          await sleep(5000); shot('06_postpage');
 
     // 7. Open Schedule, set the time, confirm. Always phone-local wall clock.
     let sch = schedule;
@@ -701,6 +565,4 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
   }
 }
 
-module.exports = { scheduleSlideshow, nextPhoneSlots, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast,
-                   // exported for the device test-harness / calibration runs
-                   selectSlides, withAlwaysTags, countTags, splitTitleCaption, uiDump, pickerCount, setSize };
+module.exports = { scheduleSlideshow, nextPhoneSlots, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast };
