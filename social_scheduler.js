@@ -163,7 +163,18 @@ async function uploadToYouTubeStudio(port, mediaPath, title, caption, scheduledT
   browser.disconnect();
 }
 
+// Only ONE task may drive the phone at a time. There are two independent
+// callers -- the 60s background tick and the sequential runner the ZIP-import
+// endpoint starts -- and without this guard they both grab the same device:
+// two runs push slides into the same gallery, tap the same UI, and delete each
+// other's images in their cleanup, so NEITHER schedules. Symptom: task #1 sits
+// on 'running' doing nothing, then a minute later task #2 also flips to
+// 'running' while #1 never posted.
+let inFlightTaskId = null;
+
 async function processNextScheduledItem() {
+  if (inFlightTaskId) return;   // a run is already driving the phone
+
   const schedule = loadSchedule();
   const profiles = loadProfiles();
   const now = new Date();
@@ -177,20 +188,35 @@ async function processNextScheduledItem() {
   saveSchedule(schedule);
 
   console.log(`\n🚀 Processing scheduled task #${item.id} (Scheduled at: ${item.scheduledTime})`);
-  await executeTask(item, schedule, profiles);
+  inFlightTaskId = item.id;
+  try { await executeTask(item, schedule, profiles); }
+  finally { inFlightTaskId = null; }
 }
 
 async function processItemImmediately(taskId) {
+  if (inFlightTaskId) {
+    throw new Error(`Another task (#${inFlightTaskId}) is already running on the phone - wait for it to finish.`);
+  }
+
   const schedule = loadSchedule();
   const profiles = loadProfiles();
   const item = schedule.find(t => t.id === taskId);
   if (!item) throw new Error('Task not found');
 
+  // The background tick may have already run this one while the sequential
+  // runner was working through the queue. Don't schedule it on TikTok twice.
+  if (item.status === 'success') {
+    console.log(`Task #${item.id} already succeeded - skipping.`);
+    return;
+  }
+
   item.status = 'running';
   saveSchedule(schedule);
 
   console.log(`\n🚀 Triggering task #${item.id} IMMEDIATELY`);
-  await executeTask(item, schedule, profiles);
+  inFlightTaskId = item.id;
+  try { await executeTask(item, schedule, profiles); }
+  finally { inFlightTaskId = null; }
 }
 
 async function executeTask(item, schedule, profiles) {
@@ -497,7 +523,11 @@ function importZipArchive(profileId, subAccountId, platforms, zipPath, fallbackC
   return { tasks: tasksCreated, skipped: skippedCount, total: discoveredPosts.length };
 }
 
+// True while a task is driving the phone (used by the API to refuse a second run).
+function isBusy() { return inFlightTaskId; }
+
 module.exports = {
+  isBusy,
   loadSchedule,
   saveSchedule,
   loadProfiles,

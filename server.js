@@ -1750,6 +1750,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname.startsWith('/api/graphene/schedule/run/')) {
     const taskId = url.pathname.split('/').pop();
     try {
+      const busy = socialScheduler.isBusy();
+      if (busy) {
+        return sendJson(res, 409, { ok: false, error: `Task ${busy} is already running on the phone. Only one run at a time.` });
+      }
       tiktokStudio.clearStop();
       socialScheduler.processItemImmediately(taskId).catch(err => {
         if (err.message !== 'STOP_REQUESTED') console.error(`Error executing task ${taskId} immediately:`, err);
