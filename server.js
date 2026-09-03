@@ -343,20 +343,24 @@ function buildPrompt(cfg, task) {
     const BLEND = `ensure our character smoothly blends into the refference image so it looks completely natural matching the exact refference image lighting, shadows, and environment.`;
     const PHONE = `if and only if a phone is visible in the hand of the character on the refference image, change it to a silver iphone 17 with clear magsafe case; otherwise, do not add or depict any phone in the scene.`;
 
-    const OPEN = `swap character on refference image with ${charName}. keep the outfit as it is on refference image.`;
-
     // Point at each attached asset BY NAME via a real Flow "@" mention, so the
-    // prompt never depends on which chip happened to be attached first.
+    // prompt never depends on which chip happened to be attached first — the
+    // classic swap now tags exactly like the chopped and couple packs.
     // refImageName is only set for the folder-driven swap packs; without it we
     // fall back to plain wording.
+    // Only the FIRST occurrence of each is a mention: every extra one costs
+    // another trip through Flow's mention picker (~2s), and the later plain-text
+    // references read fine once the asset has been named once.
     const CHAR = mention(charName);
     const REF = task.refImageName ? mention(task.refImageName) : 'the reference picture';
+
+    const OPEN = `swap character on ${REF} with our ${CHAR}. keep the outfit as it is on refference image.`;
 
     if (isChopped) {
       // Keep this SHORT — the simple one-liner with both assets "@"-tagged
       // outperforms every longer variant we tried. The chopped look itself
       // lives in the Flow character, so nothing about it is described here.
-      return `swap character on ${REF} with our ${CHAR}, dont add any accessories like glasses, airpods, or headphones.`;
+      return `swap character on ${REF} with our ${CHAR}, dont add any accessories like glasses, airpods, or headphones. keep enviroment, light, pose as it is on ${REF}.`;
     }
 
     if (isFemale) {
@@ -1243,6 +1247,10 @@ async function generateOne(page, cfg, task) {
   const promptString = typeof built === 'string' ? built : JSON.stringify(built);
   const charName = (cfg.characterName || 'Untitled Character').replace(/^@/, '');
   const charViaMention = promptString.includes(mention(charName));
+  // Same idea for the reference picture: when the prompt "@"-mentions it, typing
+  // the prompt attaches it, so attaching it from the asset picker first would
+  // put the SAME image in the composer twice.
+  const refViaMention = !!task.refImageName && promptString.includes(mention(task.refImageName));
 
   if (state.stopRequested) throw new Error('STOP_REQUESTED');
   // 2. Attach Image 1: Character reference asset — unless the prompt's own
@@ -1273,7 +1281,9 @@ async function generateOne(page, cfg, task) {
 
   // 3. Attach Image 2: Reference picture from uploaded asset library
   const sceneMode = Array.isArray(cfg.scenes) && cfg.scenes.length;
-  if (task.isRefSwap && task.refImageName) {
+  if (task.isRefSwap && task.refImageName && refViaMention) {
+    log(`Reference image "${task.refImageName}" is mentioned in the prompt — it attaches itself.`);
+  } else if (task.isRefSwap && task.refImageName) {
     log(`Attaching reference image "${task.refImageName}" (Image 2)...`);
     const ok = await addBackgroundReference(page, task.refImageName);
     if (!ok) {
@@ -1288,15 +1298,27 @@ async function generateOne(page, cfg, task) {
   }
 
   if (state.stopRequested) throw new Error('STOP_REQUESTED');
-  // 4. Verify 2 reference chips exist in composer for refSwap tasks
-  const refCount = await countComposerRefs(page);
-  if (task.isRefSwap && refCount === 2) {
-    log(`✅ Confirmed: 2 reference images attached (Untitled Character + ${task.refImageName}).`);
-  } else if (task.isRefSwap) {
-    log(`Note: composer has ${refCount} chip(s) attached.`);
+  // 4. Verify 2 reference chips exist in composer for refSwap tasks. On the
+  //    mention path nothing is attached yet at this point — both assets arrive
+  //    with the prompt — so that check moves to after the prompt is typed.
+  const viaMention = refViaMention || charViaMention;
+  if (task.isRefSwap && !viaMention) {
+    const refCount = await countComposerRefs(page);
+    if (refCount === 2) log(`✅ Confirmed: 2 reference images attached (Untitled Character + ${task.refImageName}).`);
+    else log(`Note: composer has ${refCount} chip(s) attached.`);
   }
 
   if (!(await setPromptText(page, promptString))) { log('Skipping — could not set prompt text.'); return false; }
+
+  // Mention path: the assets attach themselves as the prompt is typed, so this
+  // is where the tagging can be confirmed — and where a mention that quietly
+  // fell back to plain text becomes visible instead of silently generating
+  // without its reference picture.
+  if (task.isRefSwap && viaMention) {
+    const n = await countComposerRefs(page);
+    if (n >= 2) log(`✅ Confirmed: ${n} asset(s) tagged in the prompt (${charName} + ${task.refImageName}).`);
+    else log(`⚠️  Only ${n} chip(s) after the prompt — a mention did not resolve, so an asset is missing from this generation.`);
+  }
 
   // If the chip vanished (e.g. an editor glitch), re-add it instead of skipping.
   // On the mention path insertMention already handled it (falling back to plain
@@ -1692,7 +1714,7 @@ const server = http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const item = JSON.parse(body);
-        
+
         if (item.mediaType === 'slideshow' && item.mediaPath && item.mediaPath.endsWith('.zip')) {
           // Import ZIP archive containing multiple slideshows/folders
           const result = socialScheduler.importZipArchive(
@@ -1701,7 +1723,8 @@ const server = http.createServer(async (req, res) => {
             item.platforms,
             item.mediaPath,
             item.caption,
-            item.startDate || item.scheduledTime
+            item.startDate || item.scheduledTime,
+            item.postsPerDay
           );
 
           const tasks = Array.isArray(result) ? result : (result.tasks || []);
@@ -1727,6 +1750,16 @@ const server = http.createServer(async (req, res) => {
                 console.error(`Error running imported task ${t.id}:`, err);
               }
             }
+            // Second chance for whatever missed: most TikTok failures are
+            // transient UI-timing misses, and the media is still on disk, so a
+            // retry pass at the end recovers them without any manual work.
+            if (!tiktokStudio.isStopRequested()) {
+              const ids = tasks.map(t => t.id);
+              if (socialScheduler.failedTaskIds(ids).length) {
+                await socialScheduler.retryFailed({ rounds: 2, ids });
+              }
+            }
+            console.log('🏁 Import run finished.');
           })().catch(err => console.error(err));
 
           return sendJson(res, 200, { ok: true, count: tasks.length, skipped, type: 'multi-post', tasks });
@@ -1762,6 +1795,28 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       return sendJson(res, 500, { error: e.message });
     }
+  }
+
+  // Re-run every task that ended up 'failed' (optionally a given subset).
+  // Only the platforms that actually failed are redone — the ones that already
+  // succeeded on that task are skipped, so nothing gets posted twice.
+  if (req.method === 'POST' && url.pathname === '/api/graphene/schedule/retry-failed') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let ids = null;
+      try { const p = JSON.parse(body || '{}'); if (Array.isArray(p.ids) && p.ids.length) ids = p.ids; } catch { }
+      const busy = socialScheduler.isBusy();
+      if (busy) return sendJson(res, 409, { ok: false, error: `Task ${busy} is already running on the phone. Only one run at a time.` });
+      const targets = socialScheduler.failedTaskIds(ids);
+      if (!targets.length) return sendJson(res, 200, { ok: true, count: 0, message: 'No failed posts to retry.' });
+      tiktokStudio.clearStop();
+      socialScheduler.retryFailed({ rounds: 2, ids }).catch(err => {
+        if (err.message !== 'STOP_REQUESTED') console.error('Retry pass error:', err);
+      });
+      return sendJson(res, 200, { ok: true, count: targets.length });
+    });
+    return;
   }
 
   // Stop any in-progress TikTok scheduling automation.
@@ -2347,14 +2402,16 @@ const server = http.createServer(async (req, res) => {
       const label = isFb ? 'Facebook' : isIg ? 'Instagram' : (platform === 'meta') ? 'Meta' : isX ? 'X' : isThreads ? 'Threads' : 'YouTube';
 
       if (countPendingFor(c.folder, platform) === 0) {
-        return sendJson(res, 400, { error: isMeta
-          ? 'No posts (video/image/text) in this character\'s folder.'
-          : 'No videos in this character\'s folder.' });
+        return sendJson(res, 400, {
+          error: isMeta
+            ? 'No posts (video/image/text) in this character\'s folder.'
+            : 'No videos in this character\'s folder.'
+        });
       }
 
       const openUrl = isMeta ? 'https://business.facebook.com/latest/home'
-                    : isX ? 'https://x.com/home'
-                    : 'https://studio.youtube.com';
+        : isX ? 'https://x.com/home'
+          : 'https://studio.youtube.com';
 
       let launchedByUs = false;
       if (!isThreads && !(await isDebugChromeUp(c.port))) {
@@ -2508,8 +2565,8 @@ const server = http.createServer(async (req, res) => {
         }
         const child = spawn(process.execPath, [MOBILE_EMULATOR_SCRIPT, String(c.port), startUrl], { cwd: __dirname });
         emulatorRuns.set(c.port, child);
-        child.stdout.on('data', b => { try { String(b).split(/\r?\n/).forEach(l => l.trim() && log(`  [emulate ${c.port}] ${l.trim()}`)); } catch {} });
-        child.stderr.on('data', b => { try { String(b).split(/\r?\n/).forEach(l => l.trim() && log(`  [emulate ${c.port}] ${l.trim()}`)); } catch {} });
+        child.stdout.on('data', b => { try { String(b).split(/\r?\n/).forEach(l => l.trim() && log(`  [emulate ${c.port}] ${l.trim()}`)); } catch { } });
+        child.stderr.on('data', b => { try { String(b).split(/\r?\n/).forEach(l => l.trim() && log(`  [emulate ${c.port}] ${l.trim()}`)); } catch { } });
         child.on('close', () => { if (emulatorRuns.get(c.port) === child) emulatorRuns.delete(c.port); });
         child.on('error', e => log(`✗ Emulator for port ${c.port} failed to start: ${e.message}`));
         log(`▶ Phone-emulated Chrome ready for "${c.name}" (port ${c.port}).`);

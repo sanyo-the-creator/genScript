@@ -62,13 +62,93 @@ function adbLoose(args) {
 // first and require the success line, so a failed dump reads as '' not as the
 // last screen.
 function uiDump() {
+  // One adb invocation instead of three: `uiautomator dump` costs ~2.4s on
+  // device no matter what, so the roundtrips are the only part we can shave.
+  // The file is deleted first and the success line is required, so a dump that
+  // would not settle reads as '' rather than as the previous screen.
+  //
+  // The combined command exits non-zero whenever uiautomator fails (it cannot
+  // reach idle while a video autoplays on the Home tab), so the output has to be
+  // read off the error too — execSync throws it away otherwise.
+  let out = '';
   try {
-    adbLoose('shell rm -f /sdcard/ts_ui.xml');
-    const out = adb('shell uiautomator dump /sdcard/ts_ui.xml 2>&1');
-    if (!/dumped to/i.test(out)) return '';
-    const xml = adb('shell cat /sdcard/ts_ui.xml');
-    return /<hierarchy/.test(xml) ? xml : '';
+    out = execSync('adb shell "rm -f /sdcard/ts_ui.xml; uiautomator dump /sdcard/ts_ui.xml; cat /sdcard/ts_ui.xml"',
+                   { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
+  } catch (e) {
+    out = (e && e.stdout) ? String(e.stdout) : '';
+  }
+  if (!/dumped to/i.test(out)) return '';
+  const i = out.indexOf('<hierarchy');
+  return i === -1 ? '' : out.slice(i);
+}
+
+// Centre of the first node carrying exactly `text`, or null.
+function nodeCenter(xml, text) {
+  for (const chunk of (xml || '').split('<node ')) {
+    if (!chunk.includes(`text="${text}"`)) continue;
+    const b = chunk.match(/bounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/);
+    if (b) return { x: Math.round((+b[1] + +b[3]) / 2), y: Math.round((+b[2] + +b[4]) / 2) };
+  }
+  return null;
+}
+
+// TikTok Studio puts up a modal "Restore your experience — TikTok crashed many
+// times…" after it has been killed repeatedly. It swallows every tap, so the
+// whole run silently proceeds against a dialog. Dismiss it with Cancel — never
+// Restore, which resets app data and would drop the channel's login.
+async function dismissRestoreDialog() {
+  const xml = uiDump();
+  if (!/text="Restore your experience"/.test(xml || '')) return false;
+  const cancel = nodeCenter(xml, 'Cancel');
+  console.log('   \u26a0\ufe0f  "Restore your experience" dialog \u2014 dismissing with Cancel');
+  if (cancel) adbLoose(`shell input tap ${cancel.x} ${cancel.y}`);
+  else adbLoose('shell input keyevent 4'); // BACK as a fallback
+  await sleep(1500);
+  return true;
+}
+
+// The package that currently owns the focused window. ~0.2s, versus ~2.5s for a
+// full UI dump — use it for any check that only needs "which app is up".
+function foregroundPkg() {
+  try {
+    const out = adb('shell "dumpsys window | grep -m1 mCurrentFocus"');
+    const m = out.match(/u\d+\s+([A-Za-z0-9_.]+)\//);
+    return m ? m[1] : '';
   } catch { return ''; }
+}
+
+// Waits for TikTok Studio to own the screen, polling the cheap focus probe.
+async function waitForApp(timeoutMs = 25000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    checkStop();
+    if (foregroundPkg() === PKG) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+// Polls the screen until `pred(xml)` holds, and returns that dump (null on
+// timeout). This replaces the flow's fixed sleeps: most steps finish in a second
+// or two but were always paying the worst case, and when the phone was slower
+// than the sleep the next tap fired at the wrong screen — which is exactly how
+// "Only 0 of 8 slides could be selected" happens (the picker grid had not
+// rendered yet when selectSlides ran).
+async function waitForScreen(pred, timeoutMs = 15000, pollMs = 150) {
+  const deadline = Date.now() + timeoutMs;
+  let xml = '';
+  while (Date.now() < deadline) {
+    checkStop();
+    xml = uiDump();
+    if (xml && pred(xml)) return xml;
+    await sleep(pollMs);
+  }
+  return null;
+}
+
+// True once TikTok Studio itself is on screen (any of its own windows).
+function appIsForeground(xml) {
+  return new RegExp(`package="${PKG}"`).test(xml || '');
 }
 
 function getSize() {
@@ -110,13 +190,34 @@ function addDays({ y, mo, d }, days) {
   return { y: dt.getUTCFullYear(), mo: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
 }
 
+// Posting window (phone-local) every auto-scheduled slot must fall inside.
+const WINDOW_START_MIN = 13 * 60; // 1PM
+const WINDOW_END_MIN = 21 * 60;   // 9PM
+
+// Spreads `perDay` posts evenly across the 1PM-9PM window, returning
+// minutes-of-day. 1 -> [17:00] (window midpoint); 2 -> [13:00, 21:00];
+// 3 -> [13:00, 17:00, 21:00]; 5 -> [13:00, 15:00, 17:00, 19:00, 21:00].
+// Fractional spacing is rounded to the minute, so any count divides the
+// window without ever landing outside it.
+function daySlotMinutes(perDay) {
+  const n = Math.max(1, Math.min(48, Math.floor(Number(perDay) || 0) || 3));
+  if (n === 1) return [Math.round((WINDOW_START_MIN + WINDOW_END_MIN) / 2)];
+  const step = (WINDOW_END_MIN - WINDOW_START_MIN) / (n - 1);
+  return Array.from({ length: n }, (_, i) => Math.round(WINDOW_START_MIN + i * step));
+}
+
 // Generates the next `count` future posting slots in PHONE-LOCAL wall-clock terms.
-// slots = target hours (e.g. [15,18,21]); each gets a ±jitterMin random offset.
-// Returns [{ dayOffset, hour, minute, label, wall:{y,mo,d,h,mi} }] where
-// dayOffset is days ahead of the phone's today and `wall` is the absolute
-// phone-local calendar date+time. Rolls over to following days as needed.
-function nextPhoneSlots(count, slots = [15, 18, 21], jitterMin = 10, startDate = null) {
+// `slots` may be target hours (e.g. [15,18,21]) or minutes-of-day (e.g. [780,1260]);
+// entries <= 23 are read as hours. Each gets a +/-jitterMin random offset, clamped
+// so it stays inside the 1PM-9PM window. Returns
+// [{ dayOffset, hour, minute, label, wall:{y,mo,d,h,mi} }] where dayOffset is days
+// ahead of the phone's today and `wall` is the absolute phone-local calendar
+// date+time. Rolls over to following days as needed.
+function nextPhoneSlots(count, slots = null, jitterMin = 10, startDate = null) {
   const now = getPhoneNow();
+  const slotMins = (slots && slots.length ? slots : daySlotMinutes(3))
+    .map((v) => (v <= 23 ? v * 60 : v))
+    .sort((a, b) => a - b);
   let startOffset = 0;
   if (startDate) {
     const m = String(startDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -130,11 +231,11 @@ function nextPhoneSlots(count, slots = [15, 18, 21], jitterMin = 10, startDate =
   const nowMinsAbs = now.d * 1440 + now.h * 60 + now.mi; // approx within a month
   const res = [];
   for (let dayOffset = startOffset; res.length < count; dayOffset++) {
-    for (const h of slots) {
+    for (const base of slotMins) {
       const jitter = Math.floor(Math.random() * (2 * jitterMin + 1)) - jitterMin;
-      let hour = h, minute = jitter;
-      if (minute < 0) { hour -= 1; minute += 60; }
-      const slotMinsAbs = (now.d + dayOffset) * 1440 + hour * 60 + minute;
+      const mins = Math.max(WINDOW_START_MIN, Math.min(WINDOW_END_MIN, base + jitter));
+      const hour = Math.floor(mins / 60), minute = mins % 60;
+      const slotMinsAbs = (now.d + dayOffset) * 1440 + mins;
       if (dayOffset > 0 || slotMinsAbs > nowMinsAbs + 15) { // at least 15 min ahead if today, always valid if future day
         const day = addDays(now, dayOffset);
         res.push({ dayOffset, hour, minute,
@@ -257,11 +358,15 @@ async function pushImagesFast(localFiles, userId) {
     try { execFileSync('adb', ['push', f, tmp(i)], { stdio: ['pipe', 'pipe', 'ignore'] }); } catch {}
   });
 
-  // 2. Create all MediaStore rows in one shell call.
+  // 2. Create all MediaStore rows in one shell call, IN PARALLEL. Each `content`
+  //    invocation starts a JVM on device (~1.1s) regardless of file size — that
+  //    startup, not the bytes, is what this step costs. The row order does not
+  //    matter here (only the write order below does), so they can all run at
+  //    once: ~9s of serial JVM startups collapses into ~1.5s.
   const inserts = names.map((n, i) =>
     `content insert --user ${userId} --uri ${uriBase} ` +
-    `--bind _display_name:s:${n} --bind mime_type:s:${mimeOf(localFiles[i])} --bind relative_path:s:DCIM/Camera`);
-  adbLoose(`shell "${inserts.join(' ; ')}"`);
+    `--bind _display_name:s:${n} --bind mime_type:s:${mimeOf(localFiles[i])} --bind relative_path:s:DCIM/Camera &`);
+  adbLoose(`shell "${inserts.join(' ')} wait"`);
 
   // 3. Resolve ids (gallery holds only our fresh rows).
   const q = adbLoose(`shell "content query --user ${userId} --uri ${uriBase} --projection _id:_display_name"`);
@@ -413,6 +518,29 @@ function badgeAt(xml, cell) {
 // from it can land the slide in the wrong position -- so each cell is confirmed
 // to hold its expected number before moving on, and repaired if not.
 async function selectOnOneScreen(count, xml) {
+  // Fast path: tap all `count` circles in ONE adb call, then verify with a
+  // SINGLE dump. A dump costs ~2.5s on device, so the old tap-then-dump loop
+  // paid ~3s per slide; a clean run now pays that once. Anything wrong falls
+  // through to the per-cell repair loop below, which fixes an arbitrary
+  // starting state, so this is a pure time saving with no loss of certainty.
+  const first = gridCells(xml);
+  if (first.length >= count && !first.slice(0, count).some((c) => badgeAt(xml, c) !== null)) {
+    inputSeq(first.slice(0, count).map((c) => tapCmd(c.x2 - CIRCLE_DX, c.y1 + CIRCLE_DY)), 0.25);
+    await sleep(600);
+    let after = uiDump();
+    if (!onGrid(after)) after = await backToPicker();
+    const cellsA = gridCells(after);
+    const gotA = [];
+    for (let i = 0; i < count; i++) gotA.push(badgeAt(after, cellsA[i]));
+    if (gotA.join(',') === Array.from({ length: count }, (_, i) => i + 1).join(',')
+        && pickerCount(after) === count) {
+      console.log(`   \u2713 ${count}/${count} slides selected in order (batched)`);
+      return;
+    }
+    console.log('   \u21ba batched selection did not verify \u2014 repairing cell by cell');
+    xml = after;
+  }
+
   for (let i = 0; i < count; i++) {
     let placed = false;
 
@@ -789,7 +917,7 @@ function onPostPage(xml) {
 //
 // So: close the text editor first, then advance, then CONFIRM the post page.
 async function leaveEditor() {
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     checkStop();
     let xml = uiDump();
     if (onPostPage(xml)) return;
@@ -797,18 +925,31 @@ async function leaveEditor() {
     if (inTextEditor(xml)) {
       console.log('   \u26a0\ufe0f  text editor open \u2014 closing it');
       tap(...R.textDone);
-      await sleep(1800);
+      if (await waitForScreen(onPostPage, 4000)) return;
+      xml = uiDump();
+    }
+
+    // The sound sheet can still be up (its scrim swallows the Next tap) — a
+    // dump that is neither the editor nor the post page is usually that.
+    if (xml && !onEditor(xml) && !onPostPage(xml)) {
+      tap(...R.soundClose);
+      await sleep(900);
       xml = uiDump();
       if (onPostPage(xml)) return;
     }
 
     tap(...R.editorNext);
-    await sleep(5000);
-    if (onPostPage(uiDump())) return;
-    console.log(`   \u26a0\ufe0f  not on the post page yet (attempt ${attempt}/3)`);
+    // Uploading the slides happens here, so this is the slowest step in the run:
+    // poll for up to 20s instead of guessing 5.
+    if (await waitForScreen(onPostPage, 20000)) return;
+    console.log(`   \u26a0\ufe0f  not on the post page yet (attempt ${attempt}/5)`);
   }
   throw new Error('Could not leave the editor \u2014 never reached the post page');
 }
+
+// Test harness entry point: the tap helpers need SIZE, which normally gets set
+// at the top of scheduleSlideshow.
+function setSize() { SIZE = getSize(); return SIZE; }
 
 // ── Full slideshow schedule ───────────────────────────────────────────────────
 // mediaFiles: absolute paths, already in slide order (1..N).
@@ -841,20 +982,59 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
 
   try {
     // 3. Launch TikTok Studio for this user.
+    //
+    //    Do NOT force-stop it routinely: killing the app repeatedly makes TikTok
+    //    put up a modal "Restore your experience — TikTok crashed many times…"
+    //    on the next launch, which swallows every tap for the rest of the run.
+    //    `am start` on the splash activity already brings the app to the front
+    //    and back to its home task, which is all the reset this needs.
     console.log('🚀 Launching TikTok Studio...');
     adbLoose(`shell am start --user ${userId} -n ${PKG}/${SPLASH}`);
-    await sleep(6000);
+    if (!(await waitForApp(25000))) {
+      throw new Error('TikTok Studio did not come up');
+    }
+    await sleep(2500); // let the splash hand over to the home tab
+    // NOTE: no dialog check here on purpose. The home tab autoplays a video, so
+    // a dump costs ~11s before uiautomator gives up — too much to pay on every
+    // post for something that is now rare. The picker check below catches it and
+    // the recovery path clears it.
     // TikTok Studio resumes on whatever tab was last open — force the Create tab
-    // so the "+ Upload" button is actually where we expect it.
-    tap(...R.createTab);           await sleep(2500);
+    // so the "+ Upload" button is actually where we expect it. The home tab
+    // autoplays a video, so uiautomator cannot settle here: this step stays on
+    // timing, and the picker check below is what actually verifies we got there.
+    tap(...R.createTab);           await sleep(2000);
     shot('01_create');
 
     // 4. Upload → pick slides in order → Next.
     checkStop();
-    tap(...R.uploadBtn);           await sleep(5000); shot('02_picker');
+    tap(...R.uploadBtn);
+    // Wait for the grid to actually hold enough thumbnails. Selecting against a
+    // half-rendered picker was failing the whole post.
+    const need = mediaFiles.length;
+    const ready = await waitForScreen(
+      (x) => onGrid(x) && gridCells(x).length >= Math.min(need, 9), 20000);
+    if (!ready) {
+      // Retry: a blocking dialog, a stray screen, or a Create tab tap that
+      // landed early all look the same from here. Clear the dialog, get back to
+      // a known place, and open the picker again.
+      console.log('   ⚠️  media picker did not fill — resetting to the Create tab');
+      await dismissRestoreDialog();
+      adbLoose('shell input keyevent 4'); await sleep(1200); // BACK out of wherever we are
+      await dismissRestoreDialog();
+      tap(...R.createTab);   await sleep(2500);
+      tap(...R.uploadBtn);
+      if (!(await waitForScreen((x) => onGrid(x) && gridCells(x).length >= Math.min(need, 9), 20000))) {
+        throw new Error('Media picker never showed the pushed slides');
+      }
+    }
+    shot('02_picker');
     await selectSlides(mediaFiles.length);              shot('03_selected');
     checkStop();
-    tap(...R.pickerNext);          await sleep(6000); shot('04_editor');
+    tap(...R.pickerNext);
+    if (!(await waitForScreen((x) => onEditor(x) || onPostPage(x) || inTextEditor(x), 25000))) {
+      throw new Error('Editor never opened after the media picker');
+    }
+    shot('04_editor');
 
     // 5. Replace the auto sound with a random favourite.
     checkStop();
@@ -877,10 +1057,11 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
     const dayOffset = Math.max(0, sch.dayOffset);
     console.log(`🗓️  Scheduling (phone-local) day+${dayOffset} ${String(sch.hour).padStart(2, '0')}:${String(sch.minute).padStart(2, '0')}`);
     checkStop();
-    tap(...R.schedulePostRow);     await sleep(3500); shot('07_wheels');
+    tap(...R.schedulePostRow);     await sleep(2200); shot('07_wheels');
     await setScheduleWheels(dayOffset, sch.hour, sch.minute);
     shot('08_wheels_set');
-    tap(...R.wheelDoneBtn);        await sleep(3000);
+    tap(...R.wheelDoneBtn);
+    await waitForScreen(onPostPage, 6000);
     await verifyScheduleTime(sch.hour, sch.minute);     shot('09_scheduled');
 
     // 8. Fill the two separate fields: TITLE (first line) and CAPTION (the rest +
@@ -902,11 +1083,14 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
     shot('10_caption');
 
     // 9. Finalize — the button reads "Schedule" once a time is set.
-    tap(...R.finalizeBtn);         await sleep(7000); shot('11_done');
+    tap(...R.finalizeBtn);
     // Confirm it actually left the post page. Without this the run reports
     // success whenever nothing throws -- which is how a slideshow that never
-    // got scheduled at all was reported as scheduled.
-    if (onPostPage(uiDump())) {
+    // got scheduled at all was reported as scheduled. Polling instead of a flat
+    // 7s wait: it usually clears in ~2s, and a slow upload gets up to 20.
+    const left = await waitForScreen((x) => !onPostPage(x), 20000);
+    shot('11_done');
+    if (!left) {
       throw new Error('Finalize did not go through \u2014 still on the post page');
     }
     console.log('✅ TikTok slideshow scheduled.');
@@ -917,6 +1101,7 @@ async function scheduleSlideshow({ userId, mediaFiles, caption, schedule, phoneW
   }
 }
 
-module.exports = { scheduleSlideshow, nextPhoneSlots, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast,
+module.exports = { scheduleSlideshow, nextPhoneSlots, daySlotMinutes, getPhoneNow, wallToSchedule, wallToNaiveIso, requestStop, clearStop, isStopRequested, pushImagesFast,
                    // exported for on-device calibration / selection test runs
-                   selectSlides, pickerCount, deleteImages };
+                   selectSlides, pickerCount, deleteImages,
+                   uiDump, waitForScreen, waitForApp, foregroundPkg, dismissRestoreDialog, nodeCenter, gridCells, onGrid, onEditor, onPostPage, tap, R, getSize, setSize, listImageIds };

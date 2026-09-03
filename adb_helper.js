@@ -55,9 +55,25 @@ function getProfiles() {
   }
 }
 
+// Switch the device to a GrapheneOS user profile. The switch itself takes
+// several seconds, so it is skipped when that profile is ALREADY in the
+// foreground — a 50-post batch normally runs on one profile, where this saves
+// the switch plus its settle wait on every post after the first.
+function currentUserId() {
+  try {
+    const out = runAdb('shell am get-current-user');
+    const m = String(out).trim().match(/(\d+)\s*$/);
+    return m ? parseInt(m[1], 10) : null;
+  } catch { return null; }
+}
 function switchProfile(userId) {
+  if (currentUserId() === Number(userId)) {
+    console.log(`✓ Already on GrapheneOS profile ${userId} — no switch needed.`);
+    return false;
+  }
   console.log(`🔄 Switching to GrapheneOS profile ${userId}...`);
   runAdb(`shell am switch-user ${userId}`);
+  return true;
 }
 
 function getScreenSize() {
@@ -240,8 +256,8 @@ async function postMediaToApp(platform, accountIndex, mediaFiles, caption, userI
   // tiktok_studio.js (media picker order, random favourite sound, schedule wheel).
   const isSlideshow = mediaFiles.length > 1 || /\.(png|jpg|jpeg|webp)$/i.test(mediaFiles[0] || '');
   if (platform === 'tiktok' && isSlideshow) {
-    switchProfile(userId);
-    await sleep(5000);
+    // Only pay the switch settle time when a switch actually happened.
+    if (switchProfile(userId)) await sleep(5000);
     return tiktokStudio.scheduleSlideshow({
       userId,
       mediaFiles,
@@ -258,8 +274,7 @@ async function postMediaToApp(platform, accountIndex, mediaFiles, caption, userI
   }
 
   // 1. Ensure profile is active
-  switchProfile(userId);
-  await sleep(5000); // Wait for profile switch transition
+  if (switchProfile(userId)) await sleep(5000); // Wait for profile switch transition
 
   // 2. Push media files into user `userId`'s DCIM/Camera via MediaStore.
   //    (Direct `adb push` to /storage/emulated/<userId>/ is denied for any

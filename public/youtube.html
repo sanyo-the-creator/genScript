@@ -121,8 +121,8 @@
         <h2>How it works</h2>
         <p class="muted">
           Each character has its own debug Chrome (unique port, logged into that channel) and its own inbox folder.
-          <b>First time:</b> launch the character's Chrome with the command on its card and log into its channel once —
-          the per-port profile keeps that login.
+          <b>First time:</b> hit <b>🌐 Open Chrome</b> on the card (or paste the command from the card into a terminal)
+          and log into that channel once — the per-port profile keeps that login.
           <b>After that:</b> tick <b>already logged in</b> and just hit <b>Schedule</b> — it auto-launches that
           character's Chrome (if not already open) and opens
           <a class="link" href="https://studio.youtube.com" target="_blank">studio.youtube.com</a> for you.
@@ -229,16 +229,47 @@ function charCard(c) {
       <label style="margin:0; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="cDry" style="width:auto;" /> dry-run</label>
       <button class="primary cRun" ${isRun ? 'disabled' : ''}>${isRun ? '● scheduling…' : '▶ Schedule'}</button>
       ${isRun ? '<button class="danger cStop">■ Stop</button>' : ''}
+      <button class="ghost cChrome" title="Launch this character's own isolated debug Chrome (profile yt-profile-${c.port}) and open YouTube Studio. Use it once to log in, or any time you want that window open.">🌐 Open Chrome</button>
       <button class="ghost cEdit">Edit</button>
       <button class="danger cDel" ${isRun ? 'disabled' : ''}>Delete</button>
     </div>`;
   el.querySelector('.cRun').onclick = () => runChar(c.id, el);
   el.querySelector('.cLogged').onchange = (e) => setLoggedPref(c.id, e.target.checked);
+  el.querySelector('.cChrome').onclick = (e) => openChrome(c, e.currentTarget);
   el.querySelector('.cEdit').onclick = () => editChar(c);
   el.querySelector('.cDel').onclick = () => delChar(c.id);
   const stop = el.querySelector('.cStop');
   if (stop) stop.onclick = () => fetch('/api/yt/stop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id: c.id }) });
   return el;
+}
+
+// Launch this character's OWN isolated Chrome (unique debug port + its own
+// user-data-dir, so each channel keeps a separate login) straight from the UI —
+// the server spawns it, so there's no need to paste the command into a terminal.
+// If it's already running on that port, the server just attaches and reports it.
+async function openChrome(c, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '● opening…';
+  try {
+    const r = await fetch('/api/yt/open-chrome', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: c.id, mobile: false, url: 'https://studio.youtube.com' }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      addLog(`✗ ${c.name}: ${d.error || 'could not open Chrome'}`);
+      alert(d.error || 'Could not open Chrome — launch it manually with the command on the card.');
+    } else {
+      addLog(`▶ Chrome for ${c.name} is up on port ${c.port} (profile yt-profile-${c.port}).`);
+    }
+  } catch (e) {
+    addLog(`✗ ${c.name}: ${e.message || e}`);
+    alert(e.message || 'Could not reach the server.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }

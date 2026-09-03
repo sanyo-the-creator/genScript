@@ -346,14 +346,14 @@
     "subAccounts": [
       {
         "id": "sub_12_1",
-        "name": "Brand A",
+        "name": " kyle_rewired",
         "accounts": {
           "instagram": {
             "username": "",
             "accountIndex": 1
           },
           "tiktok": {
-            "username": "",
+            "username": "kyler_rewired",
             "accountIndex": 1
           },
           "threads": {

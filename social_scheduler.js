@@ -420,7 +420,7 @@ function findPostsInExtractedDir(rootDir, defaultCaption = '') {
   return posts;
 }
 
-function importZipArchive(profileId, subAccountId, platforms, zipPath, fallbackCaption, startDateLabel) {
+function importZipArchive(profileId, subAccountId, platforms, zipPath, fallbackCaption, startDateLabel, postsPerDay) {
   const schedule = loadSchedule();
   
   // Create a temp folder for extraction
@@ -472,7 +472,10 @@ function importZipArchive(profileId, subAccountId, platforms, zipPath, fallbackC
     return { tasks: [], skipped: skippedCount, total: discoveredPosts.length };
   }
 
-  const targetSlots = tiktokStudio.nextPhoneSlots(newPosts.length, [15, 18, 21], 10, startDateLabel);
+  // Posts per day is user-selectable; the slot hours are derived by spreading
+  // that many posts evenly across the 1PM-9PM phone-local window.
+  const perDay = Math.max(1, Math.min(12, parseInt(postsPerDay, 10) || 3));
+  const targetSlots = tiktokStudio.nextPhoneSlots(newPosts.length, tiktokStudio.daySlotMinutes(perDay), 10, startDateLabel);
   let tasksCreated = [];
 
   newPosts.forEach((post, index) => {
@@ -526,6 +529,48 @@ function importZipArchive(profileId, subAccountId, platforms, zipPath, fallbackC
 // True while a task is driving the phone (used by the API to refuse a second run).
 function isBusy() { return inFlightTaskId; }
 
+// Ids of tasks that ran but did not fully post. A task is 'failed' when at least
+// one of its platforms threw — the successful platforms on it are recorded, and
+// executeTask skips those on a re-run, so retrying only redoes what failed.
+function failedTaskIds(ids) {
+  const set = ids && ids.length ? new Set(ids) : null;
+  return loadSchedule()
+    .filter((t) => t.status === 'failed' && (!set || set.has(t.id)))
+    .map((t) => t.id);
+}
+
+// Re-runs failed tasks one at a time, up to `rounds` passes. Most TikTok
+// failures are transient UI-timing misses (a picker that had not rendered, an
+// editor that took too long to upload), so a second attempt usually lands.
+// Returns { attempted, recovered, stillFailed }.
+async function retryFailed({ rounds = 2, ids = null } = {}) {
+  let attempted = 0;
+  for (let round = 1; round <= rounds; round++) {
+    const targets = failedTaskIds(ids);
+    if (!targets.length) break;
+    console.log(`\n🔁 Retry pass ${round}/${rounds} — ${targets.length} failed post(s)`);
+    for (const id of targets) {
+      if (tiktokStudio.isStopRequested()) {
+        console.log('⏹️  Stop requested — abandoning the retry pass.');
+        return { attempted, recovered: 0, stillFailed: failedTaskIds(ids).length, stopped: true };
+      }
+      attempted++;
+      try {
+        await processItemImmediately(id);
+      } catch (err) {
+        if (err.message === 'STOP_REQUESTED') {
+          return { attempted, recovered: 0, stillFailed: failedTaskIds(ids).length, stopped: true };
+        }
+        console.error(`Retry of ${id} errored:`, err.message);
+      }
+    }
+  }
+  const stillFailed = failedTaskIds(ids);
+  const recovered = attempted ? attempted - stillFailed.length : 0;
+  console.log(`🔁 Retry done — ${stillFailed.length} post(s) still failing.`);
+  return { attempted, recovered: Math.max(0, recovered), stillFailed: stillFailed.length };
+}
+
 module.exports = {
   isBusy,
   loadSchedule,
@@ -536,5 +581,7 @@ module.exports = {
   startSchedulerLoop,
   importZipArchive,
   processItemImmediately,
+  failedTaskIds,
+  retryFailed,
   deleteTasks
 };

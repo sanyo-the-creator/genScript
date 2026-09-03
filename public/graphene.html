@@ -149,7 +149,7 @@
         <div class="drop-zone" id="dropZone">
           <span class="big">📦</span>
           <strong>Drop a ZIP</strong> with slideshow folders, or a video / image
-          <div class="hint">Each folder in the ZIP = one post. Posts auto-schedule at 3PM / 6PM / 9PM (phone time), spilling onto the next days.</div>
+          <div class="hint">Each folder in the ZIP = one post. Posts auto-schedule between 1PM and 9PM (phone time), spilling onto the next days.</div>
         </div>
         <input type="file" id="fileInput" style="display:none" />
         <div id="fileStatus" class="hint">No file selected</div>
@@ -183,7 +183,13 @@
         <div id="timeContainer" style="margin-top: 14px;">
           <label id="timeLabel">Start date <span class="muted">(optional — defaults to today)</span></label>
           <input type="date" id="scheduleTime" />
-          <div class="hint" id="timeHint">Posts auto-schedule at 3PM / 6PM / 9PM phone time, starting from this date and rolling onto following days.</div>
+          <div class="hint" id="timeHint">Posts auto-schedule between 1PM and 9PM phone time, starting from this date and rolling onto following days.</div>
+        </div>
+
+        <div id="perDayContainer" style="margin-top: 14px;">
+          <label id="perDayLabel">Slideshows per day <span class="muted">(spread across 1PM–9PM phone time)</span></label>
+          <input type="number" id="postsPerDay" min="1" max="12" step="1" value="3" />
+          <div class="hint" id="perDayHint"></div>
         </div>
 
         <button id="addQueueBtn" class="primary" style="margin-top:18px; width:100%">Schedule post</button>
@@ -204,7 +210,8 @@
     <div>
       <div class="card">
         <h2>🗓️ Scheduled posts
-          <button id="clearDoneBtn" class="tiny" style="margin-left:auto;" onclick="clearFinished(this)">Clear done</button>
+          <button id="retryFailedBtn" class="tiny" style="margin-left:auto;" onclick="retryFailed(this)" title="Re-run every failed post. Only the platforms that actually failed are redone.">🔁 Retry failed</button>
+          <button id="clearDoneBtn" class="tiny" onclick="clearFinished(this)">Clear done</button>
           <button id="stopBtn" class="tiny" style="background:#3a1f22; border-color:#6b2b30; color:#ffb4b4;" onclick="stopScheduling(this)">⏹ Stop</button>
         </h2>
         <div id="selBar" style="display:none; align-items:center; gap:10px; margin-bottom:12px; padding:8px 11px; background:var(--panel2); border:1px solid var(--line); border-radius:8px;">
@@ -502,6 +509,31 @@
       btn.disabled = false;
     }
 
+    // Re-run the failed posts. Their media is still on disk, and each task
+    // remembers which platforms already succeeded, so nothing is posted twice.
+    async function retryFailed(btn) {
+      const ids = lastSchedule.filter(t => t.status === 'failed').map(t => t.id);
+      if (!ids.length) return alert('No failed posts to retry.');
+      if (!confirm(`Re-run ${ids.length} failed post${ids.length > 1 ? 's' : ''}? Two passes, one at a time on the phone.`)) return;
+      btn.disabled = true; btn.textContent = 'Retrying…';
+      try {
+        const r = await fetch('/api/graphene/schedule/retry-failed', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 404) {
+          alert('This server build has no retry endpoint — restart the genScript server (Ctrl+C, then `caffeinate -dis node server.js`) and try again.');
+        } else if (!r.ok) {
+          alert(d.error || `Could not start the retry pass (HTTP ${r.status}).`);
+        }
+      } catch (e) {
+        alert('Error starting the retry pass.');
+      } finally {
+        setTimeout(() => { btn.disabled = false; btn.textContent = '🔁 Retry failed'; loadQueue(); }, 1500);
+      }
+    }
+
     async function stopScheduling(btn) {
       btn.disabled = true; btn.textContent = 'Stopping…';
       try { await fetch('/api/graphene/schedule/stop', { method: 'POST' }); } catch (e) {}
@@ -516,6 +548,29 @@
         else { alert('Failed to trigger execution.'); btn.disabled = false; btn.textContent = 'Run now'; }
       } catch (e) { alert('Error triggering execution.'); btn.disabled = false; btn.textContent = 'Run now'; }
     }
+
+    // Mirrors daySlotMinutes() in tiktok_studio.js: evenly spread N posts across
+    // the 1PM-9PM window (endpoints included; a single post lands at the midpoint).
+    const WINDOW_START_MIN = 13 * 60, WINDOW_END_MIN = 21 * 60;
+    function daySlotMinutes(n) {
+      n = Math.max(1, Math.min(12, parseInt(n, 10) || 3));
+      if (n === 1) return [Math.round((WINDOW_START_MIN + WINDOW_END_MIN) / 2)];
+      const step = (WINDOW_END_MIN - WINDOW_START_MIN) / (n - 1);
+      return Array.from({ length: n }, (_, i) => Math.round(WINDOW_START_MIN + i * step));
+    }
+    function fmtSlot(mins) {
+      const h = Math.floor(mins / 60), m = mins % 60;
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      return `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''}${ampm}`;
+    }
+    function syncPerDayHint() {
+      const n = $('postsPerDay').value;
+      const slots = daySlotMinutes(n).map(fmtSlot).join(' \u00b7 ');
+      const count = daySlotMinutes(n).length;
+      $('perDayHint').textContent = `${count} post${count > 1 ? 's' : ''} per day at ${slots} (\u00b110 min jitter, never outside 1PM\u20139PM).`;
+    }
+    $('postsPerDay').addEventListener('input', syncPerDayHint);
+    syncPerDayHint();
 
     // Drag & drop upload
     const dropZone = $('dropZone');
@@ -546,7 +601,8 @@
             $('timeContainer').style.display = 'block';
             $('timeLabel').innerHTML = 'Start scheduling from date <span class="muted">(optional — defaults to today)</span>';
             $('scheduleTime').type = 'date';
-            $('timeHint').textContent = 'Posts auto-schedule across 3 slots per day (3PM, 6PM, 9PM phone time) starting from this day, rolling onto following days.';
+            $('timeHint').textContent = 'Posts auto-schedule across the slots per day set below, starting from this day and rolling onto following days.';
+            $('perDayContainer').style.display = 'block';
           } else {
             $('captionContainer').style.display = 'block';
             const capLabel = $('captionContainer').querySelector('label');
@@ -555,6 +611,7 @@
             $('timeLabel').textContent = 'Scheduled date & time';
             $('scheduleTime').type = 'datetime-local';
             $('timeHint').textContent = 'Exact date and time when this single post should be published.';
+            $('perDayContainer').style.display = 'none';
           }
         } else {
           $('fileStatus').textContent = 'Upload failed: ' + (res.error || 'Unknown error');
@@ -579,6 +636,7 @@
         profileId, subAccountId, platforms,
         caption: caption || '',
         startDate: scheduledTime || '',
+        postsPerDay: Math.max(1, Math.min(12, parseInt($('postsPerDay').value, 10) || 3)),
         scheduledTime: uploadMediaType === 'slideshow' ? (scheduledTime || '') : new Date(scheduledTime).toISOString(),
         mediaPath: uploadFilePath, fileName: uploadFileName, mediaType: uploadMediaType
       };
@@ -608,7 +666,7 @@
           $('scheduleTime').value = '';
           $('scheduleTime').type = 'date';
           $('timeLabel').innerHTML = 'Start date <span class="muted">(optional — defaults to today)</span>';
-          $('timeHint').textContent = 'Posts auto-schedule at 3PM / 6PM / 9PM phone time, starting from this date and rolling onto following days.';
+          $('timeHint').textContent = 'Posts auto-schedule between 1PM and 9PM phone time, starting from this date and rolling onto following days.';
           $('fileStatus').textContent = 'No file selected';
           $('captionContainer').style.display = 'none';
           uploadFilePath = '';
