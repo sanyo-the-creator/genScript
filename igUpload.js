@@ -6,6 +6,9 @@
 //
 //   metaUpload.js "<folder>" --port=… --targets=ig --asset-name=<ig-asset>
 //                 --ledger=meta-ig --reel --no-check [--mention=@handle] [passthrough]
+// --mention is appended to each caption, placed ABOVE the trailing hashtag block.
+// It is NOT the composer's "Tag brand" dialog: that control is Facebook-only (its
+// own tooltip says so) and does not exist on the Instagram reel composer at all.
 //
 // WHY these flags (all pinned in metaUpload.js / scheduleAll.js comments):
 //   • --targets=ig      post only to the Instagram surface.
@@ -41,7 +44,11 @@
 //   node igUpload.js "C:\path\to\export-folder" --port=9202 \
 //        [--per-day=N] [--reels-per-day=N] [--posts-per-day=N] [--start=YYYY-MM-DD] \
 //        --ig-asset-name="jonathanbale.upshift" [--tz=America/New_York] \
-//        [--ig-mention=@joinupshift] [--delete-after] [--dry-run]
+//        [--ig-mention=@joinupshift] [--no-posts] [--delete-after] [--dry-run]
+//
+//   --no-posts is forwarded to metaUpload and schedules REELS ONLY (image carousels
+//   and text posts are left untouched). The UI sends it unless "also schedule posts"
+//   is ticked, because posting carousels to Instagram is opt-in.
 //
 // Every scheduling flag not consumed here is forwarded verbatim to metaUpload.js.
 

@@ -113,6 +113,10 @@ let PLATFORM = 'meta'; // which side of the shared ledger this script owns
 let COMPOSER_URL = 'https://business.facebook.com/latest/composer';
 let REEL_COMPOSER_URL = 'https://business.facebook.com/latest/reels_composer';
 let HOME_URL = 'https://business.facebook.com/latest/home';
+// Brand account attached via the composer's "Tag brand" (branded-content) dialog,
+// e.g. "@joinupshift". Set from --mention in main(). This used to be appended to
+// the caption text; a real brand tag is what Meta actually surfaces on the post.
+let BRAND_TAG = null;
 
 // Append ?asset_id=&business_id= so Business Suite opens the composer/home in the
 // RIGHT context (a specific Instagram profile or Page in a specific business).
@@ -147,8 +151,8 @@ function parseArgs(argv) {
     // And --ledger names a separate ledger track so an IG-only pass isn't blocked
     // by items already marked done for the FB pass (default 'meta' = FB/back-compat).
     assetId: null, businessId: null, ledger: 'meta', assetName: null,
-    // Append a mention (e.g. @joinupshift) to every caption — used to tag the brand
-    // account on Instagram posts/reels. Added once, only if not already present.
+    // Brand account to tag (e.g. @joinupshift). Attached through the composer's
+    // "Tag brand" branded-content dialog — NOT appended to the caption text.
     mention: null,
     // Route video items through the dedicated REEL composer instead of the generic
     // post composer. REQUIRED for Instagram: a 9:16 vertical video is rejected by
@@ -156,6 +160,10 @@ function parseArgs(argv) {
     // reel composer accepts it. Facebook's post composer accepts 9:16, so this is
     // opt-in per pass.
     reel: false,
+    // Skip the POSTS bucket (image carousels / images / text-only) and schedule ONLY
+    // reels. Used by the Instagram pass when the operator wants reels alone - the
+    // server sends --no-posts unless the "also schedule posts" box is ticked.
+    noPosts: false,
   };
   for (const a of argv) {
     if (a === '--dry-run') args.dryRun = true;
@@ -166,6 +174,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--ledger=')) args.ledger = a.slice(9).trim() || 'meta';
     else if (a.startsWith('--asset-name=')) args.assetName = a.slice(13).trim() || null;
     else if (a.startsWith('--mention=')) { const m = a.slice(10).trim(); args.mention = m ? (m.startsWith('@') ? m : '@' + m) : null; }
+    else if (a === '--no-posts') args.noPosts = true; // reels only; posts stay unscheduled
     else if (a === '--reel') args.reel = true; // video items go via the Reel composer (needed for IG)
     else if (a.startsWith('--start=')) args.start = a.slice(8);
     else if (a.startsWith('--tz=')) args.tz = a.slice(5).trim() || DEFAULT_TARGET_TZ;
@@ -275,12 +284,38 @@ function buildCaption(parsed, base) {
   const title = String(parsed.title || base || '').trim();
   const desc = String(parsed.description || '').trim();
   const tags = Array.isArray(parsed.tags) ? parsed.tags.map(String) : [];
+  // SlideSmith writes the hashtags into `description` AND lists them again in
+  // `tags`, so appending the whole `tags` array printed every hashtag TWICE in the
+  // composer (verified live 2026-09-04: "#nofap #upshift #godfirst #quitting" on two
+  // lines). Only append the ones the text does not already carry.
+  const already = `${title}\n${desc}`.toLowerCase();
   const hashtags = tags
     .map((t) => t.trim())
     .filter(Boolean)
     .map((t) => (t.startsWith('#') ? t : '#' + t.replace(/\s+/g, '')))
+    .filter((h) => !new RegExp('(^|\\s)' + h.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s|$)').test(already))
     .join(' ');
   return [title, desc, hashtags].filter(Boolean).join('\n\n').slice(0, 2200); // IG caption cap
+}
+
+// Insert the brand mention ABOVE the caption's trailing hashtag block, so it reads
+// "…body text / @joinupshift / #nofap #upshift…" rather than being stranded after
+// the tags. The hashtags usually live at the end of `description`, not in a field
+// of their own, so this works on the finished caption text. If the caption has no
+// trailing hashtags the mention just goes on the end.
+function insertMentionBeforeHashtags(caption, mention) {
+  const HASHTAG_LINE = /^#[^\s#]+(?:\s+#[^\s#]+)*$/;
+  const lines = String(caption || '').split('\n');
+  let i = lines.length;
+  while (i > 0) {
+    const t = lines[i - 1].trim();
+    if (t === '' || HASHTAG_LINE.test(t)) { i--; continue; }
+    break;
+  }
+  if (i >= lines.length) return `${caption}\n\n${mention}`.trim();
+  const head = lines.slice(0, i).join('\n').trim();
+  const tail = lines.slice(i).join('\n').trim();
+  return [head, mention, tail].filter(Boolean).join('\n\n');
 }
 
 // ── Schedule planner (identical logic to ytUpload.js) ────────────────────────
@@ -436,29 +471,264 @@ async function clearAndType(page, handle, text) {
 // (which stays ""). hours & minutes accept a typed number when focused; meridiem
 // is a 2-state toggle driven by Arrow keys. Verified live on Jonathan Bale's
 // composer 2026-08-13.
-async function setSpin(page, ariaLabel, digits) {
+async function setSpin(page, ariaLabel, digits, idx = 0) {
   let ok = false;
   for (let t = 0; t < 4 && !ok; t++) { // the picker can re-render right after the date step
-    ok = await page.evaluate((a) => {
+    ok = await page.evaluate((a, i0) => {
       const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const i = Array.from(document.querySelectorAll('input')).filter(vis).find((x) => (x.getAttribute('aria-label') || '') === a);
+      const i = Array.from(document.querySelectorAll('input')).filter(vis)
+        .filter((x) => (x.getAttribute('aria-label') || '') === a)[i0];
       if (!i) return false; i.focus(); return true;
-    }, ariaLabel);
+    }, ariaLabel, idx);
     if (!ok) await sleep(600);
   }
-  if (!ok) { console.warn(`   ! time field "${ariaLabel}" not found.`); return; }
+  if (!ok) { console.warn(`   ! time field "${ariaLabel}" (row ${idx + 1}) not found.`); return; }
   await sleep(120);
   await page.keyboard.type(String(Number(digits)), { delay: 110 }); // "00" → "0" (valuenow 0 renders as 00)
   await sleep(250);
 }
 // meridiem: read aria-valuetext ("AM"/"PM"); if not the target, Arrow-toggle it.
-async function setMeridiem(page, want) {
-  const cur = await page.evaluate(() => {
-    const i = Array.from(document.querySelectorAll('input')).find((x) => (x.getAttribute('aria-label') || '') === 'meridiem');
+async function setMeridiem(page, want, idx = 0) {
+  const cur = await page.evaluate((i0) => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const i = Array.from(document.querySelectorAll('input')).filter(vis)
+      .filter((x) => (x.getAttribute('aria-label') || '') === 'meridiem')[i0];
     if (!i) return null; i.focus(); return i.getAttribute('aria-valuetext');
-  });
-  if (cur === null) { console.warn('   ! meridiem field not found.'); return; }
+  }, idx);
+  if (cur === null) { console.warn(`   ! meridiem field (row ${idx + 1}) not found.`); return; }
   if ((cur || '').toUpperCase() !== want) { await page.keyboard.press('ArrowUp'); await sleep(200); }
+}
+
+// Business Suite renders ONE date + time row PER SURFACE. With both the Facebook
+// Page and Instagram selected there are TWO of them, stacked under "Facebook" and
+// "Instagram" headings. The old code addressed each control with .find(), i.e. only
+// ever the FIRST row: the Facebook row got our time while the Instagram row kept
+// its "now + 10 min" default, and on a late-night run Facebook's copy landed inside
+// the 20-minute floor and the composer refused it ("Scheduled posts need to be
+// shared between 20 minutes and 29 days from when you create them"). Verified live
+// 2026-09-04. So: count the rows and fill EVERY one, addressing each by index.
+function countWhenRows(page) {
+  return page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const ins = Array.from(document.querySelectorAll('input')).filter(vis);
+    const dates = ins.filter((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
+    const hours = ins.filter((x) => (x.getAttribute('aria-label') || '') === 'hours');
+    return Math.max(dates.length, hours.length);
+  });
+}
+
+// Read back every row so the caller can verify ALL of them stuck, not just row 1.
+function readWhenRows(page) {
+  return page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const ins = Array.from(document.querySelectorAll('input')).filter(vis);
+    const pick = (a) => ins.filter((x) => (x.getAttribute('aria-label') || '') === a);
+    const dates = ins.filter((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
+    const H = pick('hours'), M = pick('minutes'), P = pick('meridiem');
+    const g = (arr, i) => (arr[i] ? (arr[i].getAttribute('aria-valuetext') || arr[i].getAttribute('aria-valuenow') || '?') : '?');
+    const rows = [];
+    for (let i = 0; i < Math.max(dates.length, H.length); i++) {
+      rows.push({ date: dates[i] ? dates[i].value : '?', hours: g(H, i), time: `${g(H, i)}:${g(M, i)} ${g(P, i)}` });
+    }
+    return rows;
+  });
+}
+
+// Fill the date + the three time spinbuttons for EVERY schedule row on screen.
+async function fillWhenRows(page, dateNumeric, tm) {
+  const rows = await countWhenRows(page);
+  if (!rows) { console.warn('   ! no date/time row found - set the schedule manually.'); return 0; }
+  if (rows > 1) console.log(`   • ${rows} schedule rows (one per surface) - filling each.`);
+  for (let r = 0; r < rows; r++) {
+    // Focus the date input via JS .focus(), NOT ElementHandle.click(): a synthesized
+    // mouse click can land on the "Set date and time" switch and flip scheduling off.
+    const focused = await page.evaluate((i0) => {
+      const vis = (el) => { const rc = el.getBoundingClientRect(); return rc.width > 0 && rc.height > 0; };
+      const d = Array.from(document.querySelectorAll('input')).filter(vis)
+        .filter((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''))[i0];
+      if (!d) return false;
+      d.scrollIntoView({ block: 'center' });
+      d.focus();
+      return true;
+    }, r);
+    if (focused) {
+      await sleep(150);
+      await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
+      await sleep(150);
+      await page.keyboard.type(dateNumeric, { delay: 60 }); // numeric form; "Aug 14" reverts on blur
+      await sleep(400);
+    } else console.warn(`   ! date field for row ${r + 1} not found.`);
+    // Immediately after the date type - focusing hours blurs and commits the date.
+    if (tm) {
+      await setSpin(page, 'hours', tm[1], r);
+      await setSpin(page, 'minutes', tm[2], r);
+      await setMeridiem(page, tm[3].toUpperCase(), r);
+    }
+  }
+  return rows;
+}
+
+// ── "Tag brand" (branded content) ────────────────────────────────────────────
+// The composer's Reel details section has a "Tag brand" control that opens a modal
+// with a search box; typing the handle surfaces a "<Name> / Profile" row, and Save
+// attaches a real branded-content tag. This replaces appending "@joinupshift" to
+// the caption - the tag is a first-class link and the caption stays clean.
+// Best-effort by design: an account without branded-content access has no such
+// control, so we warn and carry on rather than failing the whole item.
+// NOTE: the modal is fixed-position, so its nodes have offsetParent === null while
+// perfectly visible - every visibility test here uses getBoundingClientRect.
+// NOT CURRENTLY CALLED. The IG reel composer has no Tag brand control (probed live
+// 2026-09-04: its Create step exposes only Add Video / Add Photos / Choose emoji /
+// Choose suggested / Choose frame / Upload image / Cancel / Next). Kept because the
+// combined FB+IG composer DOES have the dialog this drives; wire it in there if that
+// path is ever used, and drop the caption mention for those items so nothing is
+// tagged twice.
+async function tagBrand(page, handle) {
+  const query = String(handle || '').replace(/^@/, '').trim();
+  if (!query) return false;
+
+  const opened = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const b = Array.from(document.querySelectorAll('div[role="button"],span[role="button"],button')).filter(vis)
+      .find((x) => /^\s*(tag brand|tag business|add brand|branded content)\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').replace(/\s+/g, ' ').trim()));
+    if (!b) return false;
+    b.scrollIntoView({ block: 'center' });
+    b.click();
+    return true;
+  });
+  if (!opened) { console.warn(`   ! "Tag brand" control not found - @${query} NOT tagged.`); return false; }
+  await sleep(1800);
+
+  // The modal's search box: a visible input/contenteditable inside a role="dialog".
+  const box = await waitForElement(page, () => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const dlgs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis);
+    for (const d of dlgs) {
+      const i = Array.from(d.querySelectorAll('input[type="text"],input[type="search"],input:not([type]),[contenteditable="true"]')).filter(vis)[0];
+      if (i) return i;
+    }
+    return null;
+  }, { timeout: 8000, interval: 400 });
+  if (!box) { console.warn(`   ! Tag-brand search box never appeared - @${query} NOT tagged.`); return false; }
+  await box.click();
+  await sleep(150);
+  await page.keyboard.type(query, { delay: 60 });
+  await box.dispose();
+
+  // Wait for a result row, then click it. Rows render as "<Display name>Profile";
+  // match with non-alphanumerics stripped so "joinupshift" hits "Join Upshift".
+  let clicked = false;
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline && !clicked) {
+    clicked = await page.evaluate((q) => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const nm = (t) => (t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const dlg = Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis).pop();
+      if (!dlg) return false;
+      const rows = Array.from(dlg.querySelectorAll('[role="option"],[role="button"],[role="menuitem"],li')).filter(vis)
+        .filter((x) => { const t = (x.textContent || '').replace(/\s+/g, ' ').trim(); return t.length > 0 && t.length < 120; });
+      const hit = rows.find((x) => nm(x.textContent).startsWith(nm(q)));
+      if (!hit) return false;
+      hit.click();
+      return true;
+    }, query);
+    if (!clicked) await sleep(600);
+  }
+  if (!clicked) {
+    console.warn(`   ! No "${query}" row in the tag-brand results - closing the dialog untagged.`);
+    await page.keyboard.press('Escape').catch(() => {});
+    await sleep(600);
+    return false;
+  }
+  await sleep(900);
+
+  const saved = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const dlg = Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis).pop();
+    if (!dlg) return false;
+    const b = Array.from(dlg.querySelectorAll('div[role="button"],button')).filter(vis)
+      .find((x) => /^\s*(save|done)\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+    if (!b || b.getAttribute('aria-disabled') === 'true' || b.disabled === true) return false;
+    b.click();
+    return true;
+  });
+  if (!saved) { console.warn(`   ! Tag-brand "Save" not clickable - @${query} may not be attached.`); return false; }
+  await sleep(1500);
+  console.log(`   • tagged brand @${query}`);
+  return true;
+}
+
+// ── Thumbnail: first frame ───────────────────────────────────────────────────
+// The Thumbnail section offers "Choose suggested" / "Choose frame" / "Upload image".
+// "Choose suggested" picks whatever Meta liked (often a mid-clip frame with the
+// subject mid-blink). We want frame 0, which lives behind "Choose frame": that tab
+// shows a scrubber (role="slider" or input[type=range]) over the video. Drive it to
+// its minimum with the Home key, falling back to a long ArrowLeft run for sliders
+// that ignore Home. Best-effort - a missing Thumbnail section is not fatal.
+// ── Thumbnail: earliest suggested frame ──────────────────────────────────────
+// The Thumbnail section offers "Choose suggested" / "Choose frame" / "Upload image".
+// Two of those are dead ends for automation, both probed live 2026-09-04 on the IG
+// reel composer:
+//   - "Choose frame" renders its scrubber into a bare <canvas>; there is no
+//     role="slider" and no input[type=range] to drive (both query empty).
+//   - "Upload image" goes through the File System Access API (window.showOpenFilePicker
+//     is present and native, and no input[type=file] ever appears), which Puppeteer's
+//     waitForFileChooser does not intercept — it hooks the classic input path only.
+//     That is why "Add Video" can be fed a file but the thumbnail cannot.
+// So take the FIRST tile under "Choose suggested": Meta's suggestions run in
+// chronological order, making the leftmost one the earliest frame it will offer.
+// It is not guaranteed to be frame 0. Best-effort; never fatal.
+async function setThumbnailFirstFrame(page, videoPath) {
+  if (!videoPath) return false; // carousels and text posts have no video
+
+  const tab = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const lab = (x) => (x.getAttribute('aria-label') || x.textContent || '').replace(/\s+/g, ' ').trim();
+    const b = Array.from(document.querySelectorAll('div[role="button"],div[role="tab"],div[role="radio"],button')).filter(vis)
+      .find((x) => /^choose suggested$/i.test(lab(x)));
+    if (!b) return false;
+    b.scrollIntoView({ block: 'center' });
+    b.click();
+    return true;
+  });
+  if (!tab) { console.warn('   ! "Choose suggested" tab not found - leaving the default thumbnail.'); return false; }
+  await sleep(3000);
+
+  // Locate the leftmost tile in the strip below the tab row. Tiles are <img>s; the
+  // clickable is usually an ancestor, so click by COORDINATE rather than guessing
+  // which wrapper carries the handler.
+  const spot = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const lab = (x) => (x.getAttribute('aria-label') || x.textContent || '').replace(/\s+/g, ' ').trim();
+    const tab = Array.from(document.querySelectorAll('div[role="button"],div[role="tab"],button')).filter(vis)
+      .find((x) => /^choose suggested$/i.test(lab(x)));
+    if (!tab) return null;
+    const ty = tab.getBoundingClientRect().bottom;
+    const tiles = Array.from(document.querySelectorAll('img')).filter(vis)
+      .map((i) => i.getBoundingClientRect())
+      .filter((r) => r.top >= ty - 4 && r.height > 40 && r.width > 20)
+      .sort((a, b) => (Math.round(a.top / 20) - Math.round(b.top / 20)) || (a.left - b.left));
+    if (!tiles.length) return null;
+    const r = tiles[0];
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), count: tiles.length };
+  });
+  if (!spot) { console.warn('   ! no suggested thumbnail tiles found - leaving the default thumbnail.'); return false; }
+
+  await page.mouse.click(spot.x, spot.y);
+  await sleep(1500);
+
+  // Some variants pop a confirm/apply step for the chosen cover.
+  await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const dlg = Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis).pop();
+    const scope = dlg || document;
+    const b = Array.from(scope.querySelectorAll('div[role="button"],button')).filter(vis)
+      .find((x) => /^\s*(save|done|apply|confirm)\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+    if (b && b.getAttribute('aria-disabled') !== 'true') b.click();
+  }).catch(() => {});
+  await sleep(1200);
+  console.log(`   • thumbnail set to the earliest suggested frame (tile 1 of ${spot.count})`);
+  return true;
 }
 
 // Find the first VISIBLE element whose accessible text matches `reSource`
@@ -568,17 +838,72 @@ async function selectTargets(page, targets) {
 // sets the session. Call this once before scheduling so every composer nav lands
 // in the right context (e.g. the standalone Instagram profile). `name` is the
 // text shown in the switcher row (e.g. "upshift.productivity"). Best-effort.
+const normName = (t) => (t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Read the labels on the top-left switcher button. Business Suite puts the ACTIVE
+// asset's name there, so this tells us which context we are already in.
+function readActiveContextLabels(page) {
+  return page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top < 140 && r.left < 420; };
+    const out = [];
+    for (const b of Array.from(document.querySelectorAll('div[role="button"],[aria-haspopup],button')).filter(vis)) {
+      const t = (b.getAttribute('aria-label') || b.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length < 80) out.push(t);
+    }
+    return [...new Set(out)];
+  }).catch(() => []);
+}
+
+// The switcher popup is open iff its search box is on screen. Every other signal
+// (a click landing, a spinner) lies; this one does not.
+function switcherIsOpen(page) {
+  return page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    return Array.from(document.querySelectorAll('input')).filter(vis)
+      .some((i) => /search for a business asset/i.test(i.placeholder || ''));
+  }).catch(() => false);
+}
+
 async function switchContext(page, name) {
   await page.goto('https://business.facebook.com/latest/home', { waitUntil: 'networkidle2' }).catch(() => {});
   await sleep(4000);
-  // open the switcher (top-left button)
-  await page.evaluate(() => {
-    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top < 120 && r.left < 380; };
-    const b = Array.from(document.querySelectorAll('div[role="button"],[aria-haspopup],button')).filter(vis)
-      .find((x) => /upshift|business asset|switch|productivity/i.test((x.getAttribute('aria-label') || x.textContent || '')));
-    if (b) b.click();
-  });
-  await sleep(1800);
+
+  // SHORTCUT: if the active context ALREADY is the asset we want, there is nothing
+  // to switch and opening the popup only risks clicking the wrong row. Business
+  // Suite restores the last asset context on load (the home URL comes back carrying
+  // ?asset_id=…&business_id=…), so on a repeat run this is the normal path.
+  // Exact normalized equality only — 'Upshift' and 'Upshift: #1 Productivity App'
+  // are prefix-twins and a substring test would confuse them.
+  const activeLabels = await readActiveContextLabels(page);
+  if (activeLabels.some((t) => normName(t) === normName(name))) {
+    console.log('  (already in that asset context — no switch needed)');
+    return { picked: name, url: page.url(), assets: activeLabels, popupOpen: false, alreadyActive: true };
+  }
+
+  // Open the switcher (top-left button). The old code fired one click at a
+  // hardcoded name regex ('upshift|business asset|switch|productivity') and never
+  // checked whether the popup actually appeared — so a failed open was reported
+  // downstream as "your asset is not in this login", which is a completely
+  // different problem. Retry, widen the net each pass, and VERIFY.
+  let popupOpen = await switcherIsOpen(page);
+  for (let attempt = 0; attempt < 3 && !popupOpen; attempt++) {
+    await page.evaluate((wanted) => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top < 140 && r.left < 420; };
+      const nm = (t) => (t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const btns = Array.from(document.querySelectorAll('div[role="button"],[aria-haspopup],button')).filter(vis);
+      const label = (x) => (x.getAttribute('aria-label') || x.textContent || '').replace(/\s+/g, ' ').trim();
+      // Best signal first: an explicit switcher affordance, then a button naming the
+      // asset we want, then aria-haspopup, then just the top-left-most button.
+      const b = btns.find((x) => /business asset|switch|see all assets|asset switcher/i.test(label(x)))
+        || btns.find((x) => nm(label(x)) === nm(wanted))
+        || btns.find((x) => x.hasAttribute('aria-haspopup'))
+        || btns.sort((p, q) => (p.getBoundingClientRect().top - q.getBoundingClientRect().top))[0];
+      if (b) b.click();
+    }, name).catch(() => {});
+    await sleep(2000);
+    popupOpen = await switcherIsOpen(page);
+  }
+  if (!popupOpen) console.warn('   ! the asset switcher popup never opened — the asset list below is unreliable.');
   // Pick the asset row that ACTUALLY matches the name.
   //
   // Ordering matters here. We try the UNFILTERED list FIRST and only fall back to
@@ -672,21 +997,30 @@ async function switchContext(page, name) {
   // Read back what the switcher DOES list. When the pick fails this is the single
   // most useful thing to print: it shows at a glance whether we are in the wrong
   // Business Suite login entirely (e.g. only Facebook Pages during an IG pass).
-  const assets = await page.evaluate(() => {
+  // Anchor on the search box so we read the POPUP's rows. The old version scraped
+  // by screen geometry (left < 420, top > 150), which with the popup CLOSED is just
+  // the left nav rail — that is how a failed switch came to report its assets as
+  // "Notifications, Inbox, Content, Planner, Ads, Insights, Settings, Help" and sent
+  // the operator off doing an IG login swap that was not the problem.
+  const assets = !popupOpen ? [] : await page.evaluate(() => {
     const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const NAV = /^(notifications|inbox|content|creator marketing|planner|ads|insights|all tools|edit|search|ctrl\+k|links|settings|help|home)$/i;
+    const input = Array.from(document.querySelectorAll('input')).filter(vis)
+      .find((i) => /search for a business asset/i.test(i.placeholder || ''));
+    if (!input) return [];
+    const box = input.getBoundingClientRect();
     const out = [];
-    for (const el of document.querySelectorAll('*')) {
-      if (el.children.length) continue;
+    for (const el of document.querySelectorAll('div[role="heading"]')) {
       if (!vis(el)) continue;
       const r = el.getBoundingClientRect();
-      if (r.left > 420 || r.top < 150) continue; // the switcher popup column
+      if (r.top < box.top || Math.abs(r.left - box.left) > 400) continue; // inside the popup only
       const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (t && t.length < 60) out.push(t);
+      if (t && t.length < 60 && !NAV.test(t)) out.push(t);
     }
     return [...new Set(out)];
   }).catch(() => []);
   await sleep(4000);
-  return { picked, url: page.url(), assets };
+  return { picked, url: page.url(), assets, popupOpen, alreadyActive: false };
 }
 
 // ── One REEL (Instagram) ─────────────────────────────────────────────────────
@@ -695,7 +1029,7 @@ async function switchContext(page, name) {
 // Create → Edit → Share. Caption on step 1, then Next → Next → the Share step,
 // where the "Schedule" segment reveals the SAME mm/dd/yyyy + hours/minutes/meridiem
 // controls as the post composer. Verified live on upshift.productivity 2026-08-14.
-async function uploadReel(page, entry, dryRun) {
+async function uploadReel(page, entry, dryRun, targets) {
   const { item } = entry;
   const caption = item.meta.caption;
   console.log(`\n▶ ${item.key} [reel]`);
@@ -718,6 +1052,13 @@ async function uploadReel(page, entry, dryRun) {
   while (Date.now() < upDeadline) { if (await page.evaluate(() => /100%/.test(document.body.innerText || ''))) break; await sleep(2000); }
   await sleep(2500);
 
+  // NOTE: deliberately NO selectTargets here. On a linked Page+IG asset (Jordan
+  // Bale's "Upshift, jordan.balee") posting to BOTH surfaces at once is what we
+  // want, and the only switch on that composer is "Customize post for Facebook and
+  // Instagram" — which selectTargets would match on the word "Facebook" and flip,
+  // putting the composer into per-platform customisation mode. The IG-only composers
+  // have no surface toggles at all, so there is nothing to select in either case.
+
   // 2) Caption ("Describe your reel…").
   const capBox = await waitForElement(page, () => {
     const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
@@ -726,21 +1067,95 @@ async function uploadReel(page, entry, dryRun) {
   }, { timeout: 8000, interval: 400 });
   if (capBox) { await capBox.click(); await sleep(150); await page.keyboard.type(caption, { delay: 6 }); await capBox.dispose(); await sleep(400); }
 
-  // 3) Next (Create→Edit) then Next (Edit→Share).
-  const clickNext = async (which) => {
-    const n = await waitForElement(page, () => {
-      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      return Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
-        .find((b) => /^\s*next\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim())) || null;
-    }, { timeout: 10000, interval: 400 });
-    if (!n) throw new Error(`Reel "Next" (${which}) not found.`);
-    await n.click(); await sleep(3800);
+  // 2b) Brand tag + first-frame thumbnail. Both controls live on this Create step
+  // (Reel details / Thumbnail), so do them before walking to Edit. Both are
+  // best-effort and never throw — a missing control just logs a warning.
+  await setThumbnailFirstFrame(page, item.media);
+
+  // 3) Create → Edit → Share.
+  //
+  // The old code fired one blind click per step and slept 3.8s. That is enough on
+  // the Instagram-only composer, but NOT on the linked Page+IG composer (Jordan
+  // Bale's "Upshift, jordan.balee"), where the footer Next stays DISABLED while the
+  // reel is still processing — the click silently does nothing, both steps are
+  // skipped, and the run dies later with the misleading 'Reel "Schedule" option not
+  // found on the Share step' (verified live 2026-09-04, media sat at 83%).
+  //
+  // So: poll until the footer Next is enabled, click, then VERIFY the step actually
+  // changed before moving on, retrying the click if it did not.
+  //
+  // Two different "Next" controls exist on the Create step: the thumbnail carousel
+  // arrow (aria-label "Next\u200b" — a ZERO-WIDTH SPACE, which \s does not match, so
+  // the exact regex below already rejects it) and the footer action. We take the
+  // BOTTOM-most match as a second guard.
+  const nextState = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const btns = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .filter((b) => /^\s*next\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()))
+      .sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top);
+    const b = btns[btns.length - 1];
+    if (!b) return { found: false };
+    return { found: true, disabled: b.getAttribute('aria-disabled') === 'true' || b.disabled === true };
+  });
+  const clickFooterNext = () => page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const btns = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+      .filter((b) => /^\s*next\s*$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()))
+      .sort((a, c) => a.getBoundingClientRect().top - c.getBoundingClientRect().top);
+    const b = btns[btns.length - 1];
+    if (!b) return false;
+    b.click();
+    return true;
+  });
+  // Which step are we on? Read the panel's own content rather than the step tabs,
+  // which stay clickable-looking on every step.
+  const atStep = (want) => page.evaluate((w) => {
+    const t = document.body.innerText || '';
+    if (w === 'edit') return /\bCrop\b/.test(t) && /\bAudio\b/.test(t);
+    return /scheduling options|share now|save as draft/i.test(t);
+  }, want);
+
+  const advance = async (want, label) => {
+    if (await atStep(want)) return; // already there
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Wait for the footer Next to exist AND be enabled (up to 4 min — a big reel
+      // keeps it disabled while Meta transcodes).
+      const dl = Date.now() + 240000;
+      let st = await nextState();
+      while (Date.now() < dl && (!st.found || st.disabled)) { await sleep(2000); st = await nextState(); }
+      if (!st.found) throw new Error(`Reel "Next" (${label}) not found.`);
+      if (st.disabled) {
+        // Dump what the composer actually looks like at the moment we give up.
+        // Guessing at this from outside cost a lot of slow round trips (2026-09-04).
+        const diag = await page.evaluate(() => {
+          const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+          const lab = (x) => (x.getAttribute('aria-label') || x.textContent || '').replace(/\s+/g, ' ').trim();
+          const t = document.body.innerText || '';
+          return {
+            pct: (t.match(/\b\d{1,3}%/g) || []).slice(0, 3),
+            flags: (t.match(/[^\n]*(error|unable|not supported|too (long|short|large)|must be|required|invalid|aspect|processing)[^\n]*/gi) || []).slice(0, 5),
+            nexts: Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+              .filter((x) => /next/i.test(lab(x)))
+              .map((x) => ({ lab: lab(x), top: Math.round(x.getBoundingClientRect().top), dis: x.getAttribute('aria-disabled') })),
+            dialogs: Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis).length,
+          };
+        }).catch(() => null);
+        console.log('   [diag] ' + JSON.stringify(diag));
+        throw new Error(`Reel "Next" (${label}) stayed disabled — the reel never finished processing.`);
+      }
+      await clickFooterNext();
+      // Verify we actually landed on the next step.
+      const arrive = Date.now() + 25000;
+      while (Date.now() < arrive) { await sleep(1500); if (await atStep(want)) return; }
+      console.log(`   … "${label}" click did not advance the wizard (attempt ${attempt + 1}) — retrying`);
+    }
+    throw new Error(`Reel wizard never reached the ${label} step.`);
   };
-  await clickNext('to Edit');
-  await clickNext('to Share');
+  await advance('edit', 'to Edit');
+  await advance('share', 'to Share');
 
   // 4) Share step: choose the "Schedule" segment to reveal date/time.
-  const schedSeg = await waitForText(page, '^schedule$', { timeout: 8000, interval: 400 });
+  const schedSeg = await waitForText(page, '^schedule$', { timeout: 20000, interval: 500 });
   if (!schedSeg) throw new Error('Reel "Schedule" option not found on the Share step.');
   await schedSeg.click();
   await sleep(2000);
@@ -749,26 +1164,23 @@ async function uploadReel(page, entry, dryRun) {
   // SAME controls/mechanics as the post composer.
   const dateNumeric = `${pad(entry.date.getMonth() + 1)}/${pad(entry.date.getDate())}/${entry.date.getFullYear()}`;
   const tm = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(entry.timeLabel);
-  const dateFocused = await page.evaluate(() => {
-    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const i = Array.from(document.querySelectorAll('input')).filter(vis).find((x) => /mm\/dd\/yyyy/i.test(x.placeholder || ''));
-    if (!i) return false; i.focus(); return true;
-  });
-  if (dateFocused) {
-    await sleep(150);
-    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control'); await sleep(150);
-    await page.keyboard.type(dateNumeric, { delay: 60 }); await sleep(400);
-  } else console.warn('   ! reel date field not found.');
-  if (tm) { await setSpin(page, 'hours', tm[1]); await setSpin(page, 'minutes', tm[2]); await setMeridiem(page, tm[3].toUpperCase()); }
-
-  const conf = await page.evaluate(() => {
-    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const ins = Array.from(document.querySelectorAll('input')).filter(vis);
-    const d = ins.find((i) => /mm\/dd\/yyyy/i.test(i.placeholder || ''));
-    const g = (a) => { const i = ins.find((x) => (x.getAttribute('aria-label') || '') === a); return i ? (i.getAttribute('aria-valuetext') || i.getAttribute('aria-valuenow') || '?') : '?'; };
-    return { date: d ? d.value : '?', time: `${g('hours')}:${g('minutes')} ${g('meridiem')}` };
-  });
-  console.log(`   • reel picker: date="${conf.date}" time="${conf.time}"`);
+  // Fill, read back, retry. The Share step re-renders while the reel finishes
+  // processing, which can revert a row we already typed — and with FB + IG both
+  // selected there are two rows to get right, so verify EVERY one before moving on.
+  let confRows = [];
+  let whenOk = false;
+  for (let attempt = 0; attempt < 3 && !whenOk; attempt++) {
+    await fillWhenRows(page, dateNumeric, tm);
+    confRows = await readWhenRows(page);
+    whenOk = confRows.length > 0 && confRows.every((r) => r.date === entry.dateLabel && (!tm || r.hours === String(Number(tm[1]))));
+    if (!whenOk) {
+      const shown = confRows.map((r, i) => `row${i + 1} "${r.date}" ${r.time}`).join(' | ') || '(no rows)';
+      console.log(`   … reel schedule attempt ${attempt + 1} didn't stick (${shown}) — retrying`);
+      await sleep(1500);
+    }
+  }
+  confRows.forEach((r, i) => console.log(`   • reel picker row ${i + 1}: date="${r.date}" time="${r.time}"`));
+  if (!whenOk) console.warn(`   ! Not every surface row shows ${entry.dateLabel} ${entry.timeLabel} — check the composer.`);
 
   if (dryRun) { console.log('   ✓ DRY RUN — reel filled; NOT sharing.'); return 'dry-run'; }
 
@@ -982,6 +1394,9 @@ async function uploadOne(page, entry, dryRun, targets) {
     if (reelCap) { await clearAndType(page, reelCap, caption); await reelCap.dispose(); await sleep(500); }
     else console.warn('   ! reel description box not found — posting without a caption.');
 
+    // First-frame thumbnail, same as the dedicated reel composer.
+    await setThumbnailFirstFrame(page, item.media);
+
     // Next (Create→Edit), Next (Edit→Share).
     for (const which of ['to Edit', 'to Share']) {
       const n = await waitForElement(page, () => {
@@ -1041,7 +1456,7 @@ async function uploadOne(page, entry, dryRun, targets) {
   const dateNumeric = `${pad(entry.date.getMonth() + 1)}/${pad(entry.date.getDate())}/${entry.date.getFullYear()}`;
 
   let scheduled = false;
-  let confirmWhen = { date: '?', time: '?:? ?' };
+  let confirmWhen = { on: false, rows: [] };
   for (let attempt = 0; attempt < 3 && !scheduled; attempt++) {
     if (!(await ensureSwitchOn())) { await sleep(1200); continue; } // switch not there yet
     await sleep(1500);
@@ -1052,48 +1467,32 @@ async function uploadOne(page, entry, dryRun, targets) {
     // Then select-all + type the NUMERIC mm/dd/yyyy (typing "Aug 14" displays but
     // reverts on blur; the numeric form commits). Do NOT clear to empty first —
     // Backspace corrupts the mask. Blur (focusing the time field below) finalizes.
-    const dateFocused = await page.evaluate(() => {
-      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const i = Array.from(document.querySelectorAll('input')).filter(vis)
-        .find((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
-      if (!i) return false; i.focus(); return true;
-    });
-    if (dateFocused) {
-      await sleep(150);
-      await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
-      await sleep(150);
-      await page.keyboard.type(dateNumeric, { delay: 60 });
-      await sleep(400);
-    } else {
-      console.warn('   ! Date input not found — set the date manually.');
-    }
+    // Date + time for EVERY surface row (FB and IG each get their own).
+    await fillWhenRows(page, dateNumeric, tm);
 
-    // Time — three spinbuttons (value lives in aria-valuenow / aria-valuetext).
-    // Do this IMMEDIATELY after the date type: focusing the hours segment blurs
-    // the date field and commits it. Any delay here (without blurring) lets the
-    // uncommitted numeric date revert to today.
-    if (tm) {
-      await setSpin(page, 'hours', tm[1]);
-      await setSpin(page, 'minutes', tm[2]);
-      await setMeridiem(page, tm[3].toUpperCase());
-    }
-
-    // Verify it stuck: switch on + our date + our hour.
-    confirmWhen = await page.evaluate((isReel) => {
+    // Verify it stuck: switch on, and EVERY row carrying our date + hour. Checking
+    // only the first row is how the Instagram row silently kept its default.
+    const rows = await readWhenRows(page);
+    const on = await page.evaluate((isReel) => {
       const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const ins = Array.from(document.querySelectorAll('input')).filter(vis);
+      if (isReel) {
+        return Array.from(document.querySelectorAll('input')).filter(vis)
+          .some((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
+      }
       const sw = Array.from(document.querySelectorAll('[role="switch"]')).find((x) => /set date and time/i.test(x.getAttribute('aria-label') || ''));
-      const d = ins.find((i) => /mm\/dd\/yyyy/i.test(i.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(i.value || ''));
-      const g = (a) => { const i = ins.find((x) => (x.getAttribute('aria-label') || '') === a); return i ? (i.getAttribute('aria-valuetext') || i.getAttribute('aria-valuenow') || '?') : '?'; };
-      return { on: isReel ? !!d : (sw ? sw.getAttribute('aria-checked') === 'true' : false), date: d ? d.value : '?', hours: g('hours'), time: `${g('hours')}:${g('minutes')} ${g('meridiem')}` };
+      return sw ? sw.getAttribute('aria-checked') === 'true' : false;
     }, reelWizard);
-    const dateOk = confirmWhen.date === entry.dateLabel;
-    const timeOk = !tm || confirmWhen.hours === String(Number(tm[1]));
-    scheduled = confirmWhen.on && dateOk && timeOk;
-    if (!scheduled) { console.log(`   … schedule attempt ${attempt + 1} didn't stick (on=${confirmWhen.on} date="${confirmWhen.date}" time="${confirmWhen.time}") — retrying`); await sleep(1200); }
+    confirmWhen = { on, rows };
+    const allOk = rows.length > 0 && rows.every((r) => r.date === entry.dateLabel && (!tm || r.hours === String(Number(tm[1]))));
+    scheduled = on && allOk;
+    if (!scheduled) {
+      const shown = rows.map((r, i) => `row${i + 1} "${r.date}" ${r.time}`).join(' | ') || '(no rows)';
+      console.log(`   … schedule attempt ${attempt + 1} didn't stick (on=${on} ${shown}) — retrying`);
+      await sleep(1200);
+    }
   }
   if (!scheduled) console.warn('   ! Could not lock in the schedule (switch/date/time) — check the composer before it publishes.');
-  console.log(`   • picker now: date="${confirmWhen.date}"  time="${confirmWhen.time}"`);
+  (confirmWhen.rows || []).forEach((r, i) => console.log(`   • picker row ${i + 1}: date="${r.date}"  time="${r.time}"`));
 
   // 7) Final "Schedule" button — unless dry-run.
   if (dryRun) {
@@ -1237,12 +1636,17 @@ async function uploadOne(page, entry, dryRun, targets) {
   const allItems = collectItems(args.dir);
   // Tag the brand account (e.g. @joinupshift) by appending the mention to each
   // caption once. Instagram turns @handles in the caption into real profile links.
+  // The composer's "Tag brand" dialog would be nicer, but it does not exist on the
+  // IG reel composer (probed live 2026-09-04 — see tagBrand's comment), so the
+  // caption is the only route that actually works there.
+  BRAND_TAG = null;
   if (args.mention) {
     const re = new RegExp('(^|\\s)' + args.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
     for (const it of allItems) {
       const cap = it.meta.caption || '';
-      if (!re.test(cap)) it.meta.caption = `${cap}\n\n${args.mention}`.trim().slice(0, 2200);
+      if (!re.test(cap)) it.meta.caption = insertMentionBeforeHashtags(cap, args.mention).slice(0, 2200);
     }
+    console.log(`Brand mention: ${args.mention} (placed above the hashtags in each caption)`);
   }
   // Skip only items already scheduled ON META — an item on YouTube but not Meta
   // still needs its Meta run (the cross-check the user asked for).
@@ -1280,14 +1684,54 @@ async function uploadOne(page, entry, dryRun, targets) {
     // IG lives behind its own Business Suite login, so the fix is a login swap
     // (IG_LOGIN_SWAP.md), not "connecting" anything.
     if (!sw.picked) {
-      console.error(`\n✗ Could not switch to asset "${args.assetName}". It is not listed in this Business Suite's asset switcher.`);
-      console.error(`   Assets this login actually has: ${(sw.assets || []).join(', ') || '(none read)'}`);
-      console.error(`   If this is the Instagram pass: Instagram is NOT an asset of the Facebook login's`);
-      console.error(`   portfolio. Sign this debug Chrome into the INSTAGRAM Business Suite first, as`);
-      console.error(`   described in IG_LOGIN_SWAP.md, then re-run. Nothing was scheduled.`);
-      console.error(`   If this is a Facebook pass: check --asset-name matches a Page name exactly as`);
-      console.error(`   Settings > Profiles spells it.`);
+      // TWO different failures used to print the same message. Separate them: a
+      // switcher that never opened tells you nothing about which login you are in,
+      // and sending the operator off to do an IG login swap on that evidence wastes
+      // a lot of time (2026-09-04).
+      if (!sw.popupOpen) {
+        console.error(`\n✗ The Business Suite asset switcher never opened, so "${args.assetName}" could not be selected.`);
+        console.error(`   This is NOT evidence about which login this Chrome is in — the asset list could not be read at all.`);
+        console.error(`   Current URL: ${sw.url}`);
+        console.error(`   Check the debug Chrome by hand: is the page loaded, is a modal or cookie banner covering the`);
+        console.error(`   top-left switcher, is the session logged out? Nothing was scheduled.`);
+      } else {
+        console.error(`\n✗ Could not switch to asset "${args.assetName}". It is not listed in this Business Suite's asset switcher.`);
+        console.error(`   Assets this login actually has: ${(sw.assets || []).join(', ') || '(none read)'}`);
+        console.error(`   If this is the Instagram pass: Instagram is NOT an asset of the Facebook login's`);
+        console.error(`   portfolio. Sign this debug Chrome into the INSTAGRAM Business Suite first, as`);
+        console.error(`   described in IG_LOGIN_SWAP.md, then re-run. Nothing was scheduled.`);
+        console.error(`   If this is a Facebook pass: check --asset-name matches a Page name exactly as`);
+        console.error(`   Settings > Profiles spells it.`);
+      }
       process.exit(2);
+    }
+
+    // PIN THE COMPOSER TO THE ASSET WE JUST SWITCHED TO.
+    //
+    // The composer URLs were built at the top of main() from --asset-id/--business-id,
+    // and igUpload passes neither — so they were bare routes. Business Suite resolves
+    // a bare /reels_composer to the portfolio's DEFAULT asset, NOT the one the
+    // switcher just selected. On a single-asset login (Jonathan Bale) that is the same
+    // thing and nothing looked wrong; on a multi-asset login it silently composes into
+    // the wrong asset. Verified live 2026-09-04 on Jordan Bale: the switch correctly
+    // selected "jordan.balee" (asset_id 1062751303583289) and the composer then opened
+    // asset_id 973565002515112 — the combined "Upshift, jordan.balee" Page — whose
+    // Share step is the Facebook one ("Facebook reel preview", an extra Optimizations
+    // tab), so every item died on 'Reel "Schedule" option not found on the Share step'.
+    //
+    // So: read the ids back out of the post-switch URL and rebuild the composer URLs
+    // with them. An explicit --asset-id on the command line still wins.
+    const swAsset = /[?&]asset_id=(\d+)/.exec(sw.url || '');
+    const swBusiness = /[?&]business_id=(\d+)/.exec(sw.url || '');
+    if (swAsset && !args.assetId) {
+      const aid = swAsset[1];
+      const bid = args.businessId || (swBusiness ? swBusiness[1] : null);
+      COMPOSER_URL = withContext('https://business.facebook.com/latest/composer', aid, bid);
+      REEL_COMPOSER_URL = withContext('https://business.facebook.com/latest/reels_composer', aid, bid);
+      HOME_URL = withContext('https://business.facebook.com/latest/home', aid, bid);
+      console.log(`  pinned composer to asset_id=${aid}${bid ? ` business_id=${bid}` : ''}`);
+    } else if (!swAsset && !args.assetId) {
+      console.warn('   ! the post-switch URL carried no asset_id — the composer may open the default asset.');
     }
   }
 
@@ -1303,7 +1747,12 @@ async function uploadOne(page, entry, dryRun, targets) {
   // planned first; posts are planned aware of the reels' chosen times (plus any
   // existing schedule) so the two groups never double-book the same instant.
   const reels = items.filter((it) => ledgerStore.VIDEO_RE.test(it.media || ''));
-  const posts = items.filter((it) => !ledgerStore.VIDEO_RE.test(it.media || ''));
+  // --no-posts drops the whole posts bucket. Those items are simply never planned,
+  // so nothing is written to the ledger for them and a later run without the flag
+  // still picks them up.
+  const allPosts = items.filter((it) => !ledgerStore.VIDEO_RE.test(it.media || ''));
+  const posts = args.noPosts ? [] : allPosts;
+  if (args.noPosts && allPosts.length) console.log(`--no-posts: skipping ${allPosts.length} post(s) (carousels/images/text) - reels only.`);
 
   const reelPlan = planSchedule(reels, args.start, args.reelsPerDay, args.reelSlots, existing, args.tz)
     .map((p) => ({ ...p, kind: 'reel' }));
@@ -1363,7 +1812,7 @@ async function uploadOne(page, entry, dryRun, targets) {
       // and text-only posts always use the regular post composer.
       const isVideo = ledgerStore.VIDEO_RE.test(entry.item.media || '');
       const doUpload = () => (args.reel && isVideo)
-        ? uploadReel(page, entry, args.dryRun)
+        ? uploadReel(page, entry, args.dryRun, args.targets)
         : uploadOne(page, entry, args.dryRun, args.targets);
       // Business Suite's composer is FLAKY per-step (the file chooser occasionally
       // doesn't open, a re-render drops the schedule fields, etc.) — each usually
