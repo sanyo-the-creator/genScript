@@ -31,7 +31,7 @@ const { spawn } = require('child_process');
 
 function parseArgs(argv) {
   const args = {
-    dir: null, port: null, xPort: null, igAssetName: null, fbAssetName: null, igMention: '@joinupshift',
+    dir: null, port: null, xPort: null, igAssetName: null, fbAssetName: null, igMention: '', igCta: 'auto',
     platforms: ['youtube', 'fb', 'ig', 'x', 'threads'],
     passthrough: [], // flags forwarded to every driver (--per-day, --start, --tz, --dry-run)
   };
@@ -42,6 +42,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--ig-asset-name=')) args.igAssetName = a.slice(16).replace(/^"|"$/g, '');
     else if (a.startsWith('--fb-asset-name=')) args.fbAssetName = a.slice(16).replace(/^"|"$/g, '');
     else if (a.startsWith('--ig-mention=')) args.igMention = a.slice(13).replace(/^"|"$/g, '');
+    else if (a.startsWith('--ig-cta=')) args.igCta = a.slice(9).replace(/^"|"$/g, '');
     else if (a === '--dry-run' || a.startsWith('--per-day=') || a.startsWith('--start=') || a.startsWith('--tz=') ||
              a.startsWith('--reels-per-day=') || a.startsWith('--posts-per-day=') || a.startsWith('--slots=')) args.passthrough.push(a);
     else if (!a.startsWith('--') && !args.dir) args.dir = a;
@@ -67,7 +68,7 @@ function passesFor(args) {
     // swap described in IG_LOGIN_SWAP.md before running a platform list with ig in
     // it, or run ig on its own after the browser passes. Without the swap metaUpload
     // aborts this pass with exit 2 and the rest of the run continues.
-    ig:      { label: 'Instagram', script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=ig', `--asset-name=${igName}`, '--ledger=meta-ig', '--reel', '--no-check', ...(args.igMention ? [`--mention=${args.igMention}`] : []), ...p] },
+    ig:      { label: 'Instagram', script: 'metaUpload.js', args: [args.dir, `--port=${port}`, '--targets=ig', `--asset-name=${igName}`, '--ledger=meta-ig', '--reel', '--no-check', ...(args.igMention ? [`--mention=${args.igMention}`] : []), ...(args.igCta ? [args.igCta === 'auto' ? '--cta' : `--cta=${args.igCta}`] : []), ...p] },
     x:       { label: 'X (Twitter)', script: 'xUpload.js',  args: [args.dir, `--port=${xPort}`, ...p] },
     // Threads has no native scheduler → this pass only QUEUES due-times (no browser,
     // no port). Publishing happens later via `threadsUpload.js --worker`. We forward

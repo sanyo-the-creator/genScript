@@ -2397,7 +2397,14 @@ const server = http.createServer(async (req, res) => {
           cliArgs = [IG_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`,
             `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`,
             `--ig-asset-name=${igAsset}`];
+          // Image carousels / text posts are OPT-IN on Instagram: by default an IG run
+          // schedules reels only. The UI checkbox ("also schedule posts") sets igPosts.
+          if (!p.igPosts) cliArgs.push('--no-posts');
           if (c.igMention) cliArgs.push(`--ig-mention=${c.igMention}`);
+          // Comment-to-DM CTA. igUpload defaults it ON ('auto' = rotate the built-in
+          // lines); a character can pin its own wording with "igCta", or switch it
+          // off with an empty string.
+          if (typeof c.igCta === 'string') cliArgs.push(c.igCta ? `--ig-cta=${c.igCta}` : '--no-ig-cta');
         } else if (isFb) {
           // Facebook-only pass: the post composer accepts 9:16, so no --reel needed.
           //

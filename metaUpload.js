@@ -117,6 +117,30 @@ let HOME_URL = 'https://business.facebook.com/latest/home';
 // e.g. "@joinupshift". Set from --mention in main(). This used to be appended to
 // the caption text; a real brand tag is what Meta actually surfaces on the post.
 let BRAND_TAG = null;
+// Comment-to-DM call to action, inserted into the IG caption above the hashtag
+// block (same placement rule as the brand mention). The ReplyKaro automation is
+// keyed on the word "guide" across ALL POSTS/REELS, so every caption has to
+// actually contain that word - these lines are what triggers the funnel.
+// Rotated per item (deterministic by index) so a month of scheduled reels does
+// not read as the same copy-pasted sentence.
+const CTA_LINES = [
+  'comment "guide" and i\'ll send you exactly how i quit \u{1F33D}',
+  'comment "guide" to see how i quit \u{1F33D} (i\'ll dm you the setup)',
+  'comment "guide" and i\'ll dm you the phone + pc setup that worked \u{1F33D}',
+  'if you\'re on day 1 again, comment "guide" and i\'ll send you what fixed it \u{1F33D}',
+  'comment "guide" \u{1F33D} i\'ll send you the exact setup, no cope',
+  'comment "guide" and i\'ll dm you how i stopped relapsing \u{1F33D}',
+];
+// null = no CTA (Facebook passes). 'auto' = rotate CTA_LINES. Any other string is
+// used verbatim in every caption. Set from --cta in main().
+let CTA_MODE = null;
+// Context ids of the asset we are composing into, captured after switchContext so
+// uploadReel can build the scheduled-list URL for its success check.
+// Items whose Share click could not be confirmed in the scheduled list. They are
+// treated as scheduled (see uploadReel) and printed at the end for a manual check.
+const UNVERIFIED = [];
+let args_assetIdForCheck = null;
+let args_businessIdForCheck = null;
 
 // Append ?asset_id=&business_id= so Business Suite opens the composer/home in the
 // RIGHT context (a specific Instagram profile or Page in a specific business).
@@ -154,6 +178,9 @@ function parseArgs(argv) {
     // Brand account to tag (e.g. @joinupshift). Attached through the composer's
     // "Tag brand" branded-content dialog — NOT appended to the caption text.
     mention: null,
+    // Comment-to-DM call to action woven into the caption above the hashtags.
+    // null = off, 'auto' = rotate CTA_LINES, any other string = that exact line.
+    cta: null,
     // Route video items through the dedicated REEL composer instead of the generic
     // post composer. REQUIRED for Instagram: a 9:16 vertical video is rejected by
     // the post composer ("aspect ratio 4:5–16:9", Schedule stays disabled), but the
@@ -174,6 +201,9 @@ function parseArgs(argv) {
     else if (a.startsWith('--ledger=')) args.ledger = a.slice(9).trim() || 'meta';
     else if (a.startsWith('--asset-name=')) args.assetName = a.slice(13).trim() || null;
     else if (a.startsWith('--mention=')) { const m = a.slice(10).trim(); args.mention = m ? (m.startsWith('@') ? m : '@' + m) : null; }
+    else if (a === '--cta') args.cta = 'auto';                                  // rotate the built-in CTA lines
+    else if (a === '--no-cta') args.cta = null;                                 // explicit off (beats an earlier --cta)
+    else if (a.startsWith('--cta=')) { const c = a.slice(6).replace(/^"|"$/g, '').trim(); args.cta = c || null; }
     else if (a === '--no-posts') args.noPosts = true; // reels only; posts stay unscheduled
     else if (a === '--reel') args.reel = true; // video items go via the Reel composer (needed for IG)
     else if (a.startsWith('--start=')) args.start = a.slice(8);
@@ -282,7 +312,11 @@ function collectCarousels(dir) {
 function buildCaption(parsed, base) {
   if (parsed.caption && String(parsed.caption).trim()) return String(parsed.caption).trim();
   const title = String(parsed.title || base || '').trim();
-  const desc = String(parsed.description || '').trim();
+  let desc = String(parsed.description || '').trim();
+  // SlideSmith often writes the SAME string into title AND description, which
+  // printed the hook twice at the top of the caption and pushed everything else
+  // past Instagram's ~125-char "... more" fold. Keep it once.
+  if (desc && desc.toLowerCase() === title.toLowerCase()) desc = '';
   const tags = Array.isArray(parsed.tags) ? parsed.tags.map(String) : [];
   // SlideSmith writes the hashtags into `description` AND lists them again in
   // `tags`, so appending the whole `tags` array printed every hashtag TWICE in the
@@ -296,6 +330,18 @@ function buildCaption(parsed, base) {
     .filter((h) => !new RegExp('(^|\\s)' + h.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s|$)').test(already))
     .join(' ');
   return [title, desc, hashtags].filter(Boolean).join('\n\n').slice(0, 2200); // IG caption cap
+}
+
+// Drop a caption's first non-empty line (and the blank line after it). Used by the
+// CTA pass so the generated "<hook> with Upshift…" headline does not survive into
+// the Instagram caption, where the CTA is the headline instead.
+function dropFirstLine(caption) {
+  const lines = String(caption || '').split('\n');
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === '') i++;   // leading blanks
+  if (i < lines.length) i++;                                 // the line itself
+  while (i < lines.length && lines[i].trim() === '') i++;    // the blank after it
+  return lines.slice(i).join('\n').trim();
 }
 
 // Insert the brand mention ABOVE the caption's trailing hashtag block, so it reads
@@ -1639,6 +1685,32 @@ async function uploadOne(page, entry, dryRun, targets) {
   // The composer's "Tag brand" dialog would be nicer, but it does not exist on the
   // IG reel composer (probed live 2026-09-04 — see tagBrand's comment), so the
   // caption is the only route that actually works there.
+  // The CTA opens the caption (it is the only line Instagram shows before the
+  // "... more" fold); the brand mention still sits just above the hashtags.
+  // The hashtags are untouched - they come from the item's own JSON `tags`.
+  CTA_MODE = args.cta;
+  if (CTA_MODE) {
+    let i = 0;
+    for (const it of allItems) {
+      const cap = it.meta.caption || '';
+      // Skip a caption that already asks for the comment, so a re-run (or a JSON
+      // that hand-writes its own CTA) does not stack two of them.
+      if (/comment\s+["']?guide/i.test(cap)) continue;
+      const line = CTA_MODE === 'auto' ? CTA_LINES[i++ % CTA_LINES.length] : CTA_MODE;
+      // FIRST LINE, not above the hashtags: Instagram folds a caption after ~125
+      // characters and only the opening line is visible in the feed. The CTA is
+      // the whole point of the post, so it goes where it is actually read.
+      //
+      // The CTA also REPLACES the caption's opening line. SlideSmith writes the same
+      // "<hook> with \"Upshift: #1 Productivity App\"" string into title and
+      // description on every clip, so on Instagram it was ad copy sitting between the
+      // CTA and the hashtags on every single reel. Facebook still gets it - this runs
+      // only when --cta is on, i.e. the IG pass.
+      it.meta.caption = `${line}\n\n${dropFirstLine(cap)}`.trim().slice(0, 2200);
+    }
+    console.log(`CTA: ${CTA_MODE === 'auto' ? `rotating ${CTA_LINES.length} comment-to-DM lines` : `"${CTA_MODE}"`} (caption's first line replaced by it)`);
+  }
+
   BRAND_TAG = null;
   if (args.mention) {
     const re = new RegExp('(^|\\s)' + args.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');

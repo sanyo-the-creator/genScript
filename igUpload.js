@@ -58,16 +58,26 @@ const { spawn } = require('child_process');
 // NO default IG profile name. There used to be one ('upshift.productivity') and it
 // was wrong for at least one character (Jonathan Bale's IG is jonathanbale.upshift),
 // which would have aimed the run at a different account. The caller must state it.
-const DEFAULT_IG_MENTION = '@joinupshift';       // brand tag appended to captions (once)
+// OFF by default. The brand mention used to sit on its own line between the
+// description and the hashtags; the caption now leads with the comment-to-DM CTA
+// and the extra @handle line only pushed the real content further down. Pass
+// --ig-mention=@handle to put it back for a run.
+const DEFAULT_IG_MENTION = '';
+// Comment-to-DM CTA. 'auto' rotates metaUpload's built-in lines; a string is used
+// verbatim; '' (via --ig-cta=) turns it off. ON by default because the ReplyKaro
+// automation only fires on captions that ask for the comment.
+const DEFAULT_IG_CTA = 'auto';
 
 function parseArgs(argv) {
-  const args = { dir: null, igAssetName: null, igMention: DEFAULT_IG_MENTION, passthrough: [] };
+  const args = { dir: null, igAssetName: null, igMention: DEFAULT_IG_MENTION, igCta: DEFAULT_IG_CTA, passthrough: [] };
   for (const a of argv) {
     if (a.startsWith('--ig-asset-name=')) args.igAssetName = a.slice(16).replace(/^"|"$/g, '').trim() || null;
     else if (a.startsWith('--ig-mention=')) args.igMention = a.slice(13).replace(/^"|"$/g, '').trim();
+    else if (a.startsWith('--ig-cta=')) args.igCta = a.slice(9).replace(/^"|"$/g, '').trim();
+    else if (a === '--no-ig-cta') args.igCta = '';
     // Drop any IG-defining flags a caller might pass — igUpload OWNS these so the
     // wrapper can't be pointed at the wrong surface/ledger/context by accident.
-    else if (/^--(targets|ledger|asset-name|reel|no-check|mention)(=|$)/.test(a)) continue;
+    else if (/^--(targets|ledger|asset-name|reel|no-check|mention|cta|no-cta)(=|$)/.test(a)) continue;
     else if (!a.startsWith('--') && !args.dir) args.dir = a;
     else args.passthrough.push(a); // --port, --per-day, --start, --tz, --dry-run, --delete-after, slots, …
   }
@@ -95,6 +105,7 @@ function parseArgs(argv) {
     '--reel',
     '--no-check',
     ...(args.igMention ? [`--mention=${args.igMention}`] : []),
+    ...(args.igCta ? [args.igCta === 'auto' ? '--cta' : `--cta=${args.igCta}`] : []),
     ...args.passthrough,
   ];
 
