@@ -124,12 +124,12 @@ let BRAND_TAG = null;
 // Rotated per item (deterministic by index) so a month of scheduled reels does
 // not read as the same copy-pasted sentence.
 const CTA_LINES = [
-  'comment "guide" and i\'ll send you exactly how i quit \u{1F33D}',
-  'comment "guide" to see how i quit \u{1F33D} (i\'ll dm you the setup)',
-  'comment "guide" and i\'ll dm you the phone + pc setup that worked \u{1F33D}',
-  'if you\'re on day 1 again, comment "guide" and i\'ll send you what fixed it \u{1F33D}',
-  'comment "guide" \u{1F33D} i\'ll send you the exact setup, no cope',
-  'comment "guide" and i\'ll dm you how i stopped relapsing \u{1F33D}',
+  'comment/DM "guide" and i\'ll send you exactly how i quit \u{1F33D} for free',
+  'comment/DM "guide" to see how i quit \u{1F33D} (i\'ll dm you the setup, free)',
+  'comment/DM "guide" and i\'ll dm you the phone + pc setup that worked, for free \u{1F33D}',
+  'if you\'re on day 1 again, comment/DM "guide" and i\'ll send you what fixed it, free \u{1F33D}',
+  'comment/DM "guide" \u{1F33D} i\'ll send you the exact setup for free, no cope',
+  'comment/DM "guide" and i\'ll dm you how i stopped relapsing \u{1F33D} for free',
 ];
 // null = no CTA (Facebook passes). 'auto' = rotate CTA_LINES. Any other string is
 // used verbatim in every caption. Set from --cta in main().
@@ -1695,7 +1695,7 @@ async function uploadOne(page, entry, dryRun, targets) {
       const cap = it.meta.caption || '';
       // Skip a caption that already asks for the comment, so a re-run (or a JSON
       // that hand-writes its own CTA) does not stack two of them.
-      if (/comment\s+["']?guide/i.test(cap)) continue;
+      if (/comment(?:\/dm)?\s+["']?guide/i.test(cap)) continue;
       const line = CTA_MODE === 'auto' ? CTA_LINES[i++ % CTA_LINES.length] : CTA_MODE;
       // FIRST LINE, not above the hashtags: Instagram folds a caption after ~125
       // characters and only the opening line is visible in the feed. The CTA is
