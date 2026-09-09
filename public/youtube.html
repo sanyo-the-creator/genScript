@@ -55,6 +55,8 @@
   .seg button.active { background: var(--accent2); color: #fff; }
   .err { color: var(--bad); font-size: 12px; margin-top: 8px; min-height: 16px; }
   a.link { color: var(--accent); }
+  .bulkbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
+  .bulkbar select, .bulkbar input[type=number], .bulkbar input[type=date] { width: auto; }
 </style>
 </head>
 <body>
@@ -75,6 +77,26 @@
             <button data-os="mac">🍎 macOS</button>
             <button data-os="windows">🪟 Windows</button>
           </div>
+        </div>
+        <div class="bulkbar">
+          <label style="margin:0;" title="Runs every character that has this platform ticked as logged in.">bulk platform</label>
+          <select id="bulkPlatform" style="width:170px;">
+            <option value="youtube">YouTube (Shorts)</option>
+            <option value="fb">Facebook</option>
+            <option value="ig">Instagram</option>
+            <option value="x">X (Twitter)</option>
+            <option value="threads">Threads (API)</option>
+            <option value="all">All platforms (per character)</option>
+          </select>
+          <label style="margin:0;">per day</label>
+          <input type="number" id="bulkPerDay" value="3" min="1" max="25" style="width:64px;" />
+          <label style="margin:0;">start</label>
+          <input type="date" id="bulkStart" style="width:150px;" />
+          <label style="margin:0; display:flex; align-items:center; gap:4px;" title="Auto-launch each character's debug Chrome if it is not already open."><input type="checkbox" id="bulkLogged" style="width:auto;" checked /> already logged in</label>
+          <label class="bulkIgPostsWrap" style="margin:0; display:none; align-items:center; gap:4px;" title="Instagram only. Also schedule image carousels / text posts."><input type="checkbox" id="bulkIgPosts" style="width:auto;" /> also posts</label>
+          <label style="margin:0; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="bulkDry" style="width:auto;" /> dry-run</label>
+          <button class="primary" id="bulkRun">▶ Schedule all</button>
+          <span class="muted" id="bulkCount"></span>
         </div>
         <div id="charList"><p class="muted">Loading…</p></div>
       </div>
@@ -226,12 +248,19 @@ function charCard(c) {
       <label style="margin:0;">start</label>
       <input type="date" class="cStart" style="width:150px;" />
       <label style="margin:0; display:flex; align-items:center; gap:4px;" title="If this profile is already signed into its Google/YouTube channel, Schedule will auto-launch its debug Chrome (no cmd needed) and open Studio for you."><input type="checkbox" class="cLogged" style="width:auto;" ${loggedPref(c.id) ? 'checked' : ''} /> already logged in</label>
+      <label class="igPostsWrap" style="margin:0; display:none; align-items:center; gap:4px;" title="Instagram only. Off = schedule reels only. On = also schedule this character's image carousels / text posts."><input type="checkbox" class="cIgPosts" style="width:auto;" /> also posts</label>
       <label style="margin:0; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="cDry" style="width:auto;" /> dry-run</label>
       <button class="primary cRun" ${isRun ? 'disabled' : ''}>${isRun ? '● scheduling…' : '▶ Schedule'}</button>
       ${isRun ? '<button class="danger cStop">■ Stop</button>' : ''}
       <button class="ghost cEdit">Edit</button>
       <button class="danger cDel" ${isRun ? 'disabled' : ''}>Delete</button>
     </div>`;
+  // "also posts" only means anything on the Instagram pass, so show it only there.
+  const platSel = el.querySelector('.cPlatform');
+  const igPostsWrap = el.querySelector('.igPostsWrap');
+  const syncIgPosts = () => { igPostsWrap.style.display = platSel.value === 'ig' ? 'flex' : 'none'; };
+  platSel.onchange = syncIgPosts;
+  syncIgPosts();
   el.querySelector('.cRun').onclick = () => runChar(c.id, el);
   el.querySelector('.cLogged').onchange = (e) => setLoggedPref(c.id, e.target.checked);
   el.querySelector('.cEdit').onclick = () => editChar(c);
@@ -243,7 +272,9 @@ function charCard(c) {
 
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
 
+let lastCharacters = [];
 function render(data) {
+  lastCharacters = data.characters || [];
   runSet = new Set(data.runningIds || []);
   const n = runSet.size;
   $('runState').textContent = n ? `● ${n} scheduling…` : '○ idle';
@@ -252,8 +283,9 @@ function render(data) {
   $('stopBtn').textContent = n > 1 ? `Stop all (${n})` : 'Stop run';
   const list = $('charList');
   list.innerHTML = '';
-  if (!data.characters.length) { list.innerHTML = '<p class="muted">No characters yet — add one below.</p>'; return; }
+  if (!data.characters.length) { list.innerHTML = '<p class="muted">No characters yet — add one below.</p>'; syncBulk(); return; }
   for (const c of data.characters) list.appendChild(charCard(c));
+  syncBulk();
 }
 
 async function load() {
@@ -277,23 +309,16 @@ async function runChar(id, el) {
   else if (platform === 'threads') where = 'Threads API';
   else where = 'Studio';
 
-  // Instagram needs its OWN Business Suite login, which the Facebook login does not
-  // provide (see IG_LOGIN_SWAP.md). Nothing in the browser can do that swap for us,
-  // so confirm the operator has already done it rather than letting the run abort.
-  if (platform === 'ig' || platform === 'all') {
-    const ok = confirm(
-      "Instagram scheduling needs this character's debug Chrome signed into the " +
-      "INSTAGRAM Business Suite, not the Facebook one.\n\n" +
-      "Swap the login first (business.facebook.com > log out > Log in with Instagram), " +
-      "then swap back to Facebook afterwards. See IG_LOGIN_SWAP.md.\n\n" +
-      "Continue?"
-    );
-    if (!ok) { addLog('Cancelled: Instagram login swap not done yet.'); return; }
-  }
+  if (!confirmIgSwap(platform)) { addLog('Cancelled: Instagram login swap not done yet.'); return; }
 
   if (autoLaunch && platform !== 'threads') addLog(`… launching this character's Chrome (if not already open) and opening ${where}…`);
 
+  // Instagram: reels only unless the operator ticked "also posts" (image carousels
+  // / text posts). Default off on purpose.
+  const igPosts = el.querySelector('.cIgPosts')?.checked || false;
+
   const body = { id, platform, perDay, start: start || undefined, dryRun, autoLaunch };
+  if (platform === 'ig') body.igPosts = igPosts;
   if (platform === 'meta') body.targets = ['fb', 'ig']; // combined cross-post to both surfaces
 
   const r = await fetch('/api/yt/schedule', {
@@ -303,6 +328,88 @@ async function runChar(id, el) {
   const d = await r.json();
   if (!r.ok) { addLog('✗ ' + (d.error || 'failed to start')); alert(d.error || 'Failed to start'); }
 }
+
+// Instagram needs its OWN Business Suite login, which the Facebook login does not
+// provide (see IG_LOGIN_SWAP.md). Nothing in the browser can do that swap for us,
+// so confirm the operator has already done it rather than letting the run abort.
+function confirmIgSwap(platform) {
+  if (platform !== 'ig' && platform !== 'all') return true;
+  return confirm(
+    "Instagram scheduling needs the character's debug Chrome signed into the " +
+    "INSTAGRAM Business Suite, not the Facebook one.\n\n" +
+    "Swap the login first (business.facebook.com > log out > Log in with Instagram), " +
+    "then swap back to Facebook afterwards. See IG_LOGIN_SWAP.md.\n\n" +
+    "Continue?"
+  );
+}
+
+// Which loggedPlatforms key a bulk platform choice requires. 'all' has no single
+// key — it needs any one platform ticked (the server then fans out per character).
+const BULK_LOGGED_KEY = { youtube: 'youtube', fb: 'facebook', ig: 'instagram', x: 'x', threads: 'threads' };
+
+// Every character that has the chosen platform ticked as logged in and is not
+// already mid-run.
+function bulkEligible(platform) {
+  const key = BULK_LOGGED_KEY[platform];
+  return lastCharacters.filter(c => {
+    const logged = c.loggedPlatforms || {};
+    const has = key ? !!logged[key] : Object.values(logged).some(Boolean);
+    return has && !runSet.has(c.id);
+  });
+}
+
+// Show how many characters the current bulk choice would fire, and reveal the
+// Instagram-only "also posts" toggle.
+function syncBulk() {
+  const platform = $('bulkPlatform').value;
+  $('bulkIgPosts').parentElement.style.display = platform === 'ig' ? 'flex' : 'none';
+  const eligible = bulkEligible(platform);
+  $('bulkCount').textContent = eligible.length
+    ? `${eligible.length} character${eligible.length === 1 ? '' : 's'}: ${eligible.map(c => c.name).join(', ')}`
+    : 'no characters logged into this platform';
+  $('bulkRun').disabled = eligible.length === 0;
+}
+
+// Fire the SAME per-character schedule call for every eligible character. The
+// server already runs one child process per character in parallel (each drives
+// its own debug Chrome on its own port), so we post them all and report any
+// per-character failure in the shared log instead of aborting the batch.
+async function runBulk() {
+  const platform = $('bulkPlatform').value;
+  const eligible = bulkEligible(platform);
+  if (!eligible.length) return;
+  if (!confirmIgSwap(platform)) { addLog('Cancelled: Instagram login swap not done yet.'); return; }
+  if (!confirm(`Schedule ${platform} for ${eligible.length} character(s)?\n\n${eligible.map(c => c.name).join('\n')}`)) return;
+
+  const perDay = $('bulkPerDay').value;
+  const start = $('bulkStart').value || undefined;
+  const dryRun = $('bulkDry').checked;
+  const autoLaunch = $('bulkLogged').checked;
+  const igPosts = $('bulkIgPosts').checked;
+
+  $('bulkRun').disabled = true;
+  addLog(`▶ Bulk: starting ${platform} for ${eligible.length} character(s)…`);
+  let started = 0;
+  for (const c of eligible) {
+    const body = { id: c.id, platform, perDay, start, dryRun, autoLaunch };
+    if (platform === 'ig') body.igPosts = igPosts;
+    try {
+      const r = await fetch('/api/yt/schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) started++;
+      else addLog(`✗ ${c.name}: ${d.error || 'failed to start'}`);
+    } catch (e) {
+      addLog(`✗ ${c.name}: ${e.message || e}`);
+    }
+  }
+  addLog(`■ Bulk: ${started}/${eligible.length} run(s) started.`);
+  load();
+}
+
+$('bulkPlatform').onchange = syncBulk;
+$('bulkRun').onclick = runBulk;
 
 // Build the per-platform username inputs into the form once, on first load.
 function buildHandleInputs() {
