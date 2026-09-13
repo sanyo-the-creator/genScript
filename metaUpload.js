@@ -109,7 +109,13 @@ const HARD_DAILY_MAX = 25; // sane ceiling; Meta throttles spammy posting.
 // Ledger track + composer URL. Both are overridden in main() from CLI flags so
 // an Instagram-only pass (its own business/asset context) posts to the IG
 // composer and records under its own ledger track, independent of the FB pass.
-let PLATFORM = 'meta'; // which side of the shared ledger this script owns
+// One pass can own MORE THAN ONE track: a cross-post (--targets=fb,ig) puts the
+// same item on the Facebook Page AND the linked Instagram account in a single
+// composer entry, so it must be recorded under BOTH 'meta' and 'meta-ig'. Marking
+// only 'meta' left the item forever "pending on Instagram": the UI kept counting
+// it, --delete-after never freed the file, and a later IG pass re-posted it.
+let PLATFORM = 'meta';       // primary track (logging / back-compat)
+let PLATFORMS = ['meta'];    // every track this pass records under
 let COMPOSER_URL = 'https://business.facebook.com/latest/composer';
 let REEL_COMPOSER_URL = 'https://business.facebook.com/latest/reels_composer';
 let HOME_URL = 'https://business.facebook.com/latest/home';
@@ -153,6 +159,28 @@ function withContext(baseUrl, assetId, businessId) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ElementHandle.click() can HANG until protocolTimeout (10 min here) when the
+// Chrome window is MINIMIZED or fully occluded: Puppeteer first awaits
+// scrollIntoViewIfNeeded(), whose IntersectionObserver never fires in a renderer
+// that produces no frames. bringToFront() activates the TAB but does not restore
+// a minimized WINDOW. Seen live on byupshift 2026-09-05: the run stalled ~10 min
+// on the Share step's "Schedule" segment with the window minimized. Same fix as
+// ytUpload.clickHandle — race the real click, fall back to an in-page click,
+// which needs no frames at all.
+const CLICK_RACE_MS = 8000;
+async function clickHandle(handle) {
+  try { await handle.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'center' })); } catch { /* detached */ }
+  await sleep(150);
+  let timer;
+  const raced = await Promise.race([
+    handle.click().then(() => 'clicked', () => 'failed'),
+    new Promise((r) => { timer = setTimeout(() => r('timeout'), CLICK_RACE_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (raced === 'clicked') return;
+  await handle.evaluate((el) => (el.click ? el.click() : el.dispatchEvent(new MouseEvent('click', { bubbles: true }))));
+}
+
 // ── CLI parsing ──────────────────────────────────────────────────────────────
 function parseArgs(argv) {
   const envPort = Number(process.env.META_DEBUG_PORT) || 9222;
@@ -165,7 +193,7 @@ function parseArgs(argv) {
     // fallback for older callers.
     reelsPerDay: DEFAULT_PER_DAY, postsPerDay: DEFAULT_PER_DAY,
     reelSlots: DEFAULT_REEL_SLOTS, postSlots: DEFAULT_POST_SLOTS,
-    dryRun: false, noCheck: false, deleteAfter: false, port: envPort,
+    dryRun: false, noCheck: false, deleteAfter: false, due: null, port: envPort,
     tz: process.env.META_TARGET_TZ || DEFAULT_TARGET_TZ,
     targets: ['fb', 'ig'],
     // When the FB Page and IG live in SEPARATE Meta businesses (not linked for
@@ -196,8 +224,11 @@ function parseArgs(argv) {
     if (a === '--dry-run') args.dryRun = true;
     else if (a === '--no-check') args.noCheck = true;
     else if (a === '--delete-after') args.deleteAfter = true;
+    // Ledger tracks this character actually posts to (see ytUpload.js).
+    else if (a.startsWith('--due=')) args.due = ledgerStore.parseDue(a.slice(6));
     else if (a.startsWith('--asset-id=')) args.assetId = a.slice(11).trim() || null;
     else if (a.startsWith('--business-id=')) args.businessId = a.slice(14).trim() || null;
+    // Comma-separated: --ledger=meta,meta-ig records one cross-post on both tracks.
     else if (a.startsWith('--ledger=')) args.ledger = a.slice(9).trim() || 'meta';
     else if (a.startsWith('--asset-name=')) args.assetName = a.slice(13).trim() || null;
     else if (a.startsWith('--mention=')) { const m = a.slice(10).trim(); args.mention = m ? (m.startsWith('@') ? m : '@' + m) : null; }
@@ -871,7 +902,7 @@ async function selectTargets(page, targets) {
     // composer already posts to it) — silently skip rather than warn/mis-click.
     if (!el) { return; }
     const isOn = await el.evaluate((n) => n.getAttribute('aria-checked') === 'true' || n.getAttribute('aria-pressed') === 'true');
-    if (isOn !== want) { await el.click(); await sleep(300); }
+    if (isOn !== want) { await clickHandle(el); await sleep(300); }
     await el.dispose();
   }
   if (wantFb) await setSurface('Facebook', true);
@@ -911,8 +942,18 @@ function switcherIsOpen(page) {
 }
 
 async function switchContext(page, name) {
-  await page.goto('https://business.facebook.com/latest/home', { waitUntil: 'networkidle2' }).catch(() => {});
-  await sleep(4000);
+  // A tab left mid-wizard by a previous (crashed) run does NOT let go: the composer
+  // keeps its draft and bounces this goto straight back to /latest/reels_composer,
+  // where the top-left switcher does not exist — so the run dies with "the asset
+  // switcher never opened" and nothing is scheduled (verified live 2026-09-05).
+  // Blank the tab first to drop the draft, then load home; retry a couple of times.
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) await page.goto('about:blank', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.goto('https://business.facebook.com/latest/home', { waitUntil: 'networkidle2' }).catch(() => {});
+    await sleep(4000);
+    if (!/composer/i.test(page.url())) break;
+    console.warn('   ! a leftover composer tab is holding the session — resetting it.');
+  }
 
   // SHORTCUT: if the active context ALREADY is the asset we want, there is nothing
   // to switch and opening the popup only risks clicking the wrong row. Business
@@ -1080,10 +1121,59 @@ async function uploadReel(page, entry, dryRun, targets) {
   const caption = item.meta.caption;
   console.log(`\n▶ ${item.key} [reel]`);
   console.log(`   caption: ${caption.split('\n')[0].slice(0, 80)}`);
-  console.log(`   when   : ${entry.dateLabel} ${entry.timeLabel} → ig(reel)`);
+  // The reel composer posts to whatever surfaces the active asset links (a linked
+  // Page+IG asset gets both), so label the line with the run's targets.
+  console.log(`   when   : ${entry.dateLabel} ${entry.timeLabel} → ${targets.join('+')} (reel)`);
 
-  await page.goto(REEL_COMPOSER_URL, { waitUntil: 'networkidle2' }).catch(() => {});
+  await page.goto(REEL_COMPOSER_URL, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
   await sleep(5000);
+
+  // 0) Discard any restored draft. Business Suite persists an unfinished reel and
+  // re-attaches it on the next visit; "Add Video" then edits the existing media
+  // instead of opening a file chooser, so every subsequent attempt died with
+  // 'Reel file chooser never opened' — one aborted item poisoned the whole run
+  // (verified live 2026-09-04). Clearing first makes each item independent, which
+  // is what the 3x per-item retry assumed all along.
+  //
+  // The filename test alone is NOT enough: a draft restored onto the Edit or Share
+  // step shows no filename at all (the Share step reads "Scheduling options / Share
+  // now / …"), so the composer looked clean, "Add Video" was never really there, and
+  // EVERY item failed with 'Reel file chooser never opened' (verified live on
+  // byupshift 2026-09-05). Anchor on the empty state instead: a clean Create step
+  // always shows "Upload video or photos to create a reel."
+  for (let pass = 0; pass < 2; pass++) {
+    const dirty = await page.evaluate(() => {
+      const t = document.body.innerText || '';
+      return /\.(mp4|mov|m4v)\b/i.test(t) || !/upload video or photos to create a reel/i.test(t);
+    });
+    if (!dirty) break;
+    console.log('   • composer had a leftover draft — discarding it first.');
+    await page.evaluate(() => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const lab = (x) => (x.getAttribute('aria-label') || x.textContent || '').replace(/\s+/g, ' ').trim();
+      const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+        .find((x) => /^\s*cancel\s*$/i.test(lab(x)));
+      if (b) b.click();
+    }).catch(() => {});
+    await sleep(1500);
+    // A confirm dialog ("Discard reel?") may follow.
+    await page.evaluate(() => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const dlg = Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis).pop();
+      if (!dlg) return;
+      const b = Array.from(dlg.querySelectorAll('div[role="button"],button')).filter(vis)
+        .find((x) => /^\s*(discard|delete|yes|confirm|leave)\s*$/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+      if (b) b.click();
+    }).catch(() => {});
+    await sleep(2000);
+    // Blank the tab between the two loads. Going composer → composer just restores
+    // the same draft; the about:blank hop is what actually drops it (verified live
+    // 2026-09-05).
+    await page.goto('about:blank', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await sleep(1000);
+    await page.goto(REEL_COMPOSER_URL, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
+    await sleep(5000);
+  }
 
   // 1) Add Video (native file chooser) → wait for the 100% upload marker.
   const addBtn = await waitForText(page, 'add video', { timeout: 12000, interval: 400 });
@@ -1111,7 +1201,7 @@ async function uploadReel(page, entry, dryRun, targets) {
     const boxes = Array.from(document.querySelectorAll('[contenteditable="true"],textarea')).filter(vis);
     return boxes.find((b) => /describe your reel|caption|what/i.test(b.getAttribute('aria-label') || b.getAttribute('aria-placeholder') || b.getAttribute('placeholder') || '')) || boxes[0] || null;
   }, { timeout: 8000, interval: 400 });
-  if (capBox) { await capBox.click(); await sleep(150); await page.keyboard.type(caption, { delay: 6 }); await capBox.dispose(); await sleep(400); }
+  if (capBox) { await clickHandle(capBox); await sleep(150); await page.keyboard.type(caption, { delay: 6 }); await capBox.dispose(); await sleep(400); }
 
   // 2b) Brand tag + first-frame thumbnail. Both controls live on this Create step
   // (Reel details / Thumbnail), so do them before walking to Edit. Both are
@@ -1153,12 +1243,26 @@ async function uploadReel(page, entry, dryRun, targets) {
     b.click();
     return true;
   });
-  // Which step are we on? Read the panel's own content rather than the step tabs,
-  // which stay clickable-looking on every step.
+  // Which step are we on? Read the panel's own content rather than the step tabs:
+  // they render as plain divs with NO aria-selected / aria-current, and once the
+  // wizard is on Share they are inert (clicking "Edit" does nothing) — verified live
+  // on byupshift 2026-09-05.
+  //
+  // "edit" means AT LEAST Edit, i.e. no longer on Create. Requiring the literal
+  // words Crop AND Audio (the old test) never matched this composer, so every item
+  // reported "did not advance", clicked Next again, and rode Create → Edit → Share
+  // while the code still thought it was on Create — then threw and abandoned a reel
+  // that was one click from scheduled. Detect Share FIRST (an overshoot is still
+  // "past Edit", not a failure), then the Edit-only controls under any of the names
+  // Meta has shipped, and finally fall back to "the Create-step media picker is
+  // gone", which holds whatever they rename the buttons to next.
   const atStep = (want) => page.evaluate((w) => {
     const t = document.body.innerText || '';
-    if (w === 'edit') return /\bCrop\b/.test(t) && /\bAudio\b/.test(t);
-    return /scheduling options|share now|save as draft/i.test(t);
+    const share = /scheduling options|share now|save as draft/i.test(t);
+    if (w === 'share') return share;
+    if (share) return true; // at or past Edit
+    if (/\b(crop|trim|adjust clip|cover photo|audio)\b/i.test(t)) return true;
+    return !/\b(add video|add photos|upload video or photos)\b/i.test(t);
   }, want);
 
   const advance = async (want, label) => {
@@ -1203,7 +1307,7 @@ async function uploadReel(page, entry, dryRun, targets) {
   // 4) Share step: choose the "Schedule" segment to reveal date/time.
   const schedSeg = await waitForText(page, '^schedule$', { timeout: 20000, interval: 500 });
   if (!schedSeg) throw new Error('Reel "Schedule" option not found on the Share step.');
-  await schedSeg.click();
+  await clickHandle(schedSeg);
   await sleep(2000);
 
   // 5) Date (numeric mm/dd/yyyy, focus via JS) + the three time spinbuttons — the
@@ -1256,16 +1360,78 @@ async function uploadReel(page, entry, dryRun, targets) {
   if (!bs.found) throw new Error('Reel final Share/Schedule button not found.');
   if (bs.disabled) throw new Error('Reel Share/Schedule stayed disabled — not scheduled.');
   await clickFooterPrimary();
-  // Success = the composer navigates AWAY from /reels_composer (to the content
-  // page). Don't test body text — "Create reel" is a persistent toolbar button, so
-  // it's a false-negative. Poll the URL.
-  const leftDeadline = Date.now() + 25000;
-  let left = false;
-  while (Date.now() < leftDeadline) {
-    await sleep(1500);
-    if (!/reels_composer/i.test(page.url())) { left = true; break; }
+
+  // Success detection. The URL-only test below is NOT sufficient: on a linked
+  // Page+IG asset Meta answers a GOOD schedule with a "Your reel is scheduled —
+  // reach a wider audience by boosting" dialog that keeps the composer MOUNTED and
+  // the URL unchanged. uploadOne already handled that (scheduleConfirmed), but this
+  // reel path did not — so a successful schedule read as failure, and the 3x retry
+  // re-scheduled the SAME reel, which is how duplicates got onto the Page before
+  // (see the 2026-08-26 note). Verified live on Jordan Bale 2026-09-04.
+  // So check for the confirmation dialog FIRST, and only then fall back to the URL.
+
+  // Confirm against Meta's OWN scheduled list rather than the composer's state.
+  //
+  // Three composer-side signals were tried and all of them lie on the linked Page+IG
+  // asset (Jordan Bale, probed live 2026-09-04): the URL never leaves
+  // /reels_composer, no confirmation dialog is rendered, and the wizard does not
+  // reliably drop back to its Create step inside 30s. Meanwhile the Share click DOES
+  // schedule — the scheduled list filled up with copies. So every success was read as
+  // a failure and the 3x retry re-scheduled the same reel, which is exactly how the
+  // duplicates were produced.
+  //
+  // Reading the scheduled list is authoritative and makes a retry SAFE: if the item
+  // is already there we stop instead of scheduling it again. Costs one page load per
+  // item, which is cheap next to a 90s upload.
+  const SCHED_URL = withContext('https://business.facebook.com/latest/posts/scheduled_posts', args_assetIdForCheck, args_businessIdForCheck);
+  const needle = (caption || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 40).toLowerCase();
+  // The list is LAZY-LOADED and ordered by scheduled time, so once a dozen items
+  // are booked the ones we schedule later start off-screen and a plain read reports
+  // a false "not scheduled" — which would retry and duplicate, the very thing this
+  // check exists to prevent (hit live 2026-09-04 on the Sep 6 items). So scroll to
+  // the bottom until the item shows up or the page stops growing.
+  const listedNow = async () => {
+    if (!needle) return false;
+    await page.goto(SCHED_URL, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+    await sleep(8000);
+    let lastLen = -1;
+    for (let pass = 0; pass < 12; pass++) {
+      const r = await page.evaluate((nd) => {
+        const t = (document.body.innerText || '').replace(/\s+/g, ' ').toLowerCase();
+        window.scrollTo(0, document.body.scrollHeight);
+        const sc = Array.from(document.querySelectorAll('div')).filter((d) => d.scrollHeight > d.clientHeight + 200);
+        for (const d of sc) d.scrollTop = d.scrollHeight;
+        return { hit: t.includes(nd), len: t.length };
+      }, needle).catch(() => ({ hit: false, len: -1 }));
+      if (r.hit) return true;
+      if (r.len === lastLen) break; // nothing more is loading
+      lastLen = r.len;
+      await sleep(2500);
+    }
+    return false;
+  };
+
+  await sleep(9000); // let Meta commit the schedule
+  let left = /reels_composer/i.test(page.url()) === false;
+  if (!left) left = await listedNow();
+  if (!left) { await sleep(6000); left = await listedNow(); } // one slow-commit retry
+
+  // NEVER throw here, and never let the caller retry a Share.
+  //
+  // The Share click essentially always schedules; what is unreliable is CONFIRMING
+  // it. The list is lazy-loaded and grows as the run proceeds, and captions with
+  // emoji or odd punctuation do not always match the text we search for. Treating an
+  // unconfirmed Share as a failure makes the per-item retry loop schedule the SAME
+  // reel again — that is the entire mechanism behind the duplicates on this account
+  // (2026-09-04). A duplicate is far worse than an unverified item, so we accept it,
+  // mark it done, and surface it for a manual check instead.
+  if (left) {
+    console.log("   ✓ Confirmed in Meta's scheduled list.");
+  } else {
+    UNVERIFIED.push(item.key);
+    console.warn('   ⚠ Could NOT confirm this one in the scheduled list. Treating it as scheduled and');
+    console.warn('     moving on — retrying a Share is what creates duplicates. Verify it by hand.');
   }
-  if (!left) throw new Error('Reel did not leave the composer after Share — likely NOT scheduled.');
 
   console.log(`   ✓ Scheduled reel for ${entry.dateLabel} ${entry.timeLabel} → ig`);
   return entry.date.toISOString();
@@ -1670,12 +1836,18 @@ async function uploadOne(page, entry, dryRun, targets) {
   if (!fs.existsSync(args.dir)) { console.error(`Folder not found: ${args.dir}`); process.exit(1); }
 
   // Apply context/ledger overrides (e.g. an IG-only pass in its own business).
-  PLATFORM = args.ledger; // 'meta' (FB, default/back-compat) or e.g. 'meta-ig'
+  // 'meta' (FB, default/back-compat), 'meta-ig' (IG-only pass), or both tracks
+  // for an fb+ig cross-post.
+  PLATFORMS = String(args.ledger).split(',').map((t) => t.trim()).filter(Boolean);
+  if (!PLATFORMS.length) PLATFORMS = ['meta'];
+  PLATFORM = PLATFORMS[0];
   COMPOSER_URL = withContext('https://business.facebook.com/latest/composer', args.assetId, args.businessId);
   REEL_COMPOSER_URL = withContext('https://business.facebook.com/latest/reels_composer', args.assetId, args.businessId);
   HOME_URL = withContext('https://business.facebook.com/latest/home', args.assetId, args.businessId);
+  args_assetIdForCheck = args.assetId;
+  args_businessIdForCheck = args.businessId;
   if (args.assetId || args.businessId) {
-    console.log(`Context: asset_id=${args.assetId || '-'} business_id=${args.businessId || '-'}  ledger track="${PLATFORM}"`);
+    console.log(`Context: asset_id=${args.assetId || '-'} business_id=${args.businessId || '-'}  ledger track="${PLATFORMS.join('+')}"`);
   }
 
   const ledger = ledgerStore.loadLedger(args.dir);
@@ -1722,8 +1894,24 @@ async function uploadOne(page, entry, dryRun, targets) {
   }
   // Skip only items already scheduled ON META — an item on YouTube but not Meta
   // still needs its Meta run (the cross-check the user asked for).
-  const items = allItems.filter((it) => !ledgerStore.isScheduled(ledger, it.key, PLATFORM));
+  // Skip an item that is already on ANY track this pass owns. For a single-track
+  // pass that is the old behaviour; for a cross-post (meta+meta-ig) it is what
+  // stops a re-post: one composer entry always hits BOTH surfaces, so an item the
+  // dedicated IG pass already scheduled would land on Instagram a second time.
+  // Those partially-done items are reported below — run the single-surface option
+  // for whichever side is still missing.
+  const items = allItems.filter((it) => !PLATFORMS.some((t) => ledgerStore.isScheduled(ledger, it.key, t)));
   const skipped = allItems.length - items.length;
+  if (PLATFORMS.length > 1) {
+    const partial = allItems.filter((it) => {
+      const done = PLATFORMS.filter((t) => ledgerStore.isScheduled(ledger, it.key, t));
+      return done.length && done.length < PLATFORMS.length;
+    });
+    if (partial.length) {
+      console.log(`Note: ${partial.length} item(s) are already on one surface only — a cross-post would duplicate them, so they are skipped here.`);
+      console.log('      Schedule the missing surface with the single-platform option (Facebook / Instagram) instead.');
+    }
+  }
 
   if (!items.length) {
     console.log(`Nothing to do — all ${allItems.length} item(s) already scheduled on Meta (${ledgerStore.LEDGER_NAME}).`);
@@ -1801,6 +1989,8 @@ async function uploadOne(page, entry, dryRun, targets) {
       COMPOSER_URL = withContext('https://business.facebook.com/latest/composer', aid, bid);
       REEL_COMPOSER_URL = withContext('https://business.facebook.com/latest/reels_composer', aid, bid);
       HOME_URL = withContext('https://business.facebook.com/latest/home', aid, bid);
+      args_assetIdForCheck = aid;
+      args_businessIdForCheck = bid;
       console.log(`  pinned composer to asset_id=${aid}${bid ? ` business_id=${bid}` : ''}`);
     } else if (!swAsset && !args.assetId) {
       console.warn('   ! the post-switch URL carried no asset_id — the composer may open the default asset.');
@@ -1853,6 +2043,25 @@ async function uploadOne(page, entry, dryRun, targets) {
   for (const p of plan) console.log(`   ${p.dateLabel} ${p.timeLabel}  [${p.kind}]  ←  ${p.item.key}`);
   console.log('════════════════════════════════════════════════════\n');
 
+  // Pick a LIVE Business-Suite tab, opening one if every tab is gone.
+  //
+  // Closed pages MUST be filtered out. puppeteer still lists a tab that Business
+  // Suite closed under us, and its url() keeps reporting business.facebook.com —
+  // so the old "find a business.facebook.com page" recovery happily picked the
+  // dead tab back up. Every later item then failed with "Session closed", forever
+  // (a 32-item Instagram run burned end to end that way, 2026-09-09).
+  const acquirePage = async () => {
+    if (!browser.isConnected()) throw new Error('Chrome is gone (window closed or crashed).');
+    const live = (await browser.pages()).filter((p) => !p.isClosed());
+    let p = live.find((x) => x.url().includes('business.facebook.com'))
+         || live.find((x) => x.url().includes('facebook.com'))
+         || live[0]
+         || (await browser.newPage());
+    await p.bringToFront();
+    p.on('dialog', async (d) => { try { await d.accept(); } catch { /* ignore */ } });
+    return p;
+  };
+
   // Return a LIVE Business-Suite page, re-acquiring it if the current handle's
   // frame got detached (IG scheduling replaces the tab's main frame). For a
   // context-pinned pass it re-selects the asset so the composer stays in the right
@@ -1860,14 +2069,17 @@ async function uploadOne(page, entry, dryRun, targets) {
   const stabilize = async () => {
     let recovered = false;
     try {
+      if (page.isClosed()) throw new Error('Session closed: the composer tab is gone.');
       await page.goto(HOME_URL, { waitUntil: 'networkidle2' });
     } catch (e) {
       if (!/detached|Target closed|Session closed/i.test(e.message || '')) throw e;
       await sleep(1500);
-      const ps = await browser.pages();
-      page = ps.find((p) => p.url().includes('business.facebook.com')) || ps[ps.length - 1] || page;
-      await page.bringToFront();
-      page.on('dialog', async (d) => { try { await d.accept(); } catch { /* ignore */ } });
+      // Re-acquire, then PROVE the new handle works by navigating it. Only commit
+      // it to `page` once it does — latching in a dead handle is exactly what made
+      // one detach cascade into every remaining item.
+      const fresh = await acquirePage();
+      await fresh.goto(HOME_URL, { waitUntil: 'networkidle2' });
+      page = fresh;
       recovered = true;
       console.log('   ↻ recovered page after detached frame.');
     }
@@ -1878,6 +2090,10 @@ async function uploadOne(page, entry, dryRun, targets) {
   };
 
   let ok = 0, failed = 0;
+  // Stop a run that is failing every single item. Once the composer tab is truly
+  // unrecoverable (Chrome closed, logged out) there is nothing to do but bail —
+  // grinding through the whole plan just fills the log with identical errors.
+  let consecutiveFails = 0;
   for (const entry of plan) {
     try {
       // Video → Reel composer when --reel is set (required for IG's 9:16). Images
@@ -1905,14 +2121,14 @@ async function uploadOne(page, entry, dryRun, targets) {
         console.log('\nDry run complete for the first item. Watch the composer window — if the surfaces/caption/date/time look right, re-run without --dry-run.');
         break;
       }
-      ledgerStore.markScheduled(args.dir, ledger, entry.item.key, PLATFORM, {
+      for (const track of PLATFORMS) ledgerStore.markScheduled(args.dir, ledger, entry.item.key, track, {
         scheduledAt: result, caption: entry.item.meta.caption.split('\n')[0].slice(0, 80), targets: args.targets,
       });
       // Delete ONLY once done on every platform this item is due on. A video is
       // due on YouTube too, so it survives here until YouTube has also taken it;
       // an image/text post is Meta-only, so it's freed right away.
       const mediaName = entry.item.media || `${entry.item.key}.json`;
-      if (args.deleteAfter && ledgerStore.allRequiredDone(ledger, entry.item.key, mediaName)) {
+      if (args.deleteAfter && ledgerStore.allRequiredDone(ledger, entry.item.key, mediaName, args.due)) {
         const jsonSidecar = entry.item.media
           ? entry.item.media.replace(MEDIA_RE, '.json')
           : path.join(args.dir, `${entry.item.key}.json`);
@@ -1921,18 +2137,34 @@ async function uploadOne(page, entry, dryRun, targets) {
         }
         console.log(`   🗑  removed ${entry.item.key} (done on all platforms)`);
       } else if (args.deleteAfter) {
-        console.log(`   ⏳ kept ${entry.item.key} — still due on YouTube before it can be removed`);
+        console.log(`   ⏳ kept ${entry.item.key} — still due on ${ledgerStore.requiredPlatforms(mediaName, args.due).filter(p => !PLATFORMS.includes(p)).join(', ') || 'another platform'} before it can be removed`);
       }
       ok++;
+      consecutiveFails = 0;
       // Scheduling (esp. IG) can navigate/replace the tab's main frame; settle and
       // re-acquire the page before the next item so one detach doesn't cascade.
       await stabilize();
     } catch (e) {
       failed++;
+      consecutiveFails++;
       console.error(`   ✗ FAILED: ${entry.item.key} — ${e.message}`);
       try { await stabilize(); } catch (re) { console.warn(`   ! recovery failed: ${re.message}`); }
+      if (!browser.isConnected()) {
+        console.error('\n✗ Chrome is gone (window closed or crashed) — aborting this run.');
+        break;
+      }
+      if (consecutiveFails >= 3) {
+        console.error(`\n✗ ${consecutiveFails} items failed in a row — aborting instead of grinding through the remaining ${plan.length - (ok + failed)}.`);
+        console.error('  Check the debug Chrome by hand: is the composer tab still open and logged in?');
+        break;
+      }
     }
   }
 
+  if (UNVERIFIED.length) {
+    console.log(`\n\u26a0 ${UNVERIFIED.length} item(s) were scheduled but could NOT be confirmed in Meta's list.`);
+    console.log('  They are marked done in the ledger. Check these by hand in Planner:');
+    for (const k of UNVERIFIED) console.log('   \u00b7 ' + k);
+  }
   console.log(`\nDone. Scheduled ${ok}, failed ${failed}. Ledger: ${ledgerStore.ledgerPath(args.dir)}`);
 })();

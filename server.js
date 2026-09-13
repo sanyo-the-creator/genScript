@@ -252,9 +252,31 @@ function countPendingMeta(folder, track = 'meta') {
 // Map a UI platform value to its pending count. 'fb'/'meta' use the 'meta' ledger
 // track; 'ig' uses its own 'meta-ig' track (separate context/pass).
 function countPendingFor(folder, platform) {
-  if (platform === 'meta' || platform === 'fb') return countPendingMeta(folder, 'meta');
+  // A combined Meta run cross-posts to FB *and* IG in one composer entry, so it
+  // can only take items that are on NEITHER track yet — anything already on one
+  // surface would be duplicated there. Hence the smaller of the two counts.
+  if (platform === 'meta') return Math.min(countPendingMeta(folder, 'meta'), countPendingMeta(folder, 'meta-ig'));
+  if (platform === 'fb') return countPendingMeta(folder, 'meta');
   if (platform === 'ig') return countPendingMeta(folder, 'meta-ig');
   return countPending(folder, platform);
+}
+// Ledger tracks a character actually posts to, from its loggedPlatforms toggles.
+// This is what makes --delete-after correct: a file is only removed once every
+// UNLOCKED platform has it. A YouTube-only character (facebook/instagram off) is
+// done the moment YouTube has the video - previously the shared ledger assumed
+// every video was also due on Meta, so those folders never emptied.
+const LEDGER_TRACK_BY_TOGGLE = {
+  youtube: 'youtube', facebook: 'meta', instagram: 'meta-ig', x: 'twitter', threads: 'threads',
+};
+function dueTracks(c) {
+  const lp = (c && c.loggedPlatforms) || {};
+  const tracks = Object.entries(LEDGER_TRACK_BY_TOGGLE)
+    .filter(([toggle]) => lp[toggle])
+    .map(([, track]) => track);
+  // Nothing ticked -> fall back to YouTube only, which is what an unconfigured
+  // character schedules from the UI anyway. Never return [] (that would mean
+  // "due nowhere" and disable deletion entirely).
+  return tracks.length ? tracks : ['youtube'];
 }
 function ytCharactersView() {
   return loadCharacters().map(c => ({ ...c, pending: countPending(c.folder), folderExists: fs.existsSync(c.folder) }));
@@ -423,6 +445,18 @@ function buildPrompt(cfg, task) {
 // ---------------------------------------------------------------------------
 const CHARACTER_NAME_HOLDER = { value: 'Untitled Character' };
 
+// Flow lives on flow.google.com now; older links still use the labs.google
+// path. Accept both everywhere we recognise a Flow tab or project link.
+// The prompt box was Slate, and is ProseMirror as of the flow.google.com move;
+// match either rather than pinning to one editor's markup.
+const PROMPT_EDITOR_SEL = '[data-slate-editor="true"], .ProseMirror[contenteditable="true"], [contenteditable="true"]';
+function isFlowUrl(u) {
+  return typeof u === 'string' && (u.includes('flow.google.com') || u.includes('labs.google'));
+}
+function isFlowProjectUrl(u) {
+  return typeof u === 'string' &&
+    (/flow\.google\.com\/project\//.test(u) || u.includes('labs.google/fx/tools/flow/project/'));
+}
 async function findElement(page, fn, ...args) {
   const handle = await page.evaluateHandle(fn, ...args);
   const el = handle.asElement();
@@ -434,6 +468,35 @@ async function clickButtonWithIcon(page, icon) {
     Array.from(document.querySelectorAll('button')).find(b => b.innerHTML.includes(i)), icon);
   if (!h) return false;
   await h.click(); await h.dispose(); return true;
+}
+// Open the composer's ingredient picker. The icon used to be "add_2"; the
+// current Flow build labels it aria-label="Add ingredients to the prompt box"
+// with a plain "add" icon (a bare "add" icon alone also matches every media
+// tile's own Ingredient button, so the aria-label is matched first).
+async function clickAddIngredients(page) {
+  // Needs a REAL mouse click at the element's rect: an ElementHandle.click()
+  // registers on the button but does not open the CDK overlay (same gotcha as
+  // the aspect-ratio settings trigger).
+  const spot = await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('button'));
+    const el = btns.find((b) => /add ingredients/i.test(b.getAttribute('aria-label') || ''))
+      || btns.find((b) => b.innerHTML.includes('add_2'));
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return r.width && r.height ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+  });
+  if (!spot) return false;
+  await page.mouse.click(spot.x, spot.y);
+  // Poll for the overlay: it animates in, and a single check ~500ms after the
+  // click reported "could not open the asset picker" while it was still opening.
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const up = await page.evaluate(() => Array.from(document.querySelectorAll('.cdk-overlay-pane'))
+      .some((p) => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0; }));
+    if (up) return true;
+    await sleep(300);
+  }
+  return false;
 }
 async function clickButtonWithText(page, text) {
   const h = await findElement(page, (t) =>
@@ -447,23 +510,35 @@ async function clickButtonWithText(page, text) {
 function findCharacterOption(page, name) {
   return findElement(page, (n) => {
     const opts = Array.from(document.querySelectorAll('[role="option"]'));
-    const label = el => (el.textContent || '').trim();
-    const bare = t => t.replace(/\.(jpg|jpeg|png|webp)$/i, '').trim();
-    return opts.find(el => label(el) === n)
-      || opts.find(el => bare(label(el)) === n)
-      || opts.find(el => new RegExp(`(^|[^a-z0-9])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i').test(label(el)))
-      || opts.find(el => label(el).includes(n))
+    // A picker row reads as the asset name followed by its type, e.g.
+    // "Untitled characterCharacter" or "photo.jpegImage". Strip that suffix and
+    // any file extension, then compare case-insensitively: the library name and
+    // the configured name differ in case ("Untitled character" vs
+    // "Untitled Character"), which defeated every previous match.
+    const clean = (t) => (t || '')
+      .replace(/(Image|Character|Video|Voice|Audio)$/, '')
+      .replace(/\.(jpg|jpeg|png|webp|mp4|mov)$/i, '')
+      .trim().toLowerCase();
+    const want = clean(n);
+    if (!want) return null;
+    // Whole-word before substring, so "girl" does not win against "girl2".
+    const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const word = new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`);
+    return opts.find((el) => clean(el.textContent) === want)
+      || opts.find((el) => word.test(clean(el.textContent)))
+      || opts.find((el) => clean(el.textContent).includes(want))
       || null;
   }, name);
 }
 function countCharacterChips(page) {
-  return page.evaluate(() => {
-    const ed = document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]');
+  return page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
     if (!ed) return 0;
     let c = ed;
     for (let i = 0; i < 6 && c.parentElement; i++) c = c.parentElement;
-    return Array.from(c.querySelectorAll('img')).filter(im => (im.alt || '').includes('Character reference')).length;
-  });
+    return Array.from(c.querySelectorAll('img'))
+      .filter((im) => /character (reference|ingredient)/i.test(im.alt || '')).length;
+  }, PROMPT_EDITOR_SEL);
 }
 async function closePicker(page) { await page.keyboard.press('Escape'); await sleep(400); }
 
@@ -477,7 +552,7 @@ async function addCharacterReference(page, name, attempts = 3) {
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     log(`Adding character reference (attempt ${attempt}/${attempts})...`);
-    if (!(await clickButtonWithIcon(page, 'add_2'))) { await sleep(600); continue; }
+    if (!(await clickAddIngredients(page))) { await sleep(600); continue; }
 
     // Filter the picker to the character by name via the search box. This
     // avoids the scrolling problem when the media library is large — the list
@@ -527,13 +602,15 @@ async function addCharacterReference(page, name, attempts = 3) {
 // Count every reference thumbnail currently in the composer (character + any
 // image references). Used to confirm a background reference was added.
 function countComposerRefs(page) {
-  return page.evaluate(() => {
-    const ed = document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]');
+  return page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
     if (!ed) return 0;
     let c = ed;
     for (let i = 0; i < 6 && c.parentElement; i++) c = c.parentElement;
-    return c.querySelectorAll('img').length;
-  });
+    // Skip ProseMirror's own zero-width separator <img>, which is not a chip.
+    return Array.from(c.querySelectorAll('img'))
+      .filter((im) => !im.classList.contains('ProseMirror-separator')).length;
+  }, PROMPT_EDITOR_SEL);
 }
 
 // Attach a background/room reference image (by asset name) IN ADDITION to the
@@ -542,7 +619,7 @@ function countComposerRefs(page) {
 // character was already added (so a new ref should increase the thumbnail count).
 async function addBackgroundReference(page, name) {
   const before = await countComposerRefs(page);
-  if (!(await clickButtonWithIcon(page, 'add_2'))) return false;
+  if (!(await clickAddIngredients(page))) return false;
 
   const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
   if (search) {
@@ -579,6 +656,75 @@ async function addBackgroundReference(page, name) {
   return ok;
 }
 
+// ── Uploading into Flow's asset library ─────────────────────────────────────
+// Flow no longer renders an <input type="file"> anywhere in the DOM: the
+// picker's "Upload media" entry opens a NATIVE OS file dialog. The old code
+// looked for input[type=file], found nothing, skipped the upload and still
+// logged success — which is why reference pictures silently never arrived.
+// The chooser accepts multiple files at once, and each pending asset shows up
+// as a [role="option"] whose label starts with "Uploading" until it lands.
+async function uploadViaFileChooser(page, filePaths) {
+  if (!filePaths.length) return true;
+  const spot = await page.evaluate(() => {
+    const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const el = Array.from(document.querySelectorAll(
+      '.cdk-overlay-pane button,.cdk-overlay-pane [role="button"],.cdk-overlay-pane [role="tab"],.cdk-overlay-pane [role="option"]'))
+      .filter(vis).find((e) => /upload media/i.test((e.textContent || '').trim()));
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  if (!spot) { log('Could not find "Upload media" in the asset picker.'); return false; }
+
+  // Arm the interception BEFORE clicking, and give the CDP round-trip
+  // (Page.setInterceptFileChooserDialog) time to land. Promise.all() races the
+  // click against the arming: if the click wins, Chrome opens a REAL native
+  // dialog that Puppeteer cannot see or close, and it modally blocks the whole
+  // browser until a human cancels it. Never click before this resolves.
+  let chooser = null;
+  const pending = page.waitForFileChooser({ timeout: 20000 });
+  pending.catch(() => { }); // don't let a timeout surface as an unhandled rejection
+  await sleep(1000);
+  try {
+    await page.mouse.click(spot.x, spot.y);
+    chooser = await pending;
+  } catch (e) {
+    log(`File chooser did not open: ${e.message || e}`);
+    log('A native Open dialog may now be stuck on screen — cancel it before retrying.');
+    return false;
+  }
+  await chooser.accept(filePaths);
+
+  const pendingCount = () => page.evaluate(() => Array.from(document.querySelectorAll('[role="option"]'))
+    .filter((o) => /^\s*Uploading/i.test(o.textContent || '')).length);
+
+  // The "Uploading …" rows take a moment to render after accept(). Polling
+  // straight away reads zero and reports success while nothing has landed yet,
+  // so wait for the upload to actually START before waiting for it to finish.
+  const startBy = Date.now() + 20000;
+  let started = false;
+  while (Date.now() < startBy && !started) {
+    if (state.stopRequested) return false;
+    started = (await pendingCount()) > 0;
+    if (!started) await sleep(1000);
+  }
+
+  // Then wait for every row to clear. Measured live at ~45s/image for a 3-file
+  // chunk, so the deadline is generous — it returns as soon as the rows clear.
+  // Require two consecutive zero readings so a gap between files doesn't read
+  // as "finished".
+  const deadline = Date.now() + 90000 + 60000 * filePaths.length;
+  let zeros = 0;
+  while (Date.now() < deadline) {
+    if (state.stopRequested) return false;
+    zeros = (await pendingCount()) === 0 ? zeros + 1 : 0;
+    if (zeros >= 2) return true;
+    await sleep(2500);
+  }
+  log('Timed out waiting for uploads to finish.');
+  return false;
+}
+
 // Upload a local reference image file from disk (e.g. men_ref_pics/02a2caaa.jpg)
 // directly into Google Flow using Puppeteer's input[type=file] upload handler.
 async function uploadLocalRefImage(page, folderName, fileName) {
@@ -592,51 +738,12 @@ async function uploadLocalRefImage(page, folderName, fileName) {
   }
 
   log(`Uploading local file from disk: ${filePath}...`);
-  const beforeCount = await countComposerRefs(page);
-
-  // 1. Check if a file input element exists on the page
-  let fileInput = await page.$('input[type="file"]');
-
-  // 2. If no file input found, click (+) picker button to open modal
-  if (!fileInput) {
-    if (await clickButtonWithIcon(page, 'add_2')) {
-      await sleep(600);
-      fileInput = await page.$('input[type="file"]');
-    }
-  }
-
-  // 3. Upload local file via Puppeteer CDP
-  if (fileInput) {
-    try {
-      await fileInput.uploadFile(filePath);
-      await fileInput.dispose();
-      await sleep(2000); // allow upload processing
-
-      if ((await countComposerRefs(page)) > beforeCount) {
-        log(`Successfully uploaded and attached local image "${fileName}".`);
-        await closePicker(page);
-        return true;
-      }
-
-      // Check if clicking "Add to Prompt" is needed
-      if (await clickButtonWithText(page, 'Add to Prompt')) {
-        await sleep(900);
-      }
-
-      if ((await countComposerRefs(page)) > beforeCount) {
-        log(`Successfully attached uploaded image "${fileName}".`);
-        await closePicker(page);
-        return true;
-      }
-    } catch (err) {
-      log(`Direct file upload error: ${err.message || err}`);
-    }
-  }
-
+  if (!(await clickAddIngredients(page))) { log('Could not open the asset picker to upload.'); return false; }
+  await sleep(800);
+  const uploaded = await uploadViaFileChooser(page, [filePath]);
   await closePicker(page);
-
-  // Fallback: search by asset name in Google Flow asset library
-  log(`Falling back to asset library search for "${fileName}"...`);
+  if (!uploaded) return false;
+  log(`Uploaded "${fileName}" — attaching it.`);
   return await addBackgroundReference(page, fileName);
 }
 
@@ -649,8 +756,11 @@ async function uploadAllRefImages(page, folderName, files) {
 
   const toUpload = [];
   try {
-    if (await clickButtonWithIcon(page, 'add_2')) {
-      await sleep(1000);
+    if (await clickAddIngredients(page)) {
+      // The overlay animates in; polling beats a fixed sleep, which was landing
+      // before the search box existed and sending every file down the re-upload
+      // path even when the library already had it.
+      await page.waitForSelector('input[placeholder="Search assets"]', { timeout: 8000 }).catch(() => { });
 
       const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
       if (search) {
@@ -709,34 +819,42 @@ async function uploadAllRefImages(page, folderName, files) {
 
   log(`=== Pre-uploading ${uploadList.length} new reference picture(s) from "${folderName}" ===`);
 
-  for (let i = 0; i < uploadList.length; i++) {
-    if (state.stopRequested) {
-      log('Stop requested — aborting pre-upload.');
-      return;
-    }
-    const fileName = uploadList[i];
-    const filePath = path.join(__dirname, folderName || 'men_ref_pics', fileName);
-    if (!fs.existsSync(filePath)) continue;
+  // One native file chooser takes many files at once, so upload in chunks
+  // instead of reopening the picker per image. Anything missing from disk is
+  // dropped up front rather than silently counted as uploaded.
+  const paths = uploadList
+    .map((f) => ({ f, p: path.join(__dirname, folderName || 'men_ref_pics', f) }))
+    .filter((x) => fs.existsSync(x.p));
 
-    log(`Pre-uploading [${i + 1}/${uploadList.length}]: ${fileName}...`);
+  const CHUNK = 8;
+  let uploaded = 0;
+  for (let i = 0; i < paths.length; i += CHUNK) {
+    if (state.stopRequested) { log('Stop requested — aborting pre-upload.'); return; }
+    const chunk = paths.slice(i, i + CHUNK);
+    log(`Pre-uploading [${i + 1}-${i + chunk.length}/${paths.length}]: ${chunk.map((c) => c.f).join(', ')}`);
     try {
-      let fileInput = await page.$('input[type="file"]');
-      if (!fileInput) {
-        if (await clickButtonWithIcon(page, 'add_2')) {
-          await sleep(500);
-          fileInput = await page.$('input[type="file"]');
-        }
-      }
-      if (fileInput) {
-        await fileInput.uploadFile(filePath);
-        await fileInput.dispose();
-        await sleep(1500);
+      if (!(await clickAddIngredients(page))) { log('Could not open the asset picker — skipping this chunk.'); continue; }
+      await sleep(800);
+      if (await uploadViaFileChooser(page, chunk.map((c) => c.p))) {
+        uploaded += chunk.length;
+      } else {
+        // Stop after the first failure. If the file chooser was missed, a native
+        // dialog is modally blocking Chrome and every further click is swallowed
+        // — retrying would only queue more dialogs.
+        log('That chunk did not upload — aborting the pre-upload phase.');
+        await closePicker(page).catch(() => { });
+        break;
       }
       await closePicker(page);
     } catch (e) {
-      log(`Pre-upload note for ${fileName}: ${e.message || e}`);
-      await closePicker(page);
+      log(`Pre-upload note: ${e.message || e}`);
+      await closePicker(page).catch(() => { });
     }
+  }
+
+  if (uploaded < paths.length) {
+    log(`Pre-upload finished: ${uploaded}/${paths.length} reference picture(s) uploaded — the rest will be retried per-generation.`);
+    return;
   }
   log(`Pre-upload complete. All reference pictures are available in Google Flow's asset library.\n`);
 }
@@ -747,9 +865,45 @@ async function uploadAllRefImages(page, folderName, files) {
 // only exists when there is content; it also removes the character chip, so we
 // always reset BEFORE adding the character. No-op when the composer is empty.
 async function resetComposer(page) {
-  const clearBtn = await findElement(page, () =>
-    Array.from(document.querySelectorAll('button')).find(b => /clear prompt/i.test(b.textContent)) || null);
-  if (clearBtn) { await clearBtn.click(); await clearBtn.dispose(); await sleep(500); }
+  // ProseMirror renders its placeholder as a real <span class="prosemirror-
+  // placeholder"> INSIDE the editor, so a naive innerText read never comes back
+  // empty. Drop the placeholder and the separator widgets before measuring.
+  const editorText = () => page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
+    if (!ed) return '';
+    const clone = ed.cloneNode(true);
+    clone.querySelectorAll('.prosemirror-placeholder,.ProseMirror-separator,.ProseMirror-trailingBreak')
+      .forEach((n) => n.remove());
+    return (clone.textContent || '').trim();
+  }, PROMPT_EDITOR_SEL);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!(await editorText())) return;
+    // The control renders as an icon button: its textContent is the ligature
+    // "close" and the real label lives in aria-label="Clear prompt". Matching
+    // on textContent (as this did) never found it, so prompts accumulated
+    // across every generation in a batch.
+    const spot = await page.evaluate(() => {
+      const el = Array.from(document.querySelectorAll('button')).find((b) => {
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && r.height > 0
+          && (/clear prompt/i.test(b.getAttribute('aria-label') || '') || /clear prompt/i.test(b.textContent || ''));
+      });
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    if (spot) { await page.mouse.click(spot.x, spot.y); await sleep(600); continue; }
+
+    // No button (some states hide it) — fall back to selecting all and deleting.
+    const ed = await findElement(page, (sel) => document.querySelector(sel), PROMPT_EDITOR_SEL);
+    if (!ed) return;
+    await ed.click(); await ed.dispose();
+    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    await sleep(400);
+  }
+  if (await editorText()) log('Composer would not clear — the next prompt may append to the old one.');
 }
 
 // Type the prompt into the (already-empty) editor.
@@ -758,20 +912,64 @@ async function resetComposer(page) {
 // so the model is told *by name* which image is which instead of having to infer
 // it from attachment order. Falls back to the plain asset name if the mention
 // picker doesn't come up.
+// ProseMirror handles input asynchronously, so typing at delay 0 races it and
+// yields scrambled or truncated prompts. Pace every keystroke instead.
+const TYPE_DELAY = 12;
 const MENTION_OPEN = '\u2039@';   // ‹@name›  — cannot collide with prompt text
 const MENTION_CLOSE = '\u203a';
 const mention = (name) => `${MENTION_OPEN}${name}${MENTION_CLOSE}`;
 
+// Put the caret at the very end of the editor and make sure the editor has
+// focus. Inserting a mention chip re-renders the ProseMirror doc and leaves the
+// selection somewhere unpredictable, so typing the next segment straight after
+// lands at a stale position and the prompt comes out interleaved with itself.
+// Insert a chunk of text as ONE atomic edit. Per-character page.keyboard.type()
+// races ProseMirror's async re-render and produced interleaved, scrambled
+// prompts; CDP Input.insertText delivers the whole segment in a single
+// beforeinput/input pair, which the editor applies as one transaction.
+async function insertTextAtomic(page, text) {
+  if (!text) return;
+  const session = await page.createCDPSession();
+  try {
+    await session.send('Input.insertText', { text });
+  } finally {
+    await session.detach().catch(() => { });
+  }
+  await sleep(200);
+}
+async function caretToEnd(page) {
+  // Must go through REAL input events: setting the DOM Selection directly
+  // desyncs ProseMirror from its own document state and the next keystroke
+  // wipes the content. Click into the editor, then Ctrl+End to the very end.
+  const ed = await findElement(page, (sel) => document.querySelector(sel), PROMPT_EDITOR_SEL);
+  if (!ed) return;
+  await ed.click();
+  await ed.dispose();
+  await page.keyboard.down('Control');
+  await page.keyboard.press('End');
+  await page.keyboard.up('Control');
+  await sleep(250);
+}
 // Types "@", waits for Flow's asset dropdown, picks the entry matching `name`.
 // Returns true if a real mention node was inserted.
 async function insertMention(page, name) {
   const bare = name.replace(/\.(jpg|jpeg|png|webp)$/i, '');
   // Slate needs to settle before the "@" or the trigger is swallowed and no
   // dropdown opens — this is why typing the prompt at delay 0 broke mentions.
+  const editorText = () => page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
+    if (!ed) return '';
+    const c = ed.cloneNode(true);
+    c.querySelectorAll('.prosemirror-placeholder,.ProseMirror-separator,.ProseMirror-trailingBreak').forEach((n) => n.remove());
+    return c.textContent || '';
+  }, PROMPT_EDITOR_SEL);
+
   await sleep(600);
-  await page.keyboard.type('@', { delay: 0 });
+  await caretToEnd(page);
+  const before = await editorText(); // exact state to roll back to if this fails
+  await page.keyboard.type('@', { delay: TYPE_DELAY });
   await sleep(700);
-  await page.keyboard.type(bare, { delay: 20 });
+  await page.keyboard.type(bare, { delay: TYPE_DELAY });
 
   // Wait for the matching option in the mention dropdown.
   let opt = null;
@@ -782,34 +980,139 @@ async function insertMention(page, name) {
     await sleep(200);
   }
   if (!opt) {
-    // No picker — undo the typed "@name" and leave the plain name behind.
-    for (let i = 0; i < bare.length + 1; i++) await page.keyboard.press('Backspace');
-    await page.keyboard.type(bare, { delay: 0 });
+    // No match — roll the "@query" back and leave the plain name instead.
+    // Deleting a FIXED bare.length + 1 characters was the bug behind the
+    // scrambled prompts: whenever the editor held a different number of
+    // characters than expected (the dropdown rewrites the query as you type),
+    // the extra backspaces chewed into the text already typed, and the retype
+    // then interleaved with ProseMirror's async re-render. Delete one at a
+    // time and stop the moment the editor matches its pre-mention state.
+    await page.keyboard.press('Escape'); // dismiss the dropdown first
+    await sleep(250);
+    for (let i = 0; i < bare.length + 6; i++) {
+      if ((await editorText()) === before) break;
+      await page.keyboard.press('Backspace');
+      await sleep(60);
+    }
+    const rolled = await editorText();
+    if (rolled !== before) log(`Mention rollback left "${rolled.slice(-40)}" (wanted "${before.slice(-40)}").`);
+    await sleep(200);
+    await caretToEnd(page);
+    await insertTextAtomic(page, bare);
     log(`Mention picker did not match "${bare}" — used plain text instead.`);
     return false;
   }
   await opt.click();
   await opt.dispose();
-  await sleep(400);
+  await sleep(900);
+  await caretToEnd(page);
   return true;
 }
 
+// Ask the asset picker, once, which of these names actually exist in the
+// project library. Returns the subset that can be "@"-mentioned.
+async function resolveMentionable(page, names) {
+  const ok = new Set();
+  if (!names.length) return ok;
+  if (!(await clickAddIngredients(page))) { log('Could not open the picker to resolve mentions — using plain names.'); return ok; }
+  try {
+    await page.waitForSelector('input[placeholder="Search assets"]', { timeout: 8000 });
+    const box = await page.$('input[placeholder="Search assets"]');
+    for (const n of names) {
+      if (state.stopRequested) break;
+      const bare = n.replace(/\.(jpg|jpeg|png|webp)$/i, '');
+      await page.evaluate((el) => { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }, box);
+      await sleep(200);
+      await box.click();
+      await page.keyboard.type(bare, { delay: 12 });
+      await sleep(1200);
+      const hit = await findCharacterOption(page, bare);
+      if (hit) { ok.add(n); await hit.dispose(); }
+      else log(`"${bare}" is not in the project library — writing it as plain text.`);
+    }
+    await box.dispose();
+  } catch (e) {
+    log(`Mention resolve note: ${e.message || e}`);
+  }
+  await closePicker(page);
+  return ok;
+}
 async function setPromptText(page, text) {
-  const input = await findElement(page, () =>
-    document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]'));
+  const input = await findElement(page, (sel) => document.querySelector(sel), PROMPT_EDITOR_SEL);
   if (!input) return false;
   await input.click();
 
   if (text.includes(MENTION_OPEN)) {
     // Split into alternating text / mention segments and type them in order.
     const parts = text.split(new RegExp(`${MENTION_OPEN}([^${MENTION_CLOSE}]+)${MENTION_CLOSE}`));
-    for (let i = 0; i < parts.length; i++) {
+
+    // Work out which names the library can actually mention BEFORE typing
+    // anything. Typing "@name" and rolling it back when the dropdown has no
+    // match is what corrupted prompts: the dropdown rewrites the query as you
+    // type, so the rollback never deletes exactly the right characters and the
+    // leftovers interleave with the rest of the prompt. A name that cannot be
+    // mentioned is written as plain text and never gets an "@" at all.
+    const wanted = [...new Set(parts.filter((_, i) => i % 2 === 1))];
+    const mentionable = await resolveMentionable(page, wanted);
+    await input.click();
+
+    // The prompt with every mention written as a plain name. This is the
+    // guaranteed-correct form, used whenever the mention path misbehaves.
+    const plain = parts
+      .map((p, i) => (i % 2 === 1 ? p.replace(/\.(jpg|jpeg|png|webp)$/i, '') : p))
+      .join('');
+
+    let mentionFailed = false;
+    for (let i = 0; i < parts.length && !mentionFailed; i++) {
       if (!parts[i]) continue;
-      if (i % 2 === 1) await insertMention(page, parts[i]);
-      else await page.keyboard.type(parts[i], { delay: 0 });
+      if (i % 2 === 1) {
+        if (mentionable.has(parts[i])) {
+          // A failed mention has already disturbed the editor, and no
+          // character-level rollback inside a live ProseMirror is reliable.
+          // Stop and rebuild instead of trying to repair in place.
+          if (!(await insertMention(page, parts[i]))) mentionFailed = true;
+        } else {
+          await caretToEnd(page);
+          await insertTextAtomic(page, parts[i].replace(/\.(jpg|jpeg|png|webp)$/i, ''));
+        }
+      } else { await caretToEnd(page); await insertTextAtomic(page, parts[i]); }
+    }
+
+    // Verify the whole prompt landed, not just its tail: a raced insert can
+    // duplicate or interleave segments and still leave the tail present.
+    // Compare ignoring whitespace, case and file extensions, since a mention
+    // chip renders the name with its extension while `plain` strips it.
+    const norm = (s) => (s || '')
+      .replace(/\.(jpg|jpeg|png|webp)/gi, '')
+      .replace(/\s+/g, '')
+      .toLowerCase();
+    const readEditor = () => page.evaluate((sel) => {
+      const ed = document.querySelector(sel);
+      const c = ed.cloneNode(true);
+      c.querySelectorAll('.prosemirror-placeholder,.ProseMirror-separator,.ProseMirror-trailingBreak').forEach((n) => n.remove());
+      return c.textContent || '';
+    }, PROMPT_EDITOR_SEL);
+
+    if (mentionFailed || norm(await readEditor()) !== norm(plain)) {
+      log('Prompt did not come out intact — rewriting it as plain text.');
+      // The rewrite MUST start from an empty composer, or the plain text is
+      // appended to the corrupted remains and the prompt is twice as wrong.
+      let empty = false;
+      for (let i = 0; i < 4 && !empty; i++) {
+        await resetComposer(page);
+        empty = !(await readEditor()).trim();
+      }
+      if (!empty) { log('Could not clear the composer — skipping this prompt.'); await input.dispose(); return false; }
+      await caretToEnd(page);
+      await insertTextAtomic(page, plain);
+      if (norm(await readEditor()) !== norm(plain)) {
+        log('Plain rewrite still did not match — skipping this prompt.');
+        await input.dispose();
+        return false;
+      }
     }
   } else {
-    await page.keyboard.type(text, { delay: 0 });
+    await insertTextAtomic(page, text);
   }
 
   await input.dispose();
@@ -821,8 +1124,8 @@ async function waitForGenerateButton(page, timeoutMs = 6000, intervalMs = 500) {
   while (Date.now() - start < timeoutMs) {
     const h = await findElement(page, () =>
       Array.from(document.querySelectorAll('button')).find(btn =>
-        btn.innerHTML.includes('arrow_forward') &&
-        btn.textContent.includes('Create') &&
+        (btn.innerHTML.includes('arrow_forward') ||
+          /start generation/i.test(btn.getAttribute('aria-label') || '')) &&
         btn.getAttribute('aria-disabled') !== 'true' &&
         !btn.disabled));
     if (h) return h;
@@ -1020,10 +1323,10 @@ function buildTasks(cfg) {
 // After a successful Create, Flow clears the composer back to its placeholder.
 // We use that as the signal that generation actually started.
 function composerCleared(page) {
-  return page.evaluate(() => {
-    const ed = document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]');
+  return page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
     return !ed || /what do you want to create/i.test(ed.textContent || '');
-  });
+  }, PROMPT_EDITOR_SEL);
 }
 
 // Click Create (with fallbacks) and confirm generation actually started by
@@ -1115,26 +1418,46 @@ async function setAspectRatio(page, ratio) {
     const b = Array.from(document.querySelectorAll('button')).find(x => /crop_\d/.test(x.innerHTML));
     return b ? ((b.innerHTML.match(/crop_(\d+_\d+)/) || [])[1] || '') : '';
   });
+  // Both the trigger and the ratio option need a REAL mouse click at their rect.
+  // ElementHandle.click() on the trigger does not open the overlay, and an
+  // in-page .click() on the option isn't picked up by the handler.
+  const clickRect = async (fn, ...args) => {
+    const box = await page.evaluate((f, ...a) => {
+      // eslint-disable-next-line no-new-func
+      const el = new Function('return (' + f + ')')()(...a);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return r.width && r.height ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+    }, fn.toString(), ...args);
+    if (!box) return false;
+    await page.mouse.click(box.x, box.y);
+    return true;
+  };
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     if ((await current()) === wanted) { log(`Aspect ratio is ${ratio}.`); return true; }
 
-    const trigger = await findElement(page, () =>
-      Array.from(document.querySelectorAll('button')).find(b => /crop_\d/.test(b.innerHTML)));
-    if (!trigger) { await sleep(600); continue; }
-    await trigger.click();
-    await trigger.dispose();
+    const opened = await clickRect(() =>
+      Array.from(document.querySelectorAll('button')).find(b => /crop_\d/.test(b.innerHTML)) || null);
+    if (!opened) { await sleep(600); continue; }
     await sleep(1200);
 
-    // Real mouse click on the ratio tab — a synthetic .click() inside evaluate()
-    // doesn't register with the popover's handler.
-    const tab = await findElement(page, (r) => {
-      const wraps = Array.from(document.querySelectorAll('[data-radix-popper-content-wrapper],[role="dialog"],[role="menu"]'));
-      const w = wraps.find(x => /16:9/.test(x.innerText));
-      if (!w) return null;
-      return Array.from(w.querySelectorAll('button[role="tab"]')).find(b => b.textContent.trim().endsWith(r)) || null;
-    }, ratio);
-    if (tab) { await tab.click(); await tab.dispose(); await sleep(900); }
+    // The settings popover is an Angular CDK overlay (.cdk-overlay-pane) and each
+    // ratio is a button[role="radio"] whose text is the icon token + the label,
+    // e.g. "crop_16_916:9". Older builds used a Radix popper with role="tab" —
+    // both shapes are accepted so a UI rollback doesn't break this again.
+    const picked = await clickRect((w, r) => {
+      const vis = (el) => { const b = el.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
+      const panes = Array.from(document.querySelectorAll(
+        '.cdk-overlay-pane,[data-radix-popper-content-wrapper],[role="dialog"],[role="menu"]')).filter(vis);
+      const pane = panes.find(p => /16:9/.test(p.innerText || ''));
+      if (!pane) return null;
+      const opts = Array.from(pane.querySelectorAll('button[role="radio"],button[role="tab"],[role="menuitemradio"]')).filter(vis);
+      return opts.find(b => (b.textContent || '').includes('crop_' + w))
+        || opts.find(b => (b.textContent || '').trim().endsWith(r))
+        || null;
+    }, wanted, ratio);
+    if (picked) await sleep(900);
     await closePicker(page);
     await sleep(500);
     if ((await current()) === wanted) { log(`Aspect ratio set to ${ratio}.`); return true; }
@@ -1160,10 +1483,17 @@ async function renameLatestMedia(page, newName) {
     await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2, { button: 'right' });
     await sleep(1200);
 
+    // The tile context menu is an Angular Material menu inside a CDK overlay
+    // (.mat-mdc-menu-panel / .cdk-overlay-pane). It used to be a Radix popper
+    // with role="menu", which is all this looked for — so Rename was never
+    // found and every rename silently failed.
     const item = await findElement(page, () => {
-      const menus = Array.from(document.querySelectorAll('[role="menu"],[data-radix-popper-content-wrapper]'));
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const menus = Array.from(document.querySelectorAll(
+        '.mat-mdc-menu-panel,.cdk-overlay-pane,[role="menu"],[data-radix-popper-content-wrapper]')).filter(vis);
       for (const m of menus) {
-        const it = Array.from(m.querySelectorAll('*')).find(e => /Rename/.test(e.textContent || '') && e.querySelectorAll('*').length <= 2);
+        const it = Array.from(m.querySelectorAll('button,[role="menuitem"],[role="button"]'))
+          .filter(vis).find((e) => /rename/i.test(e.textContent || ''));
         if (it) return it;
       }
       return null;
@@ -1174,8 +1504,14 @@ async function renameLatestMedia(page, newName) {
     await sleep(1200);
 
     const input = await findElement(page, () => {
-      const d = document.querySelector('[role="dialog"]');
-      return d ? d.querySelector('input') : null;
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const dialogs = Array.from(document.querySelectorAll(
+        '[role="dialog"],mat-dialog-container,.mat-mdc-dialog-container,.cdk-overlay-pane')).filter(vis);
+      for (const d of dialogs) {
+        const i = Array.from(d.querySelectorAll('input')).filter(vis)[0];
+        if (i) return i;
+      }
+      return null;
     });
     if (!input) { await closePicker(page); continue; }
     // Clear the old name for real. Neither a triple-click nor Cmd+A reliably
@@ -1386,7 +1722,7 @@ async function runWorkerForPort(port) {
     return;
   }
   const pages = await browser.pages();
-  const page = pages.find(p => p.url().includes('labs.google')) || pages[0];
+  const page = pages.find(p => isFlowUrl(p.url())) || pages[0];
   if (!page) {
     plog('No Flow tab found. Open this account\'s Flow project in its debug Chrome window.');
     browser.disconnect();
@@ -1410,12 +1746,22 @@ async function runWorkerForPort(port) {
         try {
           await page.goto(batch.config.projectUrl, { waitUntil: 'domcontentloaded' });
           plog('Waiting for Google Flow workspace editor to load...');
-          await page.waitForSelector('[data-slate-editor="true"]', { timeout: 30000 }).catch(() => { });
+          await page.waitForSelector(PROMPT_EDITOR_SEL, { timeout: 30000 }).catch(() => { });
           await sleep(6000); // Buffer for react assets and library initialization
         } catch (err) {
           plog(`Failed to navigate to project URL: ${err.message || err}`);
         }
       }
+      // Preflight: the composer must actually be on this tab. Without it every
+      // task fails instantly ("could not set prompt text") and the batch burns
+      // itself out looking like the prompts were rejected.
+      if (!(await page.$(PROMPT_EDITOR_SEL))) {
+        plog(`Flow composer not found on ${page.url()} — open the Flow project in this account's debug Chrome, then requeue. Batch #${batch.id} aborted.`);
+        batch.status = 'done';
+        pushState();
+        continue;
+      }
+
       const tasks = buildTasks(batch.config);
       batch.total = tasks.length;
       batch.done = 0;
@@ -2125,7 +2471,7 @@ const server = http.createServer(async (req, res) => {
           continue;
         }
         const link = item.link || item.url;
-        if (!link || !link.includes('labs.google/fx/tools/flow/project/')) {
+        if (!link || !isFlowProjectUrl(link)) {
           log(`Skipping non-Flow project link: ${link}`);
           continue;
         }
@@ -2417,10 +2763,24 @@ const server = http.createServer(async (req, res) => {
             `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`, '--targets=fb', '--no-check'];
           if (c.fbAssetName) cliArgs.push(`--asset-name=${c.fbAssetName}`);
         } else {
-          // Legacy combined 'meta' = FB + IG cross-post in one composer entry.
-          const targets = Array.isArray(p.targets) && p.targets.length ? p.targets.join(',') : 'fb,ig';
+          // Combined 'meta' = FB + IG cross-post in ONE composer entry (for a login
+          // whose Page has the IG account linked, e.g. Jordan Bale).
+          const targetList = Array.isArray(p.targets) && p.targets.length
+            ? p.targets.map(t => String(t).trim().toLowerCase()).filter(t => t === 'fb' || t === 'ig')
+            : ['fb', 'ig'];
+          const targets = (targetList.length ? targetList : ['fb', 'ig']);
+          // Record the cross-post on EVERY track it actually lands on. Marking only
+          // 'meta' left the item pending forever on the IG side: the UI kept counting
+          // it, --delete-after never freed the file (Instagram is one of this
+          // character's due tracks), and a later IG pass posted it a second time.
+          const ledgerTracks = targets.map(t => (t === 'ig' ? 'meta-ig' : 'meta'));
           cliArgs = [META_UPLOAD_SCRIPT, c.folder, `--port=${c.port}`,
-            `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`, `--targets=${targets}`];
+            `--reels-per-day=${reelsPerDay}`, `--posts-per-day=${postsPerDay}`,
+            `--targets=${targets.join(',')}`, `--ledger=${ledgerTracks.join(',')}`, '--no-check'];
+          // Instagram only accepts 9:16 VIDEO through the Reel composer, so a
+          // cross-post that includes IG must use it — the plain post composer offers
+          // no Instagram surface for a video and the item silently went FB-only.
+          if (targets.includes('ig')) cliArgs.push('--reel');
           if (c.fbAssetName) cliArgs.push(`--asset-name=${c.fbAssetName}`); // same wrong-Page guard as the fb pass
         }
       } else if (isX) {
@@ -2437,7 +2797,18 @@ const server = http.createServer(async (req, res) => {
 
       if (p.start) cliArgs.push(`--start=${p.start}`);
       if (p.tz) cliArgs.push(`--tz=${p.tz}`);
-      if (p.dryRun) cliArgs.push('--dry-run'); else cliArgs.push('--delete-after');
+      const due = dueTracks(c);
+      if (p.dryRun) cliArgs.push('--dry-run');
+      else {
+        cliArgs.push('--delete-after', `--due=${due.join(',')}`);
+        // Clear anything already done on every unlocked platform before the run
+        // starts - folders that filled up under the old "always due on Meta too"
+        // assumption are emptied here instead of growing forever.
+        try {
+          const swept = ledgerStore.sweepDone(c.folder, due);
+          if (swept) log(`  🗑  ${label}: removed ${swept} already-posted item${swept === 1 ? '' : 's'} from "${c.name}" (done on ${due.join(', ')}).`);
+        } catch (e) { log(`  ! sweep skipped for "${c.name}": ${e.message}`); }
+      }
 
       const child = spawn(process.execPath, cliArgs, { cwd: __dirname });
       ytRuns.set(c.id, { child, name: c.name, port: c.port, platform });
@@ -2680,7 +3051,38 @@ process.on('uncaughtException', (err) => {
   catch { console.error('uncaughtException', err); }
 });
 
-server.listen(PORT, () => {
-  console.log(`\nControl panel running at http://localhost:${PORT}\n`);
-  socialScheduler.startSchedulerLoop();
-});
+// Only start listening when run directly. Required as a module (by flowcheck.js,
+// the live Flow primitive check) the file just exposes its helpers, so the
+// browser automation can be exercised without booting a server on the same port.
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`
+Control panel running at http://localhost:${PORT}
+`);
+    socialScheduler.startSchedulerLoop();
+  });
+}
+
+module.exports = {
+  state,
+  findElement,
+  clickAddIngredients,
+  clickButtonWithText,
+  findCharacterOption,
+  countCharacterChips,
+  countComposerRefs,
+  closePicker,
+  addCharacterReference,
+  addBackgroundReference,
+  uploadViaFileChooser,
+  uploadLocalRefImage,
+  uploadAllRefImages,
+  resetComposer,
+  setPromptText,
+  insertMention,
+  mention,
+  setAspectRatio,
+  renameLatestMedia,
+  waitForGenerateButton,
+  PROMPT_EDITOR_SEL,
+};
