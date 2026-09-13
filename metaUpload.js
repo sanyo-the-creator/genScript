@@ -2050,8 +2050,21 @@ async function uploadOne(page, entry, dryRun, targets) {
   // so the old "find a business.facebook.com page" recovery happily picked the
   // dead tab back up. Every later item then failed with "Session closed", forever
   // (a 32-item Instagram run burned end to end that way, 2026-09-09).
+  // Is the Chrome connection still live? puppeteer-core dropped Browser.isConnected()
+// in v23 in favour of the `connected` getter, and calling the old method threw a
+// TypeError from inside the per-item catch block — which took the whole run down
+// (uncaught) the first time an item failed for real, instead of skipping it.
+// Support both shapes so the run survives either puppeteer version.
+const browserAlive = (b) => {
+  try {
+    if (typeof b.connected === 'boolean') return b.connected;
+    if (typeof b.isConnected === 'function') return b.isConnected();
+  } catch { /* a dead connection can throw here — treat as gone */ }
+  return false;
+};
+
   const acquirePage = async () => {
-    if (!browser.isConnected()) throw new Error('Chrome is gone (window closed or crashed).');
+    if (!browserAlive(browser)) throw new Error('Chrome is gone (window closed or crashed).');
     const live = (await browser.pages()).filter((p) => !p.isClosed());
     let p = live.find((x) => x.url().includes('business.facebook.com'))
          || live.find((x) => x.url().includes('facebook.com'))
@@ -2149,7 +2162,7 @@ async function uploadOne(page, entry, dryRun, targets) {
       consecutiveFails++;
       console.error(`   ✗ FAILED: ${entry.item.key} — ${e.message}`);
       try { await stabilize(); } catch (re) { console.warn(`   ! recovery failed: ${re.message}`); }
-      if (!browser.isConnected()) {
+      if (!browserAlive(browser)) {
         console.error('\n✗ Chrome is gone (window closed or crashed) — aborting this run.');
         break;
       }
