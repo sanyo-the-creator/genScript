@@ -747,18 +747,10 @@ async function uploadReel(page, entry, dryRun) {
 
   // 5) Date (numeric mm/dd/yyyy, focus via JS) + the three time spinbuttons — the
   // SAME controls/mechanics as the post composer.
-  const dateNumeric = `${pad(entry.date.getMonth() + 1)}/${pad(entry.date.getDate())}/${entry.date.getFullYear()}`;
   const tm = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(entry.timeLabel);
-  const dateFocused = await page.evaluate(() => {
-    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const i = Array.from(document.querySelectorAll('input')).filter(vis).find((x) => /mm\/dd\/yyyy/i.test(x.placeholder || ''));
-    if (!i) return false; i.focus(); return true;
-  });
-  if (dateFocused) {
-    await sleep(150);
-    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control'); await sleep(150);
-    await page.keyboard.type(dateNumeric, { delay: 60 }); await sleep(400);
-  } else console.warn('   ! reel date field not found.');
+  const picked = await pickDateFromCalendar(page, entry.date);
+  if (!picked.ok) throw new Error(`Reel date not set (${picked.reason}). Nothing scheduled for ${entry.item.key}.`);
+  console.log(`   • date picked from the calendar: ${picked.aria} → field reads "${picked.shown}"`);
   if (tm) { await setSpin(page, 'hours', tm[1]); await setSpin(page, 'minutes', tm[2]); await setMeridiem(page, tm[3].toUpperCase()); }
 
   const conf = await page.evaluate(() => {
@@ -811,6 +803,125 @@ async function uploadReel(page, entry, dryRun) {
 
   console.log(`   ✓ Scheduled reel for ${entry.dateLabel} ${entry.timeLabel} → ig`);
   return entry.date.toISOString();
+}
+
+// ── Date via the CALENDAR, not the masked text input ─────────────────────────
+// The date field is a mask that arrives PRE-FILLED with today, and emptying it
+// makes Business Suite re-insert today immediately — so typing into it is a
+// fight that was lost in several different ways (digits merging into the
+// prefill, a select-all the mask swallows, the value reverting on blur).
+//
+// Clicking the field opens a calendar popover instead, and that is unambiguous:
+// every day is a role="button" whose aria-label reads "Sunday, 20 September 2026",
+// carrying aria-disabled="true" for any day outside the window Meta accepts
+// (before today, or more than 29 days out). So we click the day, and Meta's own
+// disabled flag tells us when a plan is out of range BEFORE anything is
+// submitted. Verified live on port 9225, 2026-09-17: "Sep 17, 2026" → clicking
+// "Sunday, 20 September 2026" → the field reads "Sep 20, 2026".
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december'];
+
+// Read the date input's current text (the picker's own rendering of the date).
+function dateFieldValue(page) {
+  return page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const i = Array.from(document.querySelectorAll('input')).filter(vis)
+      .find((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
+    return i ? (i.value || '') : null;
+  });
+}
+
+// Click the day `when` falls on. Walks forward a month at a time when the target
+// is not on the visible page (a 29-day window routinely crosses a month end).
+// Returns { ok, reason } — never throws, so the caller decides how loud to be.
+async function pickDateFromCalendar(page, when) {
+  const opened = await page.evaluate(() => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const i = Array.from(document.querySelectorAll('input')).filter(vis)
+      .find((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
+    if (!i) return false; i.click(); return true;
+  });
+  if (!opened) return { ok: false, reason: 'date field not found' };
+  await sleep(900);
+
+  const want = { d: when.getDate(), m: when.getMonth() + 1, y: when.getFullYear() };
+
+  // Which month is on screen? There is no month heading to read, but every day
+  // cell names its own month in the aria-label, so the grid tells us itself.
+  const shownMonth = () => page.evaluate((months) => {
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const arias = Array.from(document.querySelectorAll('[role="button"][aria-label]')).filter(vis)
+      .map((el) => el.getAttribute('aria-label') || '')
+      .filter((a) => /\d{4}/.test(a));
+    for (const a of arias) {
+      const mon = months.findIndex((m) => new RegExp(m, 'i').test(a)) + 1;
+      const y = Number((a.match(/\d{4}/) || [])[0]);
+      if (mon && y) return { m: mon, y };
+    }
+    return null;
+  }, MONTH_NAMES);
+
+  // Step to the target month in whichever direction it lies. The window Meta
+  // allows is 29 days, so this is one hop in practice; the cap is head-room.
+  const here = await shownMonth();
+  if (here) {
+    const delta = (want.y - here.y) * 12 + (want.m - here.m);
+    const label = delta > 0 ? /next month/i : /previous month/i;
+    for (let i = 0; i < Math.min(Math.abs(delta), 6); i++) {
+      const moved = await page.evaluate((reSrc) => {
+        const re = new RegExp(reSrc.slice(1, reSrc.lastIndexOf('/')), 'i');
+        const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+          .find((x) => re.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+        if (!b) return false; b.click(); return true;
+      }, label.toString());
+      if (!moved) break;
+      await sleep(800);
+    }
+  }
+
+  for (let hop = 0; hop < 3; hop++) {
+    const res = await page.evaluate((t, months) => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const cells = Array.from(document.querySelectorAll('[role="button"][aria-label]')).filter(vis)
+        .map((el) => ({ el, aria: el.getAttribute('aria-label') || '', dis: el.getAttribute('aria-disabled') === 'true' }))
+        .filter((c) => /\d{1,2}[\s,]+\w+[\s,]+\d{4}|\w+[\s,]+\d{1,2},?\s+\d{4}/.test(c.aria));
+      const hit = cells.find((c) => {
+        const nums = (c.aria.match(/\d+/g) || []).map(Number);
+        const mon = months.findIndex((m) => new RegExp(m, 'i').test(c.aria)) + 1;
+        return nums.includes(t.d) && nums.includes(t.y) && mon === t.m;
+      });
+      if (!hit) return { state: 'absent' };
+      if (hit.dis) return { state: 'disabled', aria: hit.aria };
+      hit.el.click();
+      return { state: 'clicked', aria: hit.aria };
+    }, want, MONTH_NAMES);
+
+    if (res.state === 'clicked') {
+      await sleep(900);
+      const shown = await dateFieldValue(page);
+      const nums = (shown || '').match(/\d+/g) || [];
+      const ok = nums.includes(String(want.d)) && nums.includes(String(want.y));
+      return ok
+        ? { ok: true, shown, aria: res.aria }
+        : { ok: false, reason: `clicked "${res.aria}" but the field reads "${shown}"` };
+    }
+    if (res.state === 'disabled') {
+      // Meta greys out anything outside 20 minutes-to-29 days. Saying so here beats
+      // letting the composer refuse it after the upload.
+      return { ok: false, reason: `Meta has ${res.aria} greyed out — outside the 20 minutes to 29 days it accepts` };
+    }
+    // Not on this page: step to the next month and look again.
+    const moved = await page.evaluate(() => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const b = Array.from(document.querySelectorAll('div[role="button"],button')).filter(vis)
+        .find((x) => /next month/i.test((x.getAttribute('aria-label') || x.textContent || '').trim()));
+      if (!b) return false; b.click(); return true;
+    });
+    if (!moved) return { ok: false, reason: 'day not on the calendar and no "Next month" control' };
+    await sleep(800);
+  }
+  return { ok: false, reason: `${when.toDateString()} is not reachable in the calendar — Business Suite only pages through the 29 days it accepts` };
 }
 
 // ── One post ─────────────────────────────────────────────────────────────────
@@ -1035,10 +1146,9 @@ async function uploadOne(page, entry, dryRun, targets) {
     return true;
   }, reelWizard);
   const tm = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(entry.timeLabel);
-  // The date field is a MASKED mm/dd/yyyy input: a typed "Aug 14, 2026" DISPLAYS
-  // but reverts to today on blur (never commits). Typing the numeric mm/dd/yyyy
-  // form commits properly (blur then re-renders it as "Aug 14, 2026"). Verified.
-  const dateNumeric = `${pad(entry.date.getMonth() + 1)}/${pad(entry.date.getDate())}/${entry.date.getFullYear()}`;
+  // The date is set by CLICKING it in the calendar popover (see
+  // pickDateFromCalendar) rather than typed: the masked input re-fills itself
+  // with today the moment it is cleared, so typing into it never held.
 
   let scheduled = false;
   let confirmWhen = { date: '?', time: '?:? ?' };
@@ -1052,21 +1162,9 @@ async function uploadOne(page, entry, dryRun, targets) {
     // Then select-all + type the NUMERIC mm/dd/yyyy (typing "Aug 14" displays but
     // reverts on blur; the numeric form commits). Do NOT clear to empty first —
     // Backspace corrupts the mask. Blur (focusing the time field below) finalizes.
-    const dateFocused = await page.evaluate(() => {
-      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const i = Array.from(document.querySelectorAll('input')).filter(vis)
-        .find((x) => /mm\/dd\/yyyy/i.test(x.placeholder || '') || /^\w{3,}\s+\d{1,2}/.test(x.value || ''));
-      if (!i) return false; i.focus(); return true;
-    });
-    if (dateFocused) {
-      await sleep(150);
-      await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
-      await sleep(150);
-      await page.keyboard.type(dateNumeric, { delay: 60 });
-      await sleep(400);
-    } else {
-      console.warn('   ! Date input not found — set the date manually.');
-    }
+    const picked = await pickDateFromCalendar(page, entry.date);
+    if (!picked.ok) console.warn(`   ! date not set from the calendar (${picked.reason}).`);
+    else console.log(`   • date picked from the calendar: ${picked.aria} → field reads "${picked.shown}"`);
 
     // Time — three spinbuttons (value lives in aria-valuenow / aria-valuetext).
     // Do this IMMEDIATELY after the date type: focusing the hours segment blurs

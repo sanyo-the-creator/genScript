@@ -181,10 +181,38 @@ function handleBadges(handles) {
   return items.length ? `<div class="handles">${items.join('')}</div>` : '';
 }
 
+// One backlog badge PER connected account. Each platform keeps its own posted
+// ledger, so a video already scheduled on YouTube is still ready for Instagram —
+// showing a single number (YouTube's) is what made a full folder read as "0".
+// UI platform value <-> the loggedPlatforms key that turns it on.
+const PENDING_CHIPS = [
+  { key: 'youtube', logged: 'youtube',   label: 'YouTube' },
+  { key: 'fb',      logged: 'facebook',  label: 'Facebook' },
+  { key: 'ig',      logged: 'instagram', label: 'Instagram' },
+  { key: 'x',       logged: 'x',         label: 'X' },
+  { key: 'threads', logged: 'threads',   label: 'Threads' },
+];
+
+function pendingBadges(c) {
+  const by = c.pendingBy || {};
+  const logged = c.loggedPlatforms || {};
+  // Before any account is connected, fall back to the YouTube backlog alone.
+  const chips = PENDING_CHIPS.filter(p => logged[p.logged] && by[p.key] != null);
+  if (!chips.length) {
+    const n = by.youtube != null ? by.youtube : (c.pending || 0);
+    return `<span class="badge good">${n} video${n === 1 ? '' : 's'} ready</span>`;
+  }
+  return chips.map(p => {
+    const n = by[p.key];
+    return `<span class="badge ${n > 0 ? 'good' : ''}" title="${p.label}: videos not yet scheduled on this account">`
+      + `${p.label} ${n}</span>`;
+  }).join(' ');
+}
+
 function charCard(c) {
   const isRun = runSet.has(c.id);
   const folderBadge = c.folderExists
-    ? `<span class="badge good">${c.pending} video${c.pending===1?'':'s'} ready</span>`
+    ? pendingBadges(c)
     : `<span class="badge bad">folder not found</span>`;
 
   // Build platform dropdown options based on loggedPlatforms
