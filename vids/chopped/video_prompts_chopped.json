@@ -1,0 +1,174 @@
+{
+    "pack": "chopped",
+    "defaults": {
+        "character": "@Chopped character",
+        "swapPrompt": "Recreate the exact scene, pose, clothing, and background from @ref. The main subject is @character. Ensure @character is wearing the exact same outfit and matching the exact same pose as the person in the original image.",
+        "imageModel": "Nano Banana 2",
+        "imageCount": 3,
+        "videoModel": "Omni 1.1 Flash",
+        "videoCount": 1,
+        "aspect": "9:16",
+        "resolution": "720p",
+        "passthrough": [
+            "mog.jpeg"
+        ],
+        "tagEveryMention": true
+    },
+    "clips": [
+        {
+            "id": "chopped_kissing",
+            "prompt": "first frame of the video is @image1 and last frame of the video is @image2. has @image3 across the eyes throughout the entire duration of the video. guy character is not going to smile that much in the video",
+            "imgRef": [
+                {
+                    "image1": "chopped_kissing_start.jpeg"
+                },
+                {
+                    "image2": "chopped_kissing_end.jpeg"
+                },
+                {
+                    "image3": "mog.jpeg"
+                }
+            ],
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_couple",
+            "prompt": "just connect the images @image1, @image2 and @image3 into the video where both characters just look into the camera then girl looks on our boy character and later guy looks onto the girls face. place @image4 on the girls eyes throughout the whole video",
+            "imgRef": [
+                {
+                    "image1": "chopped_couple_start.jpeg"
+                },
+                {
+                    "image2": "chopped_couple_mid.jpeg"
+                },
+                {
+                    "image3": "chopped_couple_end.jpeg"
+                },
+                {
+                    "image4": "mog.jpeg"
+                }
+            ],
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_inside",
+            "prompt": "@image1 is the first frame, then girl shows the peace sign with her right hand and @image2 is the last frame. place @image3 across the girls eyes throughout the whole video",
+            "imgRef": [
+                {
+                    "image1": "chopped_inside_start.jpeg"
+                },
+                {
+                    "image2": "chopped_inside_end.jpeg"
+                },
+                {
+                    "image3": "mog.jpeg"
+                }
+            ],
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_hug",
+            "prompt": "make the girlfriend run to our character and hug him. there is an impact visible on the camera when she runs to hug him. neutral face. girl will not show her face at all. it happends really fast and movements of the camera have to look natural. she runs from the bottom of the screen really really fast",
+            "imgRef": [
+                {
+                    "imageStart": "chopped_hug_start.jpeg"
+                },
+                {
+                    "imageEnd": "chopped_hug_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "chopped_kiss",
+            "prompt": "@image1 is the first frame, girl smiles into the camera while the guy keeps neutral face. last frame of the video is @image2. throughout the whole video girl should have @image3 over here eyes",
+            "imgRef": [
+                {
+                    "image1": "chopped_kiss_start.jpeg"
+                },
+                {
+                    "image2": "chopped_kiss_end.jpeg"
+                },
+                {
+                    "image3": "mog.jpeg"
+                }
+            ],
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_middle",
+            "prompt": "no camera movement just our character shows his middle finger",
+            "imgRef": [
+                {
+                    "imageStart": "chopped_middle_start.jpeg"
+                },
+                {
+                    "imageEnd": "chopped_middle_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "chopped_flexing",
+            "prompt": "make our character on the image flex his muscles and then relax his arms on the last second. no camera movement at all. steady camera",
+            "imgRef": "chopped_flexing.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_sleeping",
+            "prompt": "make it look like our character is sleeping and on the last second of the video he opens his eyes with a tired look on his face.",
+            "imgRef": "chopped_sleeping.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_outside",
+            "prompt": "make our character just walk and on the last 2 sec of the video he brings the camera closer to him and looks away from the camera",
+            "imgRef": "chopped_outside.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_talking_outside",
+            "prompt": "make our character walk, and look arround and it looks like he is talking",
+            "imgRef": "chopped_talking_outside.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_scrolling",
+            "prompt": "zoom on our character that is scrolling reels in his bed.",
+            "imgRef": "chopped_scrolling.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_talking_inside",
+            "prompt": "just make it look like our character is talking and someties looks away from the camera. no camera movement",
+            "imgRef": "chopped_talking_inside.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_stare",
+            "prompt": "make our character stare into the camera and do a smirk in last second of the video",
+            "imgRef": "chopped_stare.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "chopped_plane",
+            "prompt": "make our character just stare at the camera and blink 3 times in 2 sec than act confused and raise his head towards the front of the plane",
+            "imgRef": "chopped_plane.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        }
+    ]
+}

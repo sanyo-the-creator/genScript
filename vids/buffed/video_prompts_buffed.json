@@ -1,0 +1,215 @@
+{
+    "pack": "buffed",
+    "defaults": {
+        "character": "@Untitled character",
+        "swapPrompt": "Recreate the exact scene, pose, clothing, and background from @ref. The main subject is @character. Ensure @character is wearing the exact same outfit and matching the exact same pose as the person in the original image.",
+        "imageModel": "Nano Banana 2",
+        "imageCount": 3,
+        "videoModel": "Omni 1.1 Flash",
+        "videoCount": 1,
+        "aspect": "9:16",
+        "resolution": "720p",
+        "passthrough": [
+            "mog.jpeg"
+        ],
+        "tagEveryMention": true
+    },
+    "clips": [
+        {
+            "id": "char_brush_hair",
+            "prompt": "make our character maintain the angle of the video as it is on Character brushing hair with hand throughout the whole video. he should brush his head with his left hand once and on the last 0.5 seconds he closes his eyes",
+            "imgRef": "char_brush_hair.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_hold_mouth",
+            "prompt": "make our character do a double biceps pose. no camera movement! no head movement! those are strict rules. from the pose that is there now do a double bicep",
+            "imgRef": "char_hold_mouth.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_zyzz",
+            "prompt": "no camera movement! guy flexes his muscless reall really hard so he starts shaking a bit",
+            "imgRef": [
+                {
+                    "imageStart": "char_zyzz_start.jpeg"
+                },
+                {
+                    "imageEnd": "char_zyzz_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "char_mirror",
+            "prompt": "no camera movement. make him flex his bicep",
+            "imgRef": [
+                {
+                    "imageStart": "char_mirror_start.jpeg"
+                },
+                {
+                    "imageEnd": "char_mirror_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "char_sauna",
+            "prompt": "our character takes a step back and does a double biceps pose.  no camera movement!",
+            "imgRef": [
+                {
+                    "imageStart": "char_sauna_start.jpeg"
+                },
+                {
+                    "imageEnd": "char_sauna_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "char_tricep_flex",
+            "prompt": "make our character maintain this pose as it is on @refference_image  throughout the whole video. he flexes his tricep muscle so he stands more sideways to the camera capturing the video. no camera movement. change of color to more red because of flexing",
+            "imgRef": "char_tricep_flex.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_doubleBi",
+            "prompt": "make our character walk away a bit from the camera in first 1 second of the video still facing with his front of the body and then he does double biceps flex as it is in end frame. it happends fast. there is no movement in camera at all!",
+            "imgRef": [
+                {
+                    "imageStart": "char_doubleBi_start.jpeg"
+                },
+                {
+                    "imageEnd": "char_doubleBi_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "char_jawline_green",
+            "prompt": "make our character turn his head a bit so he flexes his jawline and shows off his cheekbones and jawline really well. make this movement fast, no camera movement, no facial expression and he should remain neutral face",
+            "imgRef": "char_jawline_green.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_jawline_gray",
+            "prompt": "make our character refference image look into the camera and he points finger in front of his mouth to to indicate 'sush' and tilts his head to the side and he slides the index finger on his jawline from back of the jaw to the front. slide should be movement that points how sharp is the jawline. no camera movement. neutral facial expression. visible jawline with cheekbones. place the @image2 image across his eyes throughout the whole video",
+            "imgRef": [
+                {
+                    "image1": "char_jawline_gray.jpeg"
+                },
+                {
+                    "image2": "mog.jpeg"
+                }
+            ],
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_front_pose",
+            "prompt": "make our character flex his muscles in the pose he is in the refference image ",
+            "imgRef": "char_front_pose.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_mog",
+            "prompt": "make it look like our character is walking and he just looks at the camera than looks at the angle as it is on the end frame",
+            "imgRef": [
+                {
+                    "imageStart": "char_mog_start.jpeg"
+                },
+                {
+                    "imageEnd": "char_mog_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "char_mogged",
+            "prompt": "morph end frame with start frame 8 times in the video. no visual change of the characters use only the @image1  and @image2 for the video. nothing else",
+            "imgRef": [
+                {
+                    "image1": "char_mogged.jpeg"
+                },
+                {
+                    "image2": "char_chopped.jpeg"
+                }
+            ],
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_lat_abs",
+            "prompt": "make our character maintain this pose as it is on @refference_image throughout the whole video. he flexes his upper body muscles. no camera movement. change of color to more red because of flexing",
+            "imgRef": "char_lat_abs.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_front_flex",
+            "prompt": "make our character maintain this pose as it is on @refference_image throughout the whole video. he flexes his upper body muscles. no camera movement. change of color to more red because of flexing",
+            "imgRef": "char_front_flex.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_side_flex",
+            "prompt": "make him flex his abs and sideabs. no camera movement! maintain the position of our character as it is on @refference_image",
+            "imgRef": "char_side_flex.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_bulk_lats",
+            "prompt": "make our character flex his abs muscles in the position visible on @refference_image. no camera movement!",
+            "imgRef": "char_bulk_lats.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_night_mog",
+            "prompt": "just make our @image1 stare into the camera leaning his head a little bit forward, no camera movement. place @image2 over his eyes throughout the whole video",
+            "imgRef": [
+                {
+                    "image1": "char_night_mog.jpeg"
+                },
+                {
+                    "image2": "mog.jpeg"
+                }
+            ],
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_beach_mog",
+            "prompt": "character just brushes his hair with his hand. no camera movement. than looks away",
+            "imgRef": "char_beach_mog.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_bathroom_side",
+            "prompt": "make our character maintain his pose as it is on the refference image. just let him stand there and show off his jawline from the side like he is standing right now. no camera movement!",
+            "imgRef": "char_bathroom_side.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_bath_mirror",
+            "prompt": "flex his right arm by his side of the body. no camera movement!",
+            "imgRef": "char_bath_mirror.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        }
+    ]
+}
