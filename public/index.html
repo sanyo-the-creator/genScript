@@ -166,6 +166,15 @@
     </div>
 
     <div class="card">
+      <h2>Vids packs · swap → video</h2>
+      <p class="note" style="margin-top:0">Two stages with your own review in between. <b>1 · Images</b> swaps every reference picture in the pack onto that pack's character (x2 each). Then look through them in Flow and <b>delete the bad ones and the duplicates</b>, so exactly one generation survives per reference — that deletion IS the approval. Then <b>2 · Videos</b> builds the clips from whatever survived.</p>
+      <div class="flex" style="margin-bottom:10px">
+        <div class="grow"><label style="margin:0 0 4px">Run on account</label><select id="vpAccount"></select></div>
+      </div>
+      <div id="vpList"></div>
+    </div>
+
+    <div class="card">
       <h2>2 · Character</h2>
       <label>Character name (must match the asset in Flow's picker)</label>
       <input type="text" id="characterName" value="Untitled Character" />
@@ -1186,6 +1195,122 @@ document.getElementById('openScraperBtn').onclick = async (e) => {
     btn.disabled = false; btn.textContent = orig;
   }
 };
+
+// ── Vids packs (swap → video) ────────────────────────────────────────────────
+let vpPacks = [];
+function vpRender() {
+  const sel = document.getElementById('vpAccount');
+  const keep = sel.value;
+  sel.innerHTML = accounts.map(a => `<option value="${a.port}">${a.name} (port ${a.port})</option>`).join('')
+    || '<option value="9222">Account 1 (port 9222)</option>';
+  if (keep) sel.value = keep;
+  if (!sel.dataset.bound) { sel.dataset.bound = '1'; sel.addEventListener('change', vpRefresh); }
+
+  document.getElementById('vpList').innerHTML = vpPacks.map(p => {
+    // Videos only make sense once every reference has a generation to pick from.
+    const imagesLeft = p.notStarted;
+    const ready = p.notStarted === 0;
+    return `<div class="acct" data-pack="${p.pack}" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px">
+      <div class="flex" style="align-items:center">
+        <b style="text-transform:capitalize">${p.pack}</b>
+        <span class="pill">${p.images} refs</span>
+        <span class="pill">${p.clips} clips</span>
+        <span class="grow"></span>
+        <span class="muted">${p.defaults.character}</span>
+      </div>
+      <div class="muted" style="margin:6px 0 8px">
+        Images: ${p.generated}/${p.images} generated
+        &nbsp;|&nbsp; Videos: ${p.videosDone}/${p.clips} done
+        &nbsp;|&nbsp; project ${p.projectUrl
+          ? `<a href="${p.projectUrl}" target="_blank" rel="noopener">${(vpProject || '').slice(0, 8)}</a>`
+          : (vpProject ? vpProject.slice(0, 8) : 'unknown')}
+        ${p.lastRun ? `&nbsp;|&nbsp; last ${p.lastRun.stage} ${new Date(p.lastRun.at).toLocaleString()}` : ''}
+      </div>
+      <div class="flex">
+        <button class="vpScan">0 · Scan</button>
+        <button class="vpImgs grow">1 · Images (x${p.defaults.imageCount})</button>
+        <button class="vpVids primary grow"${ready ? '' : ' disabled title="Generate every reference image first"'}>2 · Videos (x${p.defaults.videoCount})</button>
+      </div>
+      <div class="flex" style="margin-top:6px">
+        <span class="muted" style="font-size:11px;align-self:center">Reset progress:</span>
+        <button class="vpRstImgs" title="Forget this project's generated images for this pack so the next run redoes them. Nothing in Flow is deleted.">↺ images</button>
+        <button class="vpRstVids" title="Forget this project's generated videos for this pack so the next run redoes them. Nothing in Flow is deleted.">↺ videos</button>
+        <span class="grow"></span>
+      </div>
+      ${ready ? '' : `<p class="note" style="margin:8px 0 0">${imagesLeft} reference picture(s) still have no generation in this project.</p>`}
+    </div>`;
+  }).join('') || '<p class="note">No packs found under vids/.</p>';
+}
+
+let vpProject = null;
+async function vpRefresh() {
+  // Progress is per Flow project, so the numbers follow the selected account's
+  // open project — the same pack in the next character's project starts empty.
+  const port = parseInt((document.getElementById('vpAccount') || {}).value) || 9222;
+  try {
+    const r = await fetch('/api/packs?port=' + port);
+    const d = await r.json();
+    vpPacks = d.packs || [];
+    vpProject = d.project || null;
+    vpRender();
+  } catch {}
+}
+
+async function vpRun(pack, stage, btn) {
+  const port = parseInt(document.getElementById('vpAccount').value) || 9222;
+  const label = stage === 'videos' ? 'videos' : stage === 'scan' ? 'the project scan' : 'images';
+  if (!confirm(`Start ${label} for the "${pack}" pack on port ${port}?`)) return;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Starting…';
+  try {
+    const r = await fetch(`/api/packs/${stage}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pack, port }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) alert(d.error || `Could not start the ${label} run.`);
+  } catch (e) {
+    alert('Error: ' + (e.message || e));
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+    vpRefresh();
+  }
+}
+
+// Clears what genScript remembers for THIS project only — the tiles and clips
+// stay in Flow, so a reset means "run it again", not "throw the work away".
+async function vpReset(pack, what, btn) {
+  const port = parseInt(document.getElementById('vpAccount').value) || 9222;
+  if (!confirm(`Reset ${what} progress for "${pack}" in the project open on port ${port}?\n\nNothing in Flow is deleted — the next run just redoes them.`)) return;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch('/api/packs/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pack, port, what }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) alert(d.error || 'Could not reset.');
+  } catch (e) {
+    alert('Error: ' + (e.message || e));
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+    vpRefresh();
+  }
+}
+
+document.getElementById('vpList').addEventListener('click', e => {
+  const btn = e.target.closest('button'); if (!btn) return;
+  const pack = e.target.closest('[data-pack]').dataset.pack;
+  if (btn.classList.contains('vpScan')) vpRun(pack, 'scan', btn);
+  if (btn.classList.contains('vpImgs')) vpRun(pack, 'swaps', btn);
+  if (btn.classList.contains('vpVids')) vpRun(pack, 'videos', btn);
+  if (btn.classList.contains('vpRstImgs')) vpReset(pack, 'images', btn);
+  if (btn.classList.contains('vpRstVids')) vpReset(pack, 'videos', btn);
+});
+
+vpRefresh();
+setInterval(vpRefresh, 5000);
 
 [...document.querySelectorAll('#osSeg button')].forEach(x => x.classList.toggle('active', x.dataset.os === osChoice));
 refreshAccounts();

@@ -249,8 +249,16 @@ function countPendingMeta(folder, track = 'meta') {
     return pendingMedia.length + pendingText.length;
   } catch { return 0; }
 }
-// Map a UI platform value to its pending count. 'fb'/'meta' use the 'meta' ledger
-// track; 'ig' uses its own 'meta-ig' track (separate context/pass).
+// UI platform value -> the ledger track that surface records under. Each social
+// account keeps its OWN track, so a video scheduled on YouTube is still pending
+// for Instagram, X, Threads and Facebook (and vice-versa).
+//   'youtube' -> 'youtube'   (ytUpload.js)
+//   'fb'/'meta' -> 'meta'    (metaUpload.js, Facebook surface)
+//   'ig'     -> 'meta-ig'    (metaUpload.js --ledger meta-ig, own Business Suite pass)
+//   'x'      -> 'twitter'    (xUpload.js PLATFORM)
+//   'threads'-> 'threads'    (threadsUpload.js PLATFORM)
+const LEDGER_TRACK = { youtube: 'youtube', fb: 'meta', meta: 'meta', ig: 'meta-ig', x: 'twitter', threads: 'threads' };
+// Map a UI platform value to its pending count.
 function countPendingFor(folder, platform) {
   // A combined Meta run cross-posts to FB *and* IG in one composer entry, so it
   // can only take items that are on NEITHER track yet — anything already on one
@@ -258,7 +266,14 @@ function countPendingFor(folder, platform) {
   if (platform === 'meta') return Math.min(countPendingMeta(folder, 'meta'), countPendingMeta(folder, 'meta-ig'));
   if (platform === 'fb') return countPendingMeta(folder, 'meta');
   if (platform === 'ig') return countPendingMeta(folder, 'meta-ig');
-  return countPending(folder, platform);
+  return countPending(folder, LEDGER_TRACK[platform] || platform);
+}
+// Backlog per connected platform, so the UI can show the count for whichever
+// account is selected instead of only YouTube's.
+function pendingByPlatform(folder) {
+  const out = {};
+  for (const p of Object.keys(LEDGER_TRACK)) out[p] = countPendingFor(folder, p);
+  return out;
 }
 // Ledger tracks a character actually posts to, from its loggedPlatforms toggles.
 // This is what makes --delete-after correct: a file is only removed once every
@@ -279,7 +294,11 @@ function dueTracks(c) {
   return tracks.length ? tracks : ['youtube'];
 }
 function ytCharactersView() {
-  return loadCharacters().map(c => ({ ...c, pending: countPending(c.folder), folderExists: fs.existsSync(c.folder) }));
+  return loadCharacters().map(c => {
+    const exists = fs.existsSync(c.folder);
+    const pendingBy = exists ? pendingByPlatform(c.folder) : {};
+    return { ...c, pending: pendingBy.youtube || 0, pendingBy, folderExists: exists };
+  });
 }
 function broadcastYt() {
   broadcast('yt', ytSnapshot());
@@ -510,24 +529,21 @@ async function clickButtonWithText(page, text) {
 function findCharacterOption(page, name) {
   return findElement(page, (n) => {
     const opts = Array.from(document.querySelectorAll('[role="option"]'));
-    // A picker row reads as the asset name followed by its type, e.g.
-    // "Untitled characterCharacter" or "photo.jpegImage". Strip that suffix and
-    // any file extension, then compare case-insensitively: the library name and
-    // the configured name differ in case ("Untitled character" vs
-    // "Untitled Character"), which defeated every previous match.
-    const clean = (t) => (t || '')
-      .replace(/(Image|Character|Video|Voice|Audio)$/, '')
-      .replace(/\.(jpg|jpeg|png|webp|mp4|mov)$/i, '')
-      .trim().toLowerCase();
-    const want = clean(n);
-    if (!want) return null;
-    // Whole-word before substring, so "girl" does not win against "girl2".
-    const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const word = new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`);
-    return opts.find((el) => clean(el.textContent) === want)
-      || opts.find((el) => word.test(clean(el.textContent)))
-      || opts.find((el) => clean(el.textContent).includes(want))
-      || null;
+    // Flow's redesign glues the asset TYPE onto the label —
+    // "refference_image_87.jpgImage", "Untitled CharacterCharacter" — so the
+    // exact matches below could never hit and everything fell through to the
+    // loose `includes` test. With sequential names that silently attaches the
+    // WRONG picture: "refference_image_4" matches "refference_image_43…".
+    const strip = t => t.replace(/(Image|Character|Video|Scene)$/, '').trim();
+    const label = el => strip((el.textContent || '').trim());
+    const bare = t => t.replace(/\.(jpg|jpeg|png|webp)$/i, '').trim();
+    const looseHits = opts.filter(el => label(el).includes(n));
+    return opts.find(el => label(el) === n)
+      || opts.find(el => bare(label(el)) === n)
+      || opts.find(el => new RegExp(`(^|[^a-z0-9])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i').test(label(el)))
+      // Last resort only when it is UNAMBIGUOUS. Several matches means the name
+      // is a prefix of others, and picking one would be a coin flip.
+      || (looseHits.length === 1 ? looseHits[0] : null);
   }, name);
 }
 function countCharacterChips(page) {
@@ -536,9 +552,14 @@ function countCharacterChips(page) {
     if (!ed) return 0;
     let c = ed;
     for (let i = 0; i < 6 && c.parentElement; i++) c = c.parentElement;
+    // Flow's redesign renamed this alt text: it used to be "Character
+    // reference", it is now "Character ingredient image". Matching only the old
+    // wording made this return 0 with the character plainly attached, so
+    // generateOne believed the chip had vanished and tried to re-add it (or
+    // skipped the generation outright).
     return Array.from(c.querySelectorAll('img'))
-      .filter((im) => /character (reference|ingredient)/i.test(im.alt || '')).length;
-  }, PROMPT_EDITOR_SEL);
+      .filter(im => /character (reference|ingredient)/i.test(im.alt || '')).length;
+  });
 }
 async function closePicker(page) { await page.keyboard.press('Escape'); await sleep(400); }
 
@@ -552,12 +573,15 @@ async function addCharacterReference(page, name, attempts = 3) {
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     log(`Adding character reference (attempt ${attempt}/${attempts})...`);
-    if (!(await clickAddIngredients(page))) { await sleep(600); continue; }
+    if (!(await openAddMenu(page))) { await sleep(600); continue; }
 
     // Filter the picker to the character by name via the search box. This
     // avoids the scrolling problem when the media library is large — the list
     // is virtualised, so an off-screen character row isn't even in the DOM.
-    const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
+    const search = await findElement(page, () => (document.querySelector('input[placeholder="Search assets"]')
+        || document.querySelector('input.search-input')
+        || Array.from(document.querySelectorAll('input[type="text"]')).find(i => /search/i.test(i.className) && i.offsetParent !== null)
+        || null));
     if (search) {
       await search.click();
       await page.keyboard.down('Meta'); await page.keyboard.press('KeyA'); await page.keyboard.up('Meta');
@@ -576,6 +600,9 @@ async function addCharacterReference(page, name, attempts = 3) {
       if (opt) break;
       await sleep(400);
     }
+    // The list is virtualised — with a large library the wanted asset may never
+    // be rendered, so polling alone can never see it. Scroll to it.
+    if (!opt) opt = await findOptionByScrolling(page, name);
     if (!opt) { log(`Could not find "${name}" in the picker.`); await closePicker(page); continue; }
     await opt.click();
     await opt.dispose();
@@ -619,9 +646,12 @@ function countComposerRefs(page) {
 // character was already added (so a new ref should increase the thumbnail count).
 async function addBackgroundReference(page, name) {
   const before = await countComposerRefs(page);
-  if (!(await clickAddIngredients(page))) return false;
+  if (!(await openAddMenu(page))) return false;
 
-  const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
+  const search = await findElement(page, () => (document.querySelector('input[placeholder="Search assets"]')
+        || document.querySelector('input.search-input')
+        || Array.from(document.querySelectorAll('input[type="text"]')).find(i => /search/i.test(i.className) && i.offsetParent !== null)
+        || null));
   if (search) {
     await page.evaluate((el) => {
       el.value = '';
@@ -738,125 +768,300 @@ async function uploadLocalRefImage(page, folderName, fileName) {
   }
 
   log(`Uploading local file from disk: ${filePath}...`);
-  if (!(await clickAddIngredients(page))) { log('Could not open the asset picker to upload.'); return false; }
-  await sleep(800);
-  const uploaded = await uploadViaFileChooser(page, [filePath]);
+  const beforeCount = await countComposerRefs(page);
+
+  // 1. Check if a file input element exists on the page
+  // Flow no longer exposes an input[type="file"] — uploads go through the native
+  // file dialog, which uploadViaFileChooser() intercepts. The old input lookup
+  // is kept only for older Flow builds.
+  let fileInput = await page.$('input[type="file"]');
+  if (!fileInput) {
+    const sent = await uploadViaFileChooser(page, [filePath]);
+    if (sent) {
+      await sleep(2500);
+      await closePicker(page);
+      if ((await countComposerRefs(page)) > beforeCount) {
+        log(`Successfully uploaded and attached local image "${fileName}".`);
+        return true;
+      }
+      log(`Uploaded "${fileName}" — attaching it from the library.`);
+      return await addBackgroundReference(page, fileName);
+    }
+  }
+
+  // Older builds: set the file straight on the input.
+  if (fileInput) {
+    try {
+      await fileInput.uploadFile(filePath);
+      await fileInput.dispose();
+      await sleep(2000); // allow upload processing
+
+      if ((await countComposerRefs(page)) > beforeCount) {
+        log(`Successfully uploaded and attached local image "${fileName}".`);
+        await closePicker(page);
+        return true;
+      }
+
+      // Check if clicking "Add to Prompt" is needed
+      if (await clickButtonWithText(page, 'Add to Prompt')) {
+        await sleep(900);
+      }
+
+      if ((await countComposerRefs(page)) > beforeCount) {
+        log(`Successfully attached uploaded image "${fileName}".`);
+        await closePicker(page);
+        return true;
+      }
+    } catch (err) {
+      log(`Direct file upload error: ${err.message || err}`);
+    }
+  }
+
   await closePicker(page);
   if (!uploaded) return false;
   log(`Uploaded "${fileName}" — attaching it.`);
   return await addBackgroundReference(page, fileName);
 }
 
-// Pre-upload all local reference image files from a disk folder (e.g. men_ref_pics)
-// into Google Flow's asset library before starting the generation queue, skipping
-// any files that are already present in the project library.
-async function uploadAllRefImages(page, folderName, files) {
-  if (!Array.isArray(files) || !files.length) return;
-  log(`\n=== Checking Google Flow project library for existing reference pictures ===`);
+// --- Flow's new upload UI (flow.google.com, late-2026 redesign) --------------
+// What changed and why the old code silently stopped uploading:
+//   * the picker button's icon is "add" (mat-icon.add-menu-icon), not "add_2"
+//   * it opens a MENU first; "Upload" is an item in it
+//   * there is NO input[type="file"] on the page any more — Flow calls the
+//     NATIVE file dialog, so fileInput.uploadFile() has nothing to attach to
+// The old code looked for input[type="file"], found nothing, and skipped every
+// file without an error while still logging "Pre-upload complete".
+//
+// Puppeteer can intercept the native dialog (verified against a live project),
+// and it accepts many files at once.
+// Is the add menu already showing? Clicking the "+" while it is open TOGGLES it
+// shut, which made every second upload fail: the menu was left open by the
+// previous one, the next click closed it, "Upload media" was not found, that
+// chunk failed, its error path pressed Escape — and the one after worked again.
+function addMenuIsOpen(page) {
+  return page.evaluate(() =>
+    !!document.querySelector('[role="option"]')
+    || Array.from(document.querySelectorAll('button, [role="menuitem"]'))
+         .some(b => /upload\s*media/i.test((b.textContent || '').trim())));
+}
 
-  const toUpload = [];
+async function openAddMenu(page) {
+  if (await addMenuIsOpen(page)) return true;   // already open — do NOT toggle it
+  // Current UI: the "+" that opens the add menu.
+  let h = await findElement(page, () => {
+    const icon = document.querySelector('mat-icon.add-menu-icon');
+    if (icon && icon.closest('button')) return icon.closest('button');
+    return Array.from(document.querySelectorAll('button'))
+      .find(b => (b.getAttribute('aria-label') || '').toLowerCase().includes('add ingredients')) || null;
+  });
+  // Older Flow builds.
+  if (!h) h = await findElement(page, () => Array.from(document.querySelectorAll('button')).find(b => b.innerHTML.includes('add_2')) || null);
+  if (!h) return false;
+  await h.click();
+  await h.dispose();
+  await sleep(1200);
+  return true;
+}
+
+// Uploads `filePaths` through Flow's native file dialog. Returns true if the
+// dialog was intercepted and the files handed over.
+async function uploadViaFileChooser(page, filePaths) {
+  const findUploadItem = () => findElement(page, () =>
+    Array.from(document.querySelectorAll('button, [role="menuitem"]'))
+      .find(b => /^\s*upload\s*(upload\s*)?media?\b/i.test((b.textContent || '').trim())
+              || /^\s*(upload)?upload\s*$/i.test((b.textContent || '').trim())) || null);
+
+  let item = null;
+  // Two goes: whatever state the menu was left in, close it and reopen cleanly.
+  for (let attempt = 1; attempt <= 2 && !item; attempt++) {
+    if (attempt > 1) {
+      await page.keyboard.press('Escape').catch(() => { });
+      await sleep(1000);
+    }
+    if (!(await openAddMenu(page))) { await sleep(500); continue; }
+    item = await findUploadItem();
+  }
+  if (!item) {
+    log('No "Upload media" item in the add menu — nothing uploaded.');
+    await page.keyboard.press('Escape').catch(() => { });
+    return false;
+  }
+
   try {
-    if (await clickAddIngredients(page)) {
-      // The overlay animates in; polling beats a fixed sleep, which was landing
-      // before the search box existed and sending every file down the re-upload
-      // path even when the library already had it.
-      await page.waitForSelector('input[placeholder="Search assets"]', { timeout: 8000 }).catch(() => { });
-
-      const search = await findElement(page, () => document.querySelector('input[placeholder="Search assets"]'));
-      if (search) {
-        for (const fileName of files) {
-          if (state.stopRequested) break;
-          const baseName = fileName.replace(/\.[^/.]+$/, "");
-
-          // Clear search box via native DOM events to guarantee success
-          await page.evaluate((el) => {
-            el.value = '';
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-          }, search);
-          await sleep(200);
-
-          // Type file base name to filter search results
-          await search.click();
-          await page.keyboard.type(baseName, { delay: 10 });
-          await sleep(650); // wait for search filtering
-
-          const opt = await findCharacterOption(page, baseName);
-          if (opt) {
-            log(`File "${fileName}" already exists in project library, skipping upload.`);
-            await opt.dispose();
-          } else {
-            toUpload.push(fileName);
-          }
-        }
-        await search.dispose();
-      } else {
-        log('Search input not found in picker; uploading all files.');
-        toUpload.push(...files);
-      }
-      await closePicker(page);
-    } else {
-      log('Could not open picker; uploading all files.');
-      toUpload.push(...files);
-    }
+    const [chooser] = await Promise.all([
+      page.waitForFileChooser({ timeout: 15000 }),
+      item.click(),
+    ]);
+    await item.dispose();
+    await chooser.accept(filePaths);
+    await sleep(800);
+    await page.keyboard.press('Escape').catch(() => { }); // leave the menu closed
+    return true;
   } catch (err) {
-    log(`Note: error scanning existing assets: ${err.message || err}`);
-    toUpload.push(...files);
-    await closePicker(page).catch(() => { });
+    log(`File dialog did not open: ${err.message || err}`);
+    await item.dispose().catch(() => { });
+    await page.keyboard.press('Escape');
+    return false;
   }
+}
 
-  if (state.stopRequested) return;
+// Every asset name in the project, read from the add menu's own list.
+//
+// The menu must already be open. The list is virtualised (rows are destroyed as
+// they scroll out), so it is scrolled to the bottom and the labels collected on
+// the way. Labels carry the asset TYPE appended to the name —
+// "019f2b7c….jpgImage", "Untitled CharacterCharacter" — so that suffix is
+// stripped. No keyboard is used anywhere here: typing to filter the list is what
+// previously leaked filenames into the prompt composer.
+async function readProjectAssets(page) {
+  return page.evaluate(async () => {
+    const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+    const opts = () => Array.from(document.querySelectorAll('[role="option"]'));
+    const clean = (t) => (t || '').trim().replace(/(Image|Character|Video|Scene)$/, '').trim();
+    const names = new Set();
+    const collect = () => opts().forEach((o) => { const n = clean(o.textContent); if (n) names.add(n); });
 
-  // Dedupe: if the existing-asset scan threw mid-loop, the catch appends the
-  // FULL file list on top of the few names already collected — producing
-  // duplicates (and an inflated count) that would re-upload the same images.
-  // Collapse to a unique set so every reference picture is uploaded exactly once.
-  const uploadList = [...new Set(toUpload)];
+    if (!opts().length) return [];
+    let box = opts()[0].parentElement;
+    while (box && box.scrollHeight <= box.clientHeight + 4) box = box.parentElement;
+    collect();
+    if (!box) return [...names];
 
-  if (uploadList.length === 0) {
-    log('All reference pictures already exist in the library. Skipping upload phase.\n');
-    return;
-  }
-
-  log(`=== Pre-uploading ${uploadList.length} new reference picture(s) from "${folderName}" ===`);
-
-  // One native file chooser takes many files at once, so upload in chunks
-  // instead of reopening the picker per image. Anything missing from disk is
-  // dropped up front rather than silently counted as uploaded.
-  const paths = uploadList
-    .map((f) => ({ f, p: path.join(__dirname, folderName || 'men_ref_pics', f) }))
-    .filter((x) => fs.existsSync(x.p));
-
-  const CHUNK = 8;
-  let uploaded = 0;
-  for (let i = 0; i < paths.length; i += CHUNK) {
-    if (state.stopRequested) { log('Stop requested — aborting pre-upload.'); return; }
-    const chunk = paths.slice(i, i + CHUNK);
-    log(`Pre-uploading [${i + 1}-${i + chunk.length}/${paths.length}]: ${chunk.map((c) => c.f).join(', ')}`);
-    try {
-      if (!(await clickAddIngredients(page))) { log('Could not open the asset picker — skipping this chunk.'); continue; }
-      await sleep(800);
-      if (await uploadViaFileChooser(page, chunk.map((c) => c.p))) {
-        uploaded += chunk.length;
-      } else {
-        // Stop after the first failure. If the file chooser was missed, a native
-        // dialog is modally blocking Chrome and every further click is swallowed
-        // — retrying would only queue more dialogs.
-        log('That chunk did not upload — aborting the pre-upload phase.');
-        await closePicker(page).catch(() => { });
-        break;
+    // Two passes, down then up, and a third if the first two disagreed. The
+    // list is virtualised and lazily extends as it scrolls, so a single pass
+    // can miss rows — and a short read means files look missing and get
+    // uploaded again as duplicates.
+    const pass = async (downwards) => {
+      box.scrollTop = downwards ? 0 : box.scrollHeight;
+      await nap(300);
+      for (let i = 0; i < 300; i++) {
+        collect();
+        const atEdge = downwards
+          ? box.scrollTop + box.clientHeight >= box.scrollHeight - 4
+          : box.scrollTop <= 2;
+        if (atEdge) { await nap(300); collect(); return; }
+        const step = box.clientHeight * 0.7;
+        box.scrollTop = downwards
+          ? Math.min(box.scrollTop + step, box.scrollHeight)
+          : Math.max(box.scrollTop - step, 0);
+        await nap(200);
       }
-      await closePicker(page);
-    } catch (e) {
-      log(`Pre-upload note: ${e.message || e}`);
-      await closePicker(page).catch(() => { });
+    };
+
+    await pass(true);
+    const afterFirst = names.size;
+    await pass(false);
+    if (names.size !== afterFirst) await pass(true); // still growing — sweep again
+    return [...names];
+  });
+}
+
+// Pre-upload the folder's reference pictures into the Flow project: check what
+// the project already has, upload only what is missing, verify, then let the
+// generations start.
+// Returns the names that are NOT in the Flow library when it finishes, so the
+// caller can skip those generations instead of running them without their
+// reference picture.
+async function uploadAllRefImages(page, folderName, files) {
+  if (!Array.isArray(files) || !files.length) return [];
+  const dir = folderName || 'men_ref_pics';
+  const pathOf = (f) => (path.isAbsolute(f) ? f : path.join(__dirname, dir, f));
+  const baseOf = (f) => f.replace(/\.[^/.]+$/, '');
+  const nameList = (a) => (a.length > 10 ? `${a.slice(0, 10).join(', ')} … (+${a.length - 10} more)` : a.join(', '));
+
+  const onDisk = [...new Set(files)].filter((f) => fs.existsSync(pathOf(f)));
+  if (!onDisk.length) return [];
+
+  log(`\n=== Reference library check: ${onDisk.length} picture(s) from "${dir}" ===`);
+
+  // An asset counts as present only on an EXACT name match (with or without the
+  // extension). A substring test would treat "refference_image_16" as present
+  // because "refference_image_160" exists — which silently skipped 15 files.
+  const missingAgainst = (assets) => {
+    const have = new Set(assets);
+    const haveBare = new Set(assets.map((a) => baseOf(a)));
+    return onDisk.filter((f) => !have.has(f) && !haveBare.has(baseOf(f)));
+  };
+
+  // Opening the menu can miss while Flow is still settling; retry rather than
+  // skipping the whole folder.
+  let menuOpen = false;
+  for (let t = 1; t <= 3 && !menuOpen; t++) {
+    menuOpen = await openAddMenu(page);
+    if (!menuOpen) { await page.keyboard.press('Escape').catch(() => { }); await sleep(1500); }
+  }
+  if (!menuOpen) {
+    log('⚠️  Could not open Flow\'s add menu — uploading every picture without checking the library first.');
+  }
+  let assets = menuOpen ? await readProjectAssets(page) : [];
+  let missing = missingAgainst(assets);
+  if (menuOpen) log(`Project holds ${assets.length} asset(s); ${onDisk.length - missing.length}/${onDisk.length} of this folder already uploaded.`);
+  await page.keyboard.press('Escape').catch(() => { });
+  await sleep(600);
+
+  if (!missing.length) {
+    log(`All reference pictures from "${dir}" are already in Flow.\n`);
+    return [];
+  }
+
+  log(`Uploading ${missing.length} missing picture(s): ${nameList(missing)}`);
+  // Two at a time. Bigger handovers looked faster on paper but were far less
+  // reliable through the file dialog — small batches are what worked before the
+  // Angular rewrite, and a failure now costs 2 pictures instead of 20.
+  const CHUNK = 2;
+  const sendChunks = async (list, size) => {
+    for (let k = 0; k < list.length && !state.stopRequested; k += size) {
+      const part = list.slice(k, k + size);
+      if (list.length > size) log(`  ${k + 1}-${k + part.length} of ${list.length}...`);
+      // A failed chunk must not abandon the rest of the folder — carry on and
+      // let the verification pass below catch whatever did not land.
+      if (!(await uploadViaFileChooser(page, part.map(pathOf)))) {
+        log(`  ⚠️  chunk ${k + 1}-${k + part.length} failed — continuing with the rest.`);
+        await page.keyboard.press('Escape').catch(() => { });
+        await sleep(1500);
+        continue;
+      }
+      await sleep(Math.min(3000 + part.length * 700, 25000)); // let Flow ingest them
+      await page.keyboard.press('Escape').catch(() => { });
+      await sleep(600);
+    }
+  };
+  await sendChunks(missing, CHUNK);
+
+  // Verify against the library rather than trusting that the upload worked.
+  // Flow ingests uploads asynchronously — a picture accepted by the file dialog
+  // shows up in the asset list seconds later — so this polls instead of reading
+  // once and declaring failure on a list that is still filling in.
+  let still = missing;
+  for (let attempt = 1; attempt <= 4 && still.length && !state.stopRequested; attempt++) {
+    await sleep(attempt === 1 ? 4000 : 6000);
+    if (!(await openAddMenu(page))) break;
+    assets = await readProjectAssets(page);
+    still = missingAgainst(assets);
+    await page.keyboard.press('Escape').catch(() => { });
+    await sleep(500);
+    if (still.length) log(`  still ingesting — ${still.length} not visible yet (check ${attempt}/4)...`);
+  }
+
+  // Anything still missing gets one more attempt on its own — a picture lost to
+  // a bad chunk usually goes through when sent by itself.
+  if (still.length && !state.stopRequested) {
+    log(`Retrying ${still.length} picture(s) individually: ${nameList(still)}`);
+    await sendChunks(still, 1);
+    for (let attempt = 1; attempt <= 3 && still.length && !state.stopRequested; attempt++) {
+      await sleep(attempt === 1 ? 4000 : 6000);
+      if (!(await openAddMenu(page))) break;
+      assets = await readProjectAssets(page);
+      still = missingAgainst(assets);
+      await page.keyboard.press('Escape').catch(() => { });
+      await sleep(500);
     }
   }
 
-  if (uploaded < paths.length) {
-    log(`Pre-upload finished: ${uploaded}/${paths.length} reference picture(s) uploaded — the rest will be retried per-generation.`);
-    return;
-  }
-  log(`Pre-upload complete. All reference pictures are available in Google Flow's asset library.\n`);
+  if (still.length) log(`⚠️  ${still.length} picture(s) did NOT reach Flow — their generations will be SKIPPED: ${nameList(still)}`);
+  else log(`All ${onDisk.length} reference picture(s) from "${dir}" are in Flow.`);
+  log('');
+  return still;
 }
 
 // Reset the composer using Flow's own "Clear prompt" control. This is the only
@@ -865,45 +1070,15 @@ async function uploadAllRefImages(page, folderName, files) {
 // only exists when there is content; it also removes the character chip, so we
 // always reset BEFORE adding the character. No-op when the composer is empty.
 async function resetComposer(page) {
-  // ProseMirror renders its placeholder as a real <span class="prosemirror-
-  // placeholder"> INSIDE the editor, so a naive innerText read never comes back
-  // empty. Drop the placeholder and the separator widgets before measuring.
-  const editorText = () => page.evaluate((sel) => {
-    const ed = document.querySelector(sel);
-    if (!ed) return '';
-    const clone = ed.cloneNode(true);
-    clone.querySelectorAll('.prosemirror-placeholder,.ProseMirror-separator,.ProseMirror-trailingBreak')
-      .forEach((n) => n.remove());
-    return (clone.textContent || '').trim();
-  }, PROMPT_EDITOR_SEL);
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (!(await editorText())) return;
-    // The control renders as an icon button: its textContent is the ligature
-    // "close" and the real label lives in aria-label="Clear prompt". Matching
-    // on textContent (as this did) never found it, so prompts accumulated
-    // across every generation in a batch.
-    const spot = await page.evaluate(() => {
-      const el = Array.from(document.querySelectorAll('button')).find((b) => {
-        const r = b.getBoundingClientRect();
-        return r.width > 0 && r.height > 0
-          && (/clear prompt/i.test(b.getAttribute('aria-label') || '') || /clear prompt/i.test(b.textContent || ''));
-      });
-      if (!el) return null;
-      const r = el.getBoundingClientRect();
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-    });
-    if (spot) { await page.mouse.click(spot.x, spot.y); await sleep(600); continue; }
-
-    // No button (some states hide it) — fall back to selecting all and deleting.
-    const ed = await findElement(page, (sel) => document.querySelector(sel), PROMPT_EDITOR_SEL);
-    if (!ed) return;
-    await ed.click(); await ed.dispose();
-    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
-    await page.keyboard.press('Backspace');
-    await sleep(400);
-  }
-  if (await editorText()) log('Composer would not clear — the next prompt may append to the old one.');
+  // Flow's redesign made this icon-only: a "close" icon whose only label is
+  // aria-label="Clear prompt". Matching on visible text alone stopped finding
+  // it, which left the previous prompt in the box and typed the next one on
+  // top of it.
+  const clearBtn = await findElement(page, () =>
+    Array.from(document.querySelectorAll('button')).find(b =>
+      /clear prompt/i.test(b.textContent || '')
+      || /clear prompt/i.test(b.getAttribute('aria-label') || '')) || null);
+  if (clearBtn) { await clearBtn.click(); await clearBtn.dispose(); await sleep(500); }
 }
 
 // Type the prompt into the (already-empty) editor.
@@ -952,61 +1127,131 @@ async function caretToEnd(page) {
 }
 // Types "@", waits for Flow's asset dropdown, picks the entry matching `name`.
 // Returns true if a real mention node was inserted.
-async function insertMention(page, name) {
-  const bare = name.replace(/\.(jpg|jpeg|png|webp)$/i, '');
-  // Slate needs to settle before the "@" or the trigger is swallowed and no
-  // dropdown opens — this is why typing the prompt at delay 0 broke mentions.
-  const editorText = () => page.evaluate((sel) => {
-    const ed = document.querySelector(sel);
-    if (!ed) return '';
-    const c = ed.cloneNode(true);
-    c.querySelectorAll('.prosemirror-placeholder,.ProseMirror-separator,.ProseMirror-trailingBreak').forEach((n) => n.remove());
-    return c.textContent || '';
-  }, PROMPT_EDITOR_SEL);
+// Finds an option in an open picker/dropdown by SCROLLING to it.
+//
+// The list is virtualised: only the rows near the viewport exist in the DOM, so
+// an asset far down the library is not merely off-screen, it is not an element
+// at all. Polling the visible rows — which is all the old lookup did — can never
+// find it, which is why tagging failed once a project held a lot of assets.
+async function findOptionByScrolling(page, name) {
+  const h = await page.evaluateHandle(async (n) => {
+    const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+    const strip = (t) => (t || '').trim().replace(/(Image|Character|Video|Scene)$/, '').trim();
+    const bare = (t) => t.replace(/\.(jpg|jpeg|png|webp)$/i, '').trim();
+    const opts = () => Array.from(document.querySelectorAll('[role="option"]'));
+    const hit = () => {
+      const o = opts();
+      return o.find(el => strip(el.textContent) === n)
+          || o.find(el => bare(strip(el.textContent)) === n)
+          || null;
+    };
 
-  await sleep(600);
-  await caretToEnd(page);
-  const before = await editorText(); // exact state to roll back to if this fails
-  await page.keyboard.type('@', { delay: TYPE_DELAY });
-  await sleep(700);
-  await page.keyboard.type(bare, { delay: TYPE_DELAY });
+    let found = hit();
+    if (found) return found;
+    if (!opts().length) return null;
 
-  // Wait for the matching option in the mention dropdown.
-  let opt = null;
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    opt = await findCharacterOption(page, bare);
-    if (opt) break;
-    await sleep(200);
-  }
-  if (!opt) {
-    // No match — roll the "@query" back and leave the plain name instead.
-    // Deleting a FIXED bare.length + 1 characters was the bug behind the
-    // scrambled prompts: whenever the editor held a different number of
-    // characters than expected (the dropdown rewrites the query as you type),
-    // the extra backspaces chewed into the text already typed, and the retype
-    // then interleaved with ProseMirror's async re-render. Delete one at a
-    // time and stop the moment the editor matches its pre-mention state.
-    await page.keyboard.press('Escape'); // dismiss the dropdown first
-    await sleep(250);
-    for (let i = 0; i < bare.length + 6; i++) {
-      if ((await editorText()) === before) break;
-      await page.keyboard.press('Backspace');
-      await sleep(60);
+    let box = opts()[0].parentElement;
+    while (box && box.scrollHeight <= box.clientHeight + 4) box = box.parentElement;
+    if (!box) return null;
+
+    box.scrollTop = 0;
+    await nap(250);
+    for (let i = 0; i < 300; i++) {
+      found = hit();
+      if (found) { found.scrollIntoView({ block: 'center' }); await nap(150); return found; }
+      if (box.scrollTop + box.clientHeight >= box.scrollHeight - 4) break;
+      box.scrollTop = Math.min(box.scrollTop + box.clientHeight * 0.7, box.scrollHeight);
+      await nap(180);
     }
-    const rolled = await editorText();
-    if (rolled !== before) log(`Mention rollback left "${rolled.slice(-40)}" (wanted "${before.slice(-40)}").`);
-    await sleep(200);
-    await caretToEnd(page);
-    await insertTextAtomic(page, bare);
-    log(`Mention picker did not match "${bare}" — used plain text instead.`);
-    return false;
+    found = hit();
+    if (found) { found.scrollIntoView({ block: 'center' }); await nap(150); }
+    return found || null;
+  }, name);
+  const el = h.asElement();
+  if (!el) { await h.dispose(); return null; }
+  return el;
+}
+
+// Insert one Flow "@" mention and PROVE it landed as a chip.
+//
+// The mention trigger is unreliable for a few seconds after a generation
+// finishes: Flow is writing the freshly generated images into the project's
+// asset list, and the "@" dropdown that reads that same list either never opens
+// or opens without the wanted row. That is what made every SECOND pack swap log
+// "mentions did not resolve" — the attempt right after a completed generation
+// failed, the next one (which followed a skipped, generation-free iteration)
+// worked. So: retry the trigger instead of giving up on the first miss, and
+// confirm a chip actually appeared rather than trusting the click.
+async function insertMention(page, name, tries = 3) {
+  const bare = name.replace(/\.(jpg|jpeg|png|webp)$/i, '');
+
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const before = await countComposerRefs(page);
+
+    // Slate needs to settle before the "@" or the trigger is swallowed and no
+    // dropdown opens — this is why typing the prompt at delay 0 broke mentions.
+    await sleep(attempt === 1 ? 600 : 1800);
+    await page.keyboard.type('@', { delay: 0 });
+    await sleep(attempt === 1 ? 700 : 1400);
+    await page.keyboard.type(bare, { delay: 20 });
+
+    // Wait for the matching option in the mention dropdown.
+    let opt = null;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      opt = await findCharacterOption(page, bare);
+      if (opt) break;
+      await sleep(200);
+    }
+    // Not among the rendered rows — scroll the list to it. With a large library
+    // the wanted asset is often far enough down that it was never in the DOM.
+    if (!opt) {
+      log(`"${bare}" not in the visible mention rows — scrolling the list...`);
+      opt = await findOptionByScrolling(page, bare);
+      if (opt) log(`Found "${bare}" further down the list.`);
+    }
+
+    if (opt) {
+      await opt.click();
+      await opt.dispose();
+      await sleep(400);
+      // A clicked row is not a chip: poll for the thumbnail before believing it.
+      const chipDeadline = Date.now() + 3000;
+      while (Date.now() < chipDeadline) {
+        if ((await countComposerRefs(page)) > before) return true;
+        await sleep(300);
+      }
+      log(`Clicked "${bare}" but no chip appeared (try ${attempt}/${tries}).`);
+    } else {
+      log(`Mention picker did not match "${bare}" (try ${attempt}/${tries}).`);
+    }
+
+    // Wipe the typed "@name" so the retry starts from clean text. Escape closes
+    // the dropdown but also drops focus, so the editor is re-clicked before any
+    // further typing — otherwise the backspaces and the retry go nowhere.
+    await page.keyboard.press('Escape').catch(() => { });
+    await sleep(300);
+    const ed = await findElement(page, () =>
+      document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]'));
+    if (ed) {
+      await ed.click(); await ed.dispose(); await sleep(300);
+      await page.keyboard.press('End');   // caret back at the end of the text
+    }
+    const typed = await page.evaluate(() => {
+      const ed = document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]');
+      return ed ? (ed.textContent || '') : '';
+    });
+    if (typed.includes('@' + bare)) {
+      for (let i = 0; i < bare.length + 1; i++) await page.keyboard.press('Backspace');
+    }
+    if (attempt === tries) {
+      // Out of retries — leave the plain name behind so the prompt still reads.
+      await page.keyboard.type(bare, { delay: 0 });
+      log(`Mention "${bare}" never resolved — used plain text instead.`);
+      return false;
+    }
   }
-  await opt.click();
-  await opt.dispose();
-  await sleep(900);
-  await caretToEnd(page);
-  return true;
+  return false;
 }
 
 // Ask the asset picker, once, which of these names actually exist in the
@@ -1122,12 +1367,18 @@ async function setPromptText(page, text) {
 async function waitForGenerateButton(page, timeoutMs = 6000, intervalMs = 500) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    // Flow's redesign made this an ICON-ONLY button: its label used to read
+    // "Create", now the element carries only the arrow_forward icon plus
+    // aria-label="Start generation". Requiring the word "Create" meant the
+    // button was never found and the run sat on "Create button not active yet".
     const h = await findElement(page, () =>
-      Array.from(document.querySelectorAll('button')).find(btn =>
-        (btn.innerHTML.includes('arrow_forward') ||
-          /start generation/i.test(btn.getAttribute('aria-label') || '')) &&
-        btn.getAttribute('aria-disabled') !== 'true' &&
-        !btn.disabled));
+      Array.from(document.querySelectorAll('button')).find(btn => {
+        const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+        const looksRight = /start generation/.test(aria)
+          || (btn.innerHTML.includes('arrow_forward')
+              && (btn.textContent.includes('Create') || /generat/.test(aria) || !btn.textContent.trim().replace('arrow_forward', '')));
+        return looksRight && btn.getAttribute('aria-disabled') !== 'true' && !btn.disabled;
+      }));
     if (h) return h;
     await sleep(intervalMs);
   }
@@ -1323,10 +1574,18 @@ function buildTasks(cfg) {
 // After a successful Create, Flow clears the composer back to its placeholder.
 // We use that as the signal that generation actually started.
 function composerCleared(page) {
-  return page.evaluate((sel) => {
-    const ed = document.querySelector(sel);
-    return !ed || /what do you want to create/i.test(ed.textContent || '');
-  }, PROMPT_EDITOR_SEL);
+  return page.evaluate(() => {
+    const ed = document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]');
+    if (!ed) return true;
+    const txt = (ed.textContent || '').trim();
+    // Flow's redesign moved the placeholder out of the editor's own text, so a
+    // cleared composer now reads as EMPTY rather than as "What do you want to
+    // create?". Matching only the old placeholder meant a generation that had
+    // really started looked like a failed click, and fireGenerate burned its
+    // three retries on it. This is only ever called right after the prompt was
+    // typed, so an empty editor genuinely means the composer cleared.
+    return !txt || /what do you want to create/i.test(txt);
+  });
 }
 
 // Click Create (with fallbacks) and confirm generation actually started by
@@ -1335,7 +1594,7 @@ async function fireGenerate(page) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (state.stopRequested) throw new Error('STOP_REQUESTED');
     const btn = await waitForGenerateButton(page);
-    if (!btn) { log('Create button not active yet...'); await sleep(700); continue; }
+    if (!btn) { log('Generate button not active yet...'); await sleep(700); continue; }
     const box = await btn.boundingBox();
     log(`Clicking Generate (attempt ${attempt})...`);
     await btn.click();
@@ -1442,22 +1701,26 @@ async function setAspectRatio(page, ratio) {
     if (!opened) { await sleep(600); continue; }
     await sleep(1200);
 
-    // The settings popover is an Angular CDK overlay (.cdk-overlay-pane) and each
-    // ratio is a button[role="radio"] whose text is the icon token + the label,
-    // e.g. "crop_16_916:9". Older builds used a Radix popper with role="tab" —
-    // both shapes are accepted so a UI rollback doesn't break this again.
-    const picked = await clickRect((w, r) => {
-      const vis = (el) => { const b = el.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
-      const panes = Array.from(document.querySelectorAll(
-        '.cdk-overlay-pane,[data-radix-popper-content-wrapper],[role="dialog"],[role="menu"]')).filter(vis);
-      const pane = panes.find(p => /16:9/.test(p.innerText || ''));
-      if (!pane) return null;
-      const opts = Array.from(pane.querySelectorAll('button[role="radio"],button[role="tab"],[role="menuitemradio"]')).filter(vis);
-      return opts.find(b => (b.textContent || '').includes('crop_' + w))
-        || opts.find(b => (b.textContent || '').trim().endsWith(r))
-        || null;
-    }, wanted, ratio);
-    if (picked) await sleep(900);
+    // Real mouse click on the ratio control — a synthetic .click() inside
+    // evaluate() doesn't register with the panel's handler.
+    //
+    // Flow's redesign moved this into an Angular Material overlay: the ratios
+    // are now button[role="radio"] inside .cdk-overlay-container, labelled with
+    // the icon glued to the text ("crop_16_916:9", "crop_9_169:16"). The old
+    // lookup wanted button[role="tab"] inside a radix popover, which no longer
+    // exists — so the ratio silently never changed.
+    const tab = await findElement(page, (r) => {
+      const scopes = [document.querySelector('.cdk-overlay-container'),
+                      ...Array.from(document.querySelectorAll('[data-radix-popper-content-wrapper],[role="dialog"],[role="menu"]')),
+                      document].filter(Boolean);
+      for (const scope of scopes) {
+        const btns = Array.from(scope.querySelectorAll('button[role="radio"], button[role="tab"]'));
+        const hit = btns.find(b => (b.textContent || '').trim().endsWith(r));
+        if (hit) return hit;
+      }
+      return null;
+    }, ratio);
+    if (tab) { await tab.click(); await tab.dispose(); await sleep(900); }
     await closePicker(page);
     await sleep(500);
     if ((await current()) === wanted) { log(`Aspect ratio set to ${ratio}.`); return true; }
@@ -1469,7 +1732,34 @@ async function setAspectRatio(page, ratio) {
 // Rename the newest tile in All Media (the sheet we just generated). Flow's
 // media context menu has "Rename", which opens a small dialog with one input
 // and a Done button — no character object involved.
-async function renameLatestMedia(page, newName) {
+// Identity of the topmost media tile — used to prove a NEW one appeared before
+// anything gets renamed.
+function topMediaKey(page) {
+  return page.evaluate(() => {
+    const img = Array.from(document.querySelectorAll('img'))
+      .filter(i => { const r = i.getBoundingClientRect(); return r.width > 120 && r.top > 60; })
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top
+                   || a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+    return img ? (img.currentSrc || img.src || '').slice(0, 200) : '';
+  });
+}
+
+// Renames the newest media tile.
+//
+// `previousKey` is the top tile from BEFORE the generation. If the top tile has
+// not changed, the generation produced nothing and renaming would hit whatever
+// was already there — which is how the character asset itself got renamed to
+// "Chopped character" and appeared to vanish. `protectedName` is a second guard:
+// never rename an asset that currently carries that name.
+async function renameLatestMedia(page, newName, previousKey = null, protectedName = null) {
+  if (previousKey !== null) {
+    const nowKey = await topMediaKey(page);
+    if (nowKey && nowKey === previousKey) {
+      log(`No new media appeared — NOT renaming (the top item is still the previous one).`);
+      return false;
+    }
+  }
+
   for (let attempt = 1; attempt <= 2; attempt++) {
     const box = await page.evaluate(() => {
       const r = Array.from(document.querySelectorAll('img'))
@@ -1503,17 +1793,26 @@ async function renameLatestMedia(page, newName) {
     await item.dispose();
     await sleep(1200);
 
+    // Flow's redesign renames INLINE on the tile — an
+    // input.editable-text-input.editing appears holding the current name —
+    // instead of opening a dialog. The old lookup wanted an input inside
+    // [role="dialog"], which never appears now, so every rename silently failed.
     const input = await findElement(page, () => {
-      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const dialogs = Array.from(document.querySelectorAll(
-        '[role="dialog"],mat-dialog-container,.mat-mdc-dialog-container,.cdk-overlay-pane')).filter(vis);
-      for (const d of dialogs) {
-        const i = Array.from(d.querySelectorAll('input')).filter(vis)[0];
-        if (i) return i;
-      }
-      return null;
+      const inline = document.querySelector('input.editable-text-input.editing')
+        || Array.from(document.querySelectorAll('input.editable-text-input')).find(i => i.offsetParent !== null);
+      if (inline) return inline;
+      const d = document.querySelector('[role="dialog"]') || document.querySelector('mat-dialog-container');
+      return d ? d.querySelector('input') : null;
     });
     if (!input) { await closePicker(page); continue; }
+    const currentValue = await page.evaluate(el => el.value, input);
+    if (protectedName && currentValue && currentValue.trim() === protectedName.trim()) {
+      log(`Refusing to rename "${currentValue}" — that is the character asset, not new media.`);
+      await input.dispose();
+      await page.keyboard.press('Escape');
+      return false;
+    }
+
     // Clear the old name for real. Neither a triple-click nor Cmd+A reliably
     // selects inside this dialog — the caret lands mid-text and the new name
     // gets spliced into the old one — so select via the DOM, then delete key by
@@ -1596,11 +1895,12 @@ async function generateOne(page, cfg, task) {
   if (task.isCharacterCreate) {
     await setAspectRatio(page, '16:9');
     if (!(await setPromptText(page, promptString))) { log('Skipping — could not set prompt text.'); return false; }
+    const beforeKey = await topMediaKey(page);
     const started = await fireGenerate(page);
     if (started) {
       try {
         await waitForGenerationDone(page);
-        await renameLatestMedia(page, cfg.choppedName || 'Chopped character');
+        await renameLatestMedia(page, cfg.choppedName || 'Chopped character', beforeKey, charName);
       } catch (e) { await setAspectRatio(page, '9:16'); throw e; }
     }
     await setAspectRatio(page, '9:16');
@@ -1752,17 +2052,7 @@ async function runWorkerForPort(port) {
           plog(`Failed to navigate to project URL: ${err.message || err}`);
         }
       }
-      // Preflight: the composer must actually be on this tab. Without it every
-      // task fails instantly ("could not set prompt text") and the batch burns
-      // itself out looking like the prompts were rejected.
-      if (!(await page.$(PROMPT_EDITOR_SEL))) {
-        plog(`Flow composer not found on ${page.url()} — open the Flow project in this account's debug Chrome, then requeue. Batch #${batch.id} aborted.`);
-        batch.status = 'done';
-        pushState();
-        continue;
-      }
-
-      const tasks = buildTasks(batch.config);
+      let tasks = buildTasks(batch.config);
       batch.total = tasks.length;
       batch.done = 0;
       batch.ok = 0;
@@ -1771,11 +2061,28 @@ async function runWorkerForPort(port) {
 
       // Pre-upload phase: upload reference pictures into Google Flow asset library if needed
       if (Array.isArray(batch.config.refPics) && batch.config.refPics.length) {
-        await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics);
+        const failed = new Set(await uploadAllRefImages(page, batch.config.folderName || 'men_ref_pics', batch.config.refPics) || []);
         // Couple pack: only the one girl this batch picked gets uploaded.
+        let girlFailed = [];
         if (batch.config.isCoupleSwap && tasks.length && tasks[0].girlFile && !state.stopRequested) {
-          await uploadAllRefImages(page, tasks[0].girlFolder, [tasks[0].girlFile]);
+          girlFailed = await uploadAllRefImages(page, tasks[0].girlFolder, [tasks[0].girlFile]) || [];
         }
+
+        // A generation whose reference picture is not in the library would run
+        // against a mention that resolves to nothing — the prompt names the
+        // picture, but the model never sees it, and the output is wrong in a way
+        // that is hard to spot later. Skip those instead.
+        if (girlFailed.length) {
+          plog(`✗ The girl reference "${girlFailed[0]}" is not in Flow — skipping this whole batch.`);
+          tasks = [];
+        } else if (failed.size) {
+          const before = tasks.length;
+          tasks = tasks.filter(t => !t.refImageName || !failed.has(t.refImageName));
+          const dropped = before - tasks.length;
+          if (dropped) plog(`✗ Skipping ${dropped} generation(s) whose reference picture never reached Flow.`);
+        }
+        batch.total = tasks.length;
+        pushState();
       } else if (batch.config.isScreenSwap && tasks.length) {
         // Pre-upload the chosen screenshot + the ENTIRE POV folder (not just this
         // batch's random subset) so the library stabilises after the first batch
@@ -1963,28 +2270,36 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/') {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'));
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    // no-store: the page is read fresh from disk on every request, so a cached
+    // copy in the browser would silently keep showing an old build of the UI.
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
     return res.end(html);
   }
 
   // YouTube Shorts scheduler UI (separate page, same server).
   if (req.method === 'GET' && url.pathname === '/youtube') {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'youtube.html'));
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    // no-store: the page is read fresh from disk on every request, so a cached
+    // copy in the browser would silently keep showing an old build of the UI.
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
     return res.end(html);
   }
 
   // Clip Combiner UI (Shorts DB + upload footage + generate paired clips).
   if (req.method === 'GET' && url.pathname === '/clips') {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'clips.html'));
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    // no-store: the page is read fresh from disk on every request, so a cached
+    // copy in the browser would silently keep showing an old build of the UI.
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
     return res.end(html);
   }
 
   // GrapheneOS Manager UI
   if (req.method === 'GET' && url.pathname === '/graphene') {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'graphene.html'));
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    // no-store: the page is read fresh from disk on every request, so a cached
+    // copy in the browser would silently keep showing an old build of the UI.
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
     return res.end(html);
   }
 
@@ -2145,6 +2460,107 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── Vids packs ─────────────────────────────────────────────────────────────
+  // GET  /api/packs?port=N          → every pack's progress IN THAT ACCOUNT'S
+  //                                    current Flow project
+  // POST /api/packs/swaps           → run stage 1 { pack, port?, only?[] }
+  if (req.method === 'GET' && url.pathname === '/api/packs') {
+    // Progress is per Flow project, so the numbers depend on which project the
+    // chosen account is sitting in. The open tab's URL is read straight from
+    // Chrome's /json/list (one local HTTP call, no puppeteer), falling back to
+    // the project the last run on that port used.
+    const statPort = Number(url.searchParams.get('port')) || DEFAULT_FLOW_PORT;
+    const pid = (await liveProjectId(statPort)) || lastProjectByPort[statPort] || null;
+    const packs = listPacks().map(p => {
+      const man = loadManifest(p), led = loadLedger(p);
+      const st = packStateRead(led, pid);
+      const imgs = packSwapImages(p, man);
+      // One stat: how many of the pack's references already have a generation.
+      const generated = imgs.filter(f => tilesOf(st, slugOf(f)).length).length;
+      return {
+        pack: p, clips: man.clips.length, images: imgs.length,
+        generated, notStarted: imgs.length - generated,
+        videosDone: man.clips.filter(c => ((st.videos || {})[c.id] || {}).done).length,
+        project: pid, projectUrl: st.url || null, lastRun: st.lastRun || null,
+        defaults: man.defaults,
+      };
+    });
+    return sendJson(res, 200, { packs, project: pid });
+  }
+
+  // POST /api/packs/reset { pack, port?, what: "images" | "videos" | "all" }
+  // Wipes THIS project's progress for the pack so the next run redoes it from
+  // scratch. Nothing in Flow is touched — only what genScript remembers — and
+  // other projects' progress is left alone. No browser needed: the project is
+  // the one the account's tab is open in.
+  if (req.method === 'POST' && url.pathname === '/api/packs/reset') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', async () => {
+      let data; try { data = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON' }); }
+      const pack = data.pack;
+      const what = ['images', 'videos', 'all'].includes(data.what) ? data.what : 'all';
+      if (!pack || !listPacks().includes(pack)) return sendJson(res, 400, { error: `Unknown pack "${pack}"` });
+      if (state.running) return sendJson(res, 409, { error: 'A run is in progress — stop it first' });
+
+      const port = Number(data.port) || DEFAULT_FLOW_PORT;
+      const pid = (await liveProjectId(port)) || lastProjectByPort[port] || null;
+      if (!pid) return sendJson(res, 400, { error: `No Flow project open on port ${port}` });
+
+      const led = loadLedger(pack);
+      const st = packState(led, pid);
+      const had = { images: Object.keys(st.images).length, videos: Object.keys(st.videos).length };
+      if (what === 'images' || what === 'all') st.images = {};
+      if (what === 'videos' || what === 'all') st.videos = {};
+      saveLedger(pack, led);
+      log(`Reset ${what} progress for pack "${pack}" in project ${pid} (was ${had.images} image(s), ${had.videos} video(s)).`);
+      return sendJson(res, 200, { ok: true, pack, project: pid, what, cleared: had });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && (url.pathname === '/api/packs/swaps' || url.pathname === '/api/packs/videos' || url.pathname === '/api/packs/scan')) {
+    const stage = url.pathname.endsWith('/videos') ? 'videos' : url.pathname.endsWith('/scan') ? 'scan' : 'swaps';
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', async () => {
+      let data; try { data = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON' }); }
+      const pack = data.pack;
+      if (!pack || !listPacks().includes(pack)) return sendJson(res, 400, { error: `Unknown pack "${pack}"` });
+      if (state.running) return sendJson(res, 409, { error: 'A run is already in progress' });
+
+      const port = Number(data.port) || DEFAULT_FLOW_PORT;
+      let browser;
+      try {
+        browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}`, defaultViewport: null, protocolTimeout: 90000 });
+      } catch {
+        return sendJson(res, 502, { error: `No debug Chrome on port ${port}` });
+      }
+      const pages = await browser.pages();
+      const page = pages.find(p => p.url().includes('flow.google') || p.url().includes('labs.google'));
+      if (!page) { browser.disconnect(); return sendJson(res, 502, { error: 'No Flow tab open' }); }
+
+      // Answer immediately — progress streams over the existing SSE log.
+      sendJson(res, 200, { ok: true, pack, port, stage, started: true });
+      state.running = true; state.stopRequested = false; pushState();
+      const only = Array.isArray(data.only) && data.only.length ? data.only : null;
+      try {
+        await page.bringToFront();
+        const pid = projectIdOfUrl(page.url());
+        if (pid) lastProjectByPort[port] = pid;
+        if (stage === 'scan') await scanProjectSwaps(page, pack, { deep: !!data.deep });
+        else if (stage === 'videos') await runPackVideos(page, pack, { only });
+        else await runPackSwaps(page, pack, { only });
+      } catch (e) {
+        log(`Pack ${stage} run failed: ${e && e.message ? e.message : e}`);
+      } finally {
+        state.running = false; pushState();
+        try { browser.disconnect(); } catch { }
+      }
+    });
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/status') {
     const chrome = await checkChrome(DEFAULT_FLOW_PORT);
     const debugCommands = debugCommandsFor(DEFAULT_FLOW_PORT);
@@ -2615,7 +3031,11 @@ const server = http.createServer(async (req, res) => {
         const logged = c.loggedPlatforms || {};
         const enabledPlatforms = [];
         if (logged.youtube) enabledPlatforms.push('youtube');
-        if (logged.facebook || logged.instagram) enabledPlatforms.push('fb', 'ig');
+        // fb and ig are SEPARATE ticks. This used to push both whenever either was
+        // ticked, which put 'fb' in the list for an IG-only character and aimed a
+        // Facebook pass at a login that has no Page.
+        if (logged.facebook) enabledPlatforms.push('fb');
+        if (logged.instagram) enabledPlatforms.push('ig');
         if (logged.x) enabledPlatforms.push('x');
         if (logged.threads) enabledPlatforms.push('threads');
 
@@ -2623,8 +3043,28 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, 400, { error: 'No platforms are marked as logged in for this character.' });
         }
 
+        // FB and IG are different Business Suite LOGINS (see IG_LOGIN_SWAP.md), so
+        // one unattended run can only ever hold one of them — the other would abort
+        // on the context switch. Say so here rather than letting the pass fail
+        // halfway through with a switcher dump.
+        if (enabledPlatforms.includes('fb') && enabledPlatforms.includes('ig')) {
+          return sendJson(res, 400, { error: `"${c.name}" has both Facebook and Instagram ticked. They are separate Business Suite logins, so one sequential run cannot do both — schedule one of them on its own, do the login swap (IG_LOGIN_SWAP.md), then the other.` });
+        }
+
+        // The asset names the browser passes need to reach scheduleAll.js, exactly
+        // as the single-platform branch below sends them. Without the IG one,
+        // scheduleAll refuses the whole run (not just the ig pass) and nothing is
+        // scheduled at all.
+        const igAsset = c.igAssetName || (c.handles && c.handles.instagram);
+        if (enabledPlatforms.includes('ig') && !igAsset) {
+          return sendJson(res, 400, { error: `No Instagram profile name set for "${c.name}". Add "igAssetName" (the IG handle as Business Suite lists it) to this character, then retry. It is never guessed — a wrong name would schedule to somebody else's account.` });
+        }
+
         const perDay = Math.max(1, Math.min(25, parseInt(p.perDay) || 3));
         const cliArgs = [SCHEDULE_ALL_SCRIPT, c.folder, `--port=${c.port}`, `--platforms=${enabledPlatforms.join(',')}`, `--per-day=${perDay}`];
+        if (enabledPlatforms.includes('ig')) cliArgs.push(`--ig-asset-name=${igAsset}`);
+        if (enabledPlatforms.includes('ig') && c.igMention) cliArgs.push(`--ig-mention=${c.igMention}`);
+        if (enabledPlatforms.includes('fb') && c.fbAssetName) cliArgs.push(`--fb-asset-name=${c.fbAssetName}`);
         if (p.start) cliArgs.push(`--start=${p.start}`);
         if (p.tz) cliArgs.push(`--tz=${p.tz}`);
         if (p.dryRun) cliArgs.push('--dry-run');
@@ -3036,6 +3476,976 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404); res.end('Not found');
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// VIDS PACKS — two-stage face-swap → video pipeline
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A pack is a folder under vids/ holding reference pictures plus a manifest
+// (video_prompts_<pack>.json). The pipeline runs in two stages with a MANUAL
+// review gate between them:
+//
+//   stage 1  swap every reference picture onto the pack's character (x2)
+//   review   you pick the keeper per reference (or rerun it)
+//   stage 2  generate the clips from the approved swaps
+//
+// Identity is carried by the TILE URL, not by names or by "the newest tile":
+// Flow gives every media tile a stable https://flow.google.com/asb/… src that
+// survives a reload (verified). Stage 1 records those URLs per slug at
+// generation time, so a rerun can never be confused with an earlier attempt.
+// Renaming happens ONLY after approval, aimed at the approved tile's URL.
+const VIDS_ROOT = path.join(__dirname, 'vids');
+
+function packDir(pack) { return path.join(VIDS_ROOT, pack); }
+function packManifestPath(pack) { return path.join(packDir(pack), `video_prompts_${pack}.json`); }
+function packLedgerPath(pack) { return path.join(packDir(pack), 'ledger.json'); }
+
+function listPacks() {
+  try {
+    return fs.readdirSync(VIDS_ROOT, { withFileTypes: true })
+      .filter(d => d.isDirectory() && fs.existsSync(packManifestPath(d.name)))
+      .map(d => d.name);
+  } catch { return []; }
+}
+
+function loadManifest(pack) {
+  return JSON.parse(fs.readFileSync(packManifestPath(pack), 'utf8'));
+}
+
+function loadLedger(pack) {
+  try { return JSON.parse(fs.readFileSync(packLedgerPath(pack), 'utf8')); }
+  catch { return { pack, projects: {} }; }
+}
+function saveLedger(pack, led) {
+  fs.writeFileSync(packLedgerPath(pack), JSON.stringify(led, null, 2) + '\n');
+}
+
+// ── Per-project bookkeeping ──────────────────────────────────────────────────
+// A pack is not tied to one Flow project: the same reference pictures are run
+// again in the next character's project, and there they have NOT been generated
+// yet. So what a ledger records is scoped by the Flow project it happened in —
+// otherwise the second character reports "nothing to do" and generates nothing.
+// The tile ids are project-local anyway, so this is also the only correct place
+// for them.
+// Both URL shapes are in the wild: flow.google.com/project/<id> (current) and
+// labs.google/fx/tools/flow/project/<id> (older). Matching only the long one
+// meant every project read as "unknown", which would put the whole pack in one
+// shared bucket again.
+const FLOW_PROJECT_RE = /\/project\/([0-9a-f-]{8,}|[^/?#]+)/i;
+function projectIdOfUrl(u) {
+  const m = FLOW_PROJECT_RE.exec(String(u || ''));
+  return m ? m[1] : null;
+}
+async function projectIdOf(page) {
+  let id = projectIdOfUrl(page.url());
+  if (!id) { await sleep(1500); id = projectIdOfUrl(page.url()); }
+  return id;
+}
+// The project ids a pack was last run against, per debug port, so /api/packs
+// can report the right project's progress even when Chrome is not reachable.
+const lastProjectByPort = {};
+// Which Flow project a debug Chrome is sitting in right now. Read from the
+// DevTools target list rather than through puppeteer: this is polled by the UI.
+async function liveProjectId(port) {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/list`);
+    if (!r.ok) return null;
+    for (const t of await r.json()) {
+      const id = t && t.type === 'page' ? projectIdOfUrl(t.url) : null;
+      if (id) { lastProjectByPort[port] = id; return id; }
+    }
+  } catch { }
+  return null;
+}
+
+// Returns { images, videos } for one project, creating it on first use.
+// Ledgers written before this existed kept a single top-level images/videos
+// pair with no project attached. That data is NOT adopted by whichever project
+// opens next — doing so would tell a fresh character's project that the pack is
+// already generated, which is the exact bug this scoping fixes. It is parked
+// under `legacy` instead, where stage 2 can still try those tile ids: a tile
+// from another project simply is not found there, so the check settles itself.
+function packState(led, projectId, meta = {}) {
+  const pid = projectId || 'unknown-project';
+  led.projects = led.projects || {};
+  if (led.images || led.videos) {
+    led.legacy = { images: led.images || {}, videos: led.videos || {} };
+    delete led.images; delete led.videos;
+  }
+  const st = (led.projects[pid] = led.projects[pid] || { images: {}, videos: {} });
+  st.images = st.images || {};
+  st.videos = st.videos || {};
+  // The project's own identity, so a ledger can be read months later without
+  // having to guess which Flow project it belongs to.
+  if (meta.url) st.url = meta.url;
+  st.id = pid;
+  st.firstSeen = st.firstSeen || new Date().toISOString();
+  if (meta.stage) {
+    st.lastRun = { stage: meta.stage, at: new Date().toISOString() };
+    st.runs = (st.runs || 0) + 1;
+  }
+  led.lastProject = pid;
+  return st;
+}
+// Read-only view for the stats endpoint — never creates anything, and counts
+// only what this project really generated.
+function packStateRead(led, projectId) {
+  const pid = projectId || led.lastProject;
+  return (pid && (led.projects || {})[pid]) || { images: {}, videos: {} };
+}
+
+// The ledger answers exactly one question per reference picture: which tiles
+// were generated from it IN THIS PROJECT. No attempt counters, no statuses, no
+// failure history — a reference with no tiles is simply one that still has to
+// run. `attempts[].variants` is the old shape; it is still read so existing
+// packs keep working, and rewritten into `tiles` on the next save.
+function tilesOf(st, slug) {
+  const e = (st.images || {})[slug];
+  if (!e) return [];
+  if (Array.isArray(e.tiles)) return e.tiles.filter(t => t && t.key);
+  return (e.attempts || []).flatMap(a => (a.variants || []).map(v => ({ key: v.key, url: v.url })))
+    .filter(t => t && t.key);
+}
+
+// Every picture in the pack that stage 1 must swap: all images on disk minus
+// the manifest's `passthrough` list (mog.jpeg is an eye overlay, not a swap
+// target — swapping it would destroy it).
+function packSwapImages(pack, man) {
+  const pass = new Set(man.defaults.passthrough || []);
+  return fs.readdirSync(packDir(pack)).filter(f => IMG_RE.test(f) && !pass.has(f)).sort();
+}
+const slugOf = (file) => file.replace(/\.[^/.]+$/, '');
+
+// ── Composer settings ────────────────────────────────────────────────────────
+// The chip renders as "🍌 Nano Banana 2 crop_9_16 x1" and opens one popover
+// holding mode / ratio / model / count — and, in video mode, the Frames vs
+// Ingredients switch, the resolution and the duration.
+//
+// EVERY label is an icon token glued to the text ("imageImage", "videocamVideo",
+// "crop_9_169:16", "chrome_extensionIngredients", "volume_upOmni 1.1 Flash"),
+// which is exactly what silently broke setAspectRatio before. So all matching
+// here is "ends with" / "contains", never equality.
+async function composerChip(page) {
+  return (await page.evaluateHandle(() =>
+    Array.from(document.querySelectorAll('button')).find(b => /crop_\d/.test(b.innerHTML)) || null)).asElement();
+}
+async function chipText(page) {
+  return await page.evaluate(() => {
+    const c = Array.from(document.querySelectorAll('button')).find(b => /crop_\d/.test(b.innerHTML));
+    return c ? (c.textContent || '').trim().replace(/\s+/g, ' ') : '';
+  });
+}
+// Detect the popover by what is INSIDE it, not by the overlay container: that
+// container keeps a child even while closed, so a child-count test reported the
+// popover as open at all times.
+function overlayOpen(page) {
+  return page.evaluate(() => {
+    const scope = document.querySelector('.cdk-overlay-container');
+    if (!scope) return false;
+    return Array.from(scope.querySelectorAll('[role="radio"]'))
+      .some(e => /(^|[a-z])(Image|Video)$/.test((e.textContent || '').trim()));
+  });
+}
+// Idempotent: clicking the chip TOGGLES the popover, so a blind click closes an
+// already-open one and every later lookup then finds nothing.
+async function openComposerSettings(page) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (await overlayOpen(page)) return true;
+    const chip = await composerChip(page);
+    if (!chip) { await sleep(1000); continue; }
+    await chip.click(); await chip.dispose();
+    await sleep(1800);
+    if (await overlayOpen(page)) return true;
+  }
+  return false;
+}
+// Finds a control in the popover whose text ENDS WITH `label` (so the glued
+// icon token is ignored), or whose aria-label contains it.
+async function popoverControl(page, label) {
+  return (await page.evaluateHandle((l) => {
+    const scope = document.querySelector('.cdk-overlay-container') || document;
+    const els = Array.from(scope.querySelectorAll('button,[role="radio"],[role="menuitem"],[role="option"]'));
+    const low = l.toLowerCase();
+    return els.find(e => (e.textContent || '').trim().toLowerCase().endsWith(low))
+        || els.find(e => ((e.getAttribute('aria-label') || '').toLowerCase().includes(low))) || null;
+  }, label)).asElement();
+}
+async function clickPopover(page, label, waitMs = 1200) {
+  const el = await popoverControl(page, label);
+  if (!el) return false;
+  await el.click(); await el.dispose();
+  await sleep(waitMs);
+  return true;
+}
+
+// Applies one mode's settings and proves it by reading the chip back. Returns
+// false rather than generating on the wrong model/count — a silently wrong
+// setting costs a whole batch of generations.
+async function applyComposerSettings(page, opts) {
+  const { mode, model, count, aspect, resolution, duration, videoType } = opts;
+  if (!(await openComposerSettings(page))) { log('Could not open the composer settings popover.'); return false; }
+
+  if (!(await clickPopover(page, mode, 2000))) { log(`Composer: no "${mode}" mode chip.`); return false; }
+  await openComposerSettings(page);
+
+  // Frames vs Ingredients — video mode only, and it IS the manifest's `type`.
+  if (videoType && !(await clickPopover(page, videoType))) log(`⚠️  Composer: no "${videoType}" switch.`);
+  if (aspect && !(await clickPopover(page, aspect))) log(`⚠️  Composer: could not set ${aspect}.`);
+  if (resolution && !(await clickPopover(page, resolution))) log(`⚠️  Composer: could not set ${resolution}.`);
+  if (duration && !(await clickPopover(page, duration))) log(`⚠️  Composer: could not set ${duration}.`);
+
+  if (model) {
+    if (await clickPopover(page, 'Select model family', 2000)) {
+      if (!(await clickPopover(page, model, 2000))) log(`⚠️  Composer: model "${model}" not in the list.`);
+      await openComposerSettings(page);
+    } else log('⚠️  Composer: no model dropdown.');
+  }
+  if (count && !(await clickPopover(page, count))) log(`⚠️  Composer: could not set ${count}.`);
+
+  // Read the model back from the dropdown while the popover is still open: the
+  // chip prints the model name in IMAGE mode only ("🍌 Nano Banana 2 crop_9_16
+  // x2"), while in VIDEO mode it reads "Video · 720p · 4s crop_9_16 x1" with no
+  // model at all — so checking the chip alone rejected every correct video run.
+  const modelShown = await page.evaluate(() => {
+    const scope = document.querySelector('.cdk-overlay-container');
+    if (!scope) return '';
+    const b = Array.from(scope.querySelectorAll('button'))
+      .find(e => /select model family/i.test(e.getAttribute('aria-label') || ''));
+    return b ? (b.textContent || '').replace(/arrow_drop_down/g, '').trim() : '';
+  });
+
+  await page.keyboard.press('Escape'); await sleep(700);
+
+  const txt = await chipText(page);
+  log(`Composer now: "${txt}"${modelShown ? ` · model "${modelShown}"` : ''}`);
+  const okModel = !model || (modelShown + ' ' + txt).toLowerCase().includes(model.toLowerCase());
+  const okCount = !count || new RegExp(`\\b${count}\\b`).test(txt);
+  if (!okModel || !okCount) {
+    log(`⚠️  Composer read-back MISMATCH (wanted ${model || '-'} / ${count || '-'}) — refusing to generate.`);
+    return false;
+  }
+  return true;
+}
+
+// ── Tile identity ────────────────────────────────────────────────────────────
+// Newest-first list of media tile URLs. Stage 1 diffs this against the snapshot
+// taken before the generation, so the new tiles are identified positively
+// instead of assuming "the top N are mine".
+// A tile's src is a SIGNED CDN url carrying ?Expires=&Signature= — it stops
+// working after ~2 days, so it cannot be the stored identity. The stable part
+// is the asset id in the path ("/image/<uuid>" on flow-content.google, or the
+// "/asb/<id>" form older tiles still use). The ledger keys on that id and the
+// full url is kept only so the review page has something to render today.
+function mediaKeyOf(u) {
+  const m = String(u).match(/\/(?:image|asb)\/([^/?#]+)/);
+  return m ? m[1] : null;
+}
+function mediaTiles(page) {
+  return page.evaluate(() => Array.from(document.querySelectorAll('img'))
+    .filter(i => { const r = i.getBoundingClientRect(); return r.width > 120 && r.top > 60; })
+    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top
+                 || a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+    .map(i => i.currentSrc || i.src).filter(Boolean))
+    .then(urls => urls.map(u => ({ url: u, key: (String(u).match(/\/(?:image|asb)\/([^/?#]+)/) || [])[1] || null }))
+                      .filter(t => t.key));
+}
+
+// Fill a manifest's swapPrompt: every "@ref" becomes the reference picture and
+// every "@character" the Flow character. By default only the FIRST occurrence
+// of each is a real "@" mention (`tagEveryMention: true` in the manifest tags
+// every one, at ~2s per extra trip through Flow's picker) — that is what attaches the asset. Every later occurrence is
+// written as plain text, because each extra mention costs another trip through
+// Flow's picker (~2s) and reads exactly the same to the model once the asset has
+// been named once. This is the same rule the classic ref-swap prompt uses.
+function fillPackPrompt(template, refSlug, charName, tagEvery = false) {
+  let out = '';
+  let rest = String(template);
+  const seen = { '@ref': false, '@character': false };
+  const value = { '@ref': refSlug, '@character': charName };
+  const TOKEN = /@(ref|character)\b/;
+  for (let m = TOKEN.exec(rest); m; m = TOKEN.exec(rest)) {
+    const tok = '@' + m[1];
+    const asMention = tagEvery || !seen[tok];
+    out += rest.slice(0, m.index) + (asMention ? mention(value[tok]) : value[tok]);
+    seen[tok] = true;
+    rest = rest.slice(m.index + tok.length);
+  }
+  return out + rest;
+}
+
+// ── Stage 1: face swaps ──────────────────────────────────────────────────────
+// One swap per reference picture, x2 outputs, both recorded for the review.
+async function runPackSwaps(page, pack, opts = {}) {
+  const man = loadManifest(pack);
+  const d = man.defaults;
+  const led = loadLedger(pack);
+  const pid = await projectIdOf(page);
+  const st = packState(led, pid, { url: page.url(), stage: 'images' });
+
+  const only = opts.only ? new Set(opts.only) : null;   // rerun a subset
+  const all = packSwapImages(pack, man);
+  const todo = all.filter(f => {
+    if (only) return only.has(slugOf(f)) || only.has(f);
+    return !tilesOf(st, slugOf(f)).length;               // resume: skip done ones
+  });
+
+  log(`\n═══ Pack "${pack}": stage 1 — ${todo.length}/${all.length} swap(s) to generate ═══`);
+  log(`Flow project: ${pid || 'unknown (URL has no /project/ id)'}`);
+  log(`Character: ${d.character} · model ${d.imageModel} · x${d.imageCount} · ${d.aspect}`);
+  if (!todo.length) { log('Nothing to do — every reference already has a generation.'); return led; }
+
+  // Upload the WHOLE pack (passthrough included — mog.jpeg must be in Flow for
+  // stage 2 even though it is never swapped).
+  const everything = fs.readdirSync(packDir(pack)).filter(f => IMG_RE.test(f));
+  await uploadAllRefImages(page, path.join('vids', pack), everything);
+
+  if (!(await applyComposerSettings(page, {
+    mode: 'Image', model: d.imageModel, count: `x${d.imageCount}`, aspect: d.aspect,
+  }))) return led;
+
+  const charName = String(d.character).replace(/^@/, '');
+  let ok = 0, missed = 0;
+
+  for (const file of todo) {
+    if (state.stopRequested) { log('Stopped.'); break; }
+    const slug = slugOf(file);
+    log(`\n[${pack}] ${slug}`);
+
+    const before = (await mediaTiles(page)).map(t => t.key);
+
+    // Both assets are tagged by a real Flow "@" mention, so the prompt itself
+    // attaches them — same path the chopped pack already uses.
+    const prompt = fillPackPrompt(d.swapPrompt, slug, charName, !!d.tagEveryMention);
+
+    // Build the prompt until BOTH assets are really chipped. A mention that
+    // quietly fell back to plain text would generate without its reference
+    // picture: plausible-looking, wrong, and burned for the whole run. The
+    // first try after a finished generation is the one that misses (Flow is
+    // still ingesting the images it just made), so a retry here is what turns
+    // a half-swapped pack into a fully swapped one.
+    let chips = 0, promptOk = false;
+    for (let t = 1; t <= 3 && !state.stopRequested; t++) {
+      await resetComposer(page);
+      if (t > 1) await sleep(4000);        // let Flow's asset list settle
+      if (!(await setPromptText(page, prompt))) { log('Could not set the prompt.'); continue; }
+      chips = await countComposerRefs(page);
+      if (chips >= 2) { promptOk = true; break; }
+      log(`⚠️  Only ${chips} chip(s) attached — retrying the prompt (${t}/3).`);
+    }
+    // Nothing about a miss is written down: the ledger records generations, not
+    // history. A reference with no tiles is simply still to do, so the next run
+    // picks it up again on its own.
+    if (!promptOk) { log(`⚠️  Mentions never resolved for ${slug} — leaving it for the next run.`); missed++; continue; }
+
+    if (!(await fireGenerate(page))) { log('Generate did not fire — leaving it for the next run.'); missed++; continue; }
+    await waitForGenerationDone(page);
+    // Flow keeps writing the new images into the project's asset list after the
+    // progress indicator goes away, and the "@" dropdown reads that same list —
+    // so give it time before the next prompt starts mentioning assets.
+    await sleep(6000);
+
+    const after = await mediaTiles(page);
+    const fresh = after.filter(t => !before.includes(t.key));
+    if (!fresh.length) { log(`⚠️  No new tile appeared for ${slug} — leaving it for the next run.`); missed++; continue; }
+
+    // The only thing worth storing: which tiles this reference produced.
+    const entry = st.images[slug] || (st.images[slug] = { file, tiles: [] });
+    entry.file = file;
+    entry.at = new Date().toISOString();
+    const have = new Set(entry.tiles.map(t => t.key));
+    for (const t of fresh.slice(0, d.imageCount)) if (!have.has(t.key)) entry.tiles.push({ key: t.key, url: t.url });
+    ok++;
+    log(`✅ ${slug}: ${fresh.length} tile(s) recorded.`);
+    saveLedger(pack, led);
+  }
+
+  saveLedger(pack, led);
+  const done = all.filter(f => tilesOf(st, slugOf(f)).length).length;
+  log(`\n═══ Pack "${pack}" stage 1 — ${done}/${all.length} reference(s) generated (${ok} this run${missed ? `, ${missed} still to do` : ''}) ═══`);
+  log('Review them, then run stage 2.');
+  return led;
+}
+
+// ── Tile lookup by asset id ──────────────────────────────────────────────────
+// Flow names a generated tile after a SUMMARY of its prompt, so 26 swaps that
+// share one prompt template all end up with near-identical names ("Replace
+// character in image" twice over). Names therefore cannot identify a tile, and
+// "@"-mentioning a swap result is not an option. The asset id in the tile's src
+// is unique and stable, so stage 2 finds its image by id and attaches it with
+// the tile's own "Add to prompt" — no renaming, no mentions, no downloads.
+// The media grid does NOT scroll the document: it lives in an Angular CDK
+// virtual viewport (div.cdk-virtual-scrollable.page-container, ~19000px of
+// content inside a 929px window) and document.scrollingElement never moves. The
+// old scrollBy(document) therefore did nothing at all, so any tile outside the
+// rendered window was simply unreachable — and the rows are destroyed as they
+// leave it, so it was not off-screen, it was not in the DOM.
+function gridScroll(page, dy) {
+  return page.evaluate((d) => {
+    const el = document.querySelector('.cdk-virtual-scrollable.page-container')
+            || document.querySelector('cdk-virtual-scroll-viewport')
+            || document.scrollingElement || document.body;
+    const before = el.scrollTop;
+    el.scrollTop = d === null ? 0 : before + d;
+    return { moved: el.scrollTop !== before, top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+  }, dy === undefined ? 0 : dy);
+}
+
+// Tiles carry their asset id on the <img> itself (data-media-id) as well as in
+// the signed src, so both are accepted: the src expires, the attribute does not.
+function tileBox(page, key) {
+  return page.evaluate((k) => {
+    const i = Array.from(document.querySelectorAll('img')).find(im =>
+      (im.dataset && im.dataset.mediaId === k) || (im.currentSrc || im.src || '').includes(k));
+    if (!i) return null;
+    const r = i.getBoundingClientRect();
+    return { x: r.x, y: r.y, w: r.width, h: r.height, inView: r.top > 60 && r.bottom < window.innerHeight };
+  }, key);
+}
+
+async function locateTile(page, key, maxScrolls = 60) {
+  let box = await tileBox(page, key);
+  if (!box) {
+    await gridScroll(page, null);                 // start from the top
+    await sleep(600);
+    box = await tileBox(page, key);
+  }
+  for (let s = 0; s < maxScrolls && !box; s++) {
+    const r = await gridScroll(page, 700);
+    await sleep(450);
+    box = await tileBox(page, key);
+    if (!r.moved) break;                          // bottom reached
+  }
+  if (!box) return null;
+  if (!box.inView) {
+    await page.evaluate((k) => {
+      const i = Array.from(document.querySelectorAll('img')).find(im =>
+        (im.dataset && im.dataset.mediaId === k) || (im.currentSrc || im.src || '').includes(k));
+      if (i) i.scrollIntoView({ block: 'center' });
+    }, key);
+    await sleep(1000);
+    box = await tileBox(page, key);
+  }
+  return box;
+}
+
+// True when the asset is still in the project. Used as the approval signal:
+// the pictures the user deleted by hand are the ones they rejected.
+async function tileExists(page, key) { return !!(await locateTile(page, key, 30)); }
+
+// Attach one generated tile to the composer as an ingredient.
+//
+// The menu is Angular Material's, so it lives in .cdk-overlay-container — never
+// in [role="menu"] or a Radix popper, which is all the old lookup searched. It
+// also required the matching element to have at most 2 descendants, but the row
+// is a button holding an icon span plus a label span plus text, so even when the
+// right container was searched the item was rejected. Verified live: the menu
+// reads ["favoriteFavorite","keyboard_returnReuse prompt","motion_blurAnimate",
+// "add_2Add to prompt", …], i.e. the icon token is glued to the label, so the
+// match is a "contains", and the item is found by text alone.
+//
+// Both openers are tried: the tile's kebab (which the project scan proved
+// reliable) and, failing that, right-click on the tile.
+async function addTileToPrompt(page, key) {
+  const clickItem = () => page.evaluate(() => {
+    const scope = document.querySelector('.cdk-overlay-container') || document;
+    const it = Array.from(scope.querySelectorAll('button,[role="menuitem"],[role="option"]'))
+      .find(e => /add\s*to\s*prompt/i.test((e.textContent || '').replace(/\s+/g, ' ')));
+    if (!it) return false;
+    it.click();
+    return true;
+  });
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const box = await locateTile(page, key);
+    if (!box) return false;
+    const before = await countComposerRefs(page);
+
+    let opened = false;
+    if (attempt === 1) {
+      opened = await page.evaluate((k) => {
+        const img = Array.from(document.querySelectorAll('img')).find(im =>
+          (im.dataset && im.dataset.mediaId === k) || (im.currentSrc || im.src || '').includes(k));
+        const tile = img && img.closest('flow-grid-tile-container');
+        const btn = tile && Array.from(tile.querySelectorAll('button')).find(b => (b.innerHTML || '').includes('more_vert'));
+        if (!btn) return false;
+        btn.click();
+        return true;
+      }, key);
+    }
+    if (!opened) {
+      await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2, { button: 'right' });
+      opened = true;
+    }
+    await sleep(1400);
+
+    if (await clickItem()) {
+      await sleep(1800);
+      // A clicked row is not an ingredient: confirm the thumbnail arrived.
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline) {
+        if ((await countComposerRefs(page)) > before) return true;
+        await sleep(300);
+      }
+      log(`"Add to prompt" clicked for ${key.slice(0, 8)} but no ingredient appeared.`);
+    }
+    await closePicker(page);
+  }
+  return false;
+}
+
+// Wait between generations without going deaf to Stop: a single long sleep
+// would keep the run alive for its whole duration after the user asked it to
+// stop, so this wakes up every second to check.
+async function pace(seconds, why) {
+  const ms = Math.max(0, Math.round(seconds * 1000));
+  if (!ms) return;
+  log(`Waiting ${Math.round(ms / 1000)}s ${why}...`);
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (state.stopRequested) throw new Error('STOP_REQUESTED');
+    await sleep(Math.min(1000, until - Date.now()));
+  }
+}
+
+// ── Stage 0: adopt what is already in the project ────────────────────────────
+// Generations made by hand in Flow (or by an older run whose ids were lost) are
+// invisible to stage 2, because nothing records which reference picture each
+// tile came from. Flow's own per-tile "Reuse prompt" fixes that exactly: it
+// loads the tile's ORIGINAL prompt back into the composer, and that prompt
+// names the reference file ("swap character on char_bulk_lats.jpeg with our
+// Untitled character"). So the mapping is read from Flow rather than guessed
+// from what the tiles look like.
+//
+// Tiles belonging to other packs name a file this pack does not have, so they
+// are ignored on their own.
+// opts: { deep?: true } reads every generation in the project.
+async function scanProjectSwaps(page, pack, opts = {}) {
+  const man = loadManifest(pack);
+  const led = loadLedger(pack);
+  const pid = await projectIdOf(page);
+  const st = packState(led, pid, { url: page.url(), stage: 'scan' });
+
+  const files = fs.readdirSync(packDir(pack)).filter(f => IMG_RE.test(f));
+  const bySlug = new Map(files.map(f => [slugOf(f).toLowerCase(), f]));
+  const pass = new Set(man.defaults.passthrough || []);
+  // A filename that also exists in another pack cannot identify a tile on its
+  // own, so for those the prompt must name THIS pack's character too. Today
+  // only mog.jpeg is shared (and it is passthrough everywhere), but a future
+  // pack reusing a name would otherwise quietly steal the other one's tiles.
+  const others = listPacks().filter(p => p !== pack);
+  const shared = new Set(files.filter(f => others.some(p => fs.existsSync(path.join(packDir(p), f)))));
+  const packChar = String(man.defaults.character || '').replace(/^@/, '').toLowerCase();
+
+  log(`\n═══ Pack "${pack}": scanning project ${pid || '(unknown)'} for existing generations ═══`);
+
+  // 1. Enumerate every tile in the grid. Uploaded pictures are named after the
+  //    file, generations after a summary of their prompt — only the latter are
+  //    worth opening.
+  const all = new Map();
+  await gridScroll(page, null);
+  await sleep(900);
+  for (let i = 0; i < 400; i++) {
+    const rows = await page.evaluate(() => Array.from(document.querySelectorAll('flow-grid-tile-container')).map(t => {
+      const img = t.querySelector('img');
+      return { key: img && img.dataset ? img.dataset.mediaId : null, name: (t.getAttribute('aria-label') || '').trim() };
+    }).filter(r => r.key));
+    for (const r of rows) if (!all.has(r.key)) all.set(r.key, r.name);
+    const moved = (await gridScroll(page, 600)).moved;
+    await sleep(320);
+    if (!moved) break;
+  }
+  const gens = [...all].filter(([, name]) => !IMG_RE.test(name));
+  log(`${all.size} tile(s) in the project, ${gens.length} of them generations.`);
+
+  // 2. Read each generation's own prompt and map it to a reference picture.
+  //
+  // A tile's NAME cannot say which pack made it — Flow names it after a summary
+  // of the prompt, so 57 tiles here read "Swap character on reference image" —
+  // and only the prompt behind "Reuse prompt" identifies the reference. The
+  // grid is newest-first and a pack's generations sit together in it, so once
+  // every reference of THIS pack is covered, the scan stops after a short run
+  // of consecutive foreign tiles instead of opening the whole project.
+  // `opts.deep` reads every tile anyway, for the case where a pack's tiles are
+  // scattered because it was generated in several sittings.
+  const targets = new Set(packSwapImages(pack, man).map(slugOf));
+  // How far to keep reading past the pack's own block of tiles. GRACE covers a
+  // couple of foreign tiles mixed in among this pack's; LEAD_IN is how many of
+  // the newest tiles may be foreign before concluding the pack simply is not in
+  // this project. Both are small on purpose: a shared project holds hundreds of
+  // other packs' generations and opening one costs ~3s.
+  const GRACE = 12;
+  const LEAD_IN = 30;
+  let claimed = 0, foreign = 0, sinceMine = 0, opened = 0;
+  const found = new Map();                       // slug -> [keys]
+  for (const [key, name] of gens) {
+    if (state.stopRequested) { log('Stopped.'); break; }
+    if (!opts.deep) {
+      const left = gens.length - opened;
+      if (!found.size && opened >= LEAD_IN) {
+        log(`None of the newest ${LEAD_IN} generation(s) belong to "${pack}" — stopping instead of opening ${left} more. Use a deep scan if this pack was generated further back.`);
+        break;
+      }
+      if (found.size && sinceMine >= GRACE) {
+        log(`${GRACE} tile(s) in a row from other packs — past this pack's block, stopping instead of opening ${left} more.`);
+        break;
+      }
+    }
+    const prompt = await tilePrompt(page, key);
+    opened++;
+    if (!prompt) { log(`  ${key.slice(0, 8)} "${name}" — no prompt readable, skipped.`); sinceMine++; continue; }
+    const low = prompt.toLowerCase();
+    // Longest name first: char_mog_start must win over char_mog.
+    const hit = [...bySlug.entries()].sort((a, b) => b[0].length - a[0].length)
+      .find(([slug]) => low.includes(slug));
+    if (!hit) { foreign++; sinceMine++; continue; }
+    const file = hit[1];
+    if (pass.has(file)) { sinceMine++; continue; }   // the overlay is never a swap
+    if (shared.has(file) && packChar && !low.includes(packChar)) { foreign++; sinceMine++; continue; }
+    const slug = slugOf(file);
+    if (!found.has(slug)) found.set(slug, []);
+    found.get(slug).push(key);
+    claimed++; sinceMine = 0;
+    log(`  ${key.slice(0, 8)} → ${slug}`);
+  }
+  await resetComposer(page);
+
+  // 3. Write them down. This REPLACES what the ledger held for this project:
+  //    what is in Flow now is the truth, and stale ids only cause stage 2 to
+  //    skip clips.
+  for (const [slug, keys] of found) {
+    const file = bySlug.get(slug.toLowerCase()) || `${slug}.jpeg`;
+    st.images[slug] = { file, at: new Date().toISOString(), adopted: true, tiles: keys.map(k => ({ key: k })) };
+  }
+  saveLedger(pack, led);
+
+  const swapTargets = packSwapImages(pack, man).map(slugOf);
+  const missing = swapTargets.filter(sl => !tilesOf(st, sl).length);
+  const multi = swapTargets.filter(sl => tilesOf(st, sl).length > 1);
+  log(`\nAdopted ${claimed} generation(s) for ${found.size}/${swapTargets.length} reference(s).`);
+  log(`Opened ${opened} of ${gens.length} generation tile(s) in the project; ${foreign} of those belong to other packs.`);
+  if (multi.length) log(`⚠️  More than one generation survives for: ${multi.join(', ')} — delete the rejects in Flow, stage 2 needs exactly one per reference.`);
+  if (missing.length) log(`⚠️  Still no generation for: ${missing.join(', ')}`);
+  else log('Every reference has a generation. Stage 2 can run.');
+  return led;
+}
+
+// Opens one tile's "Reuse prompt" and reads the prompt it puts in the composer.
+async function tilePrompt(page, key) {
+  const box = await locateTile(page, key);
+  if (!box) return null;
+  await resetComposer(page);
+  // The kebab menu lives on the tile itself; the right-click context menu does
+  // not carry "Reuse prompt".
+  const opened = await page.evaluate((k) => {
+    const img = Array.from(document.querySelectorAll('img')).find(im =>
+      (im.dataset && im.dataset.mediaId === k) || (im.currentSrc || im.src || '').includes(k));
+    const tile = img && img.closest('flow-grid-tile-container');
+    if (!tile) return false;
+    const btn = Array.from(tile.querySelectorAll('button')).find(b => (b.innerHTML || '').includes('more_vert'));
+    if (!btn) return false;
+    btn.click();
+    return true;
+  }, key);
+  if (!opened) return null;
+  await sleep(900);
+  const clicked = await page.evaluate(() => {
+    const scope = document.querySelector('.cdk-overlay-container');
+    if (!scope) return false;
+    const it = Array.from(scope.querySelectorAll('button,[role="menuitem"]'))
+      .find(e => /reuse prompt/i.test(e.textContent || ''));
+    if (!it) return false;
+    it.click();
+    return true;
+  });
+  if (!clicked) { await page.keyboard.press('Escape').catch(() => { }); return null; }
+  await sleep(1500);
+  const text = await page.evaluate(() => {
+    const ed = document.querySelector('[data-slate-editor="true"]') || document.querySelector('[contenteditable="true"]');
+    return ed ? (ed.textContent || '').trim().replace(/\s+/g, ' ') : '';
+  });
+  return text || null;
+}
+
+// A generated tile's NAME is a summary of its prompt, so a pack ends up with a
+// dozen tiles called "Replace character in image" — useless for "@"-tagging. But
+// the tile menu has Rename, so stage 2 gives each swap a stable, unique name and
+// tags it by that name. The prefix keeps it from colliding with the uploaded
+// reference of the same slug ("swap_char_tricep_flex" vs
+// "char_tricep_flex.jpeg"), which would make the mention picker ambiguous.
+const swapTileName = (slug) => `swap_${slug}`;
+
+async function tileLabel(page, key) {
+  return page.evaluate((k) => {
+    const img = Array.from(document.querySelectorAll('img')).find(im =>
+      (im.dataset && im.dataset.mediaId === k) || (im.currentSrc || im.src || '').includes(k));
+    const tile = img && img.closest('flow-grid-tile-container');
+    return tile ? (tile.getAttribute('aria-label') || '').trim() : null;
+  }, key);
+}
+
+// Opens the tile's kebab menu and clicks one item by its visible text. The icon
+// token is glued to the label ("editRename", "add_2Add to prompt"), so every
+// match here is a "contains", never an equality.
+async function tileMenuClick(page, key, rx) {
+  const box = await locateTile(page, key);
+  if (!box) return false;
+  const opened = await page.evaluate((k) => {
+    const img = Array.from(document.querySelectorAll('img')).find(im =>
+      (im.dataset && im.dataset.mediaId === k) || (im.currentSrc || im.src || '').includes(k));
+    const tile = img && img.closest('flow-grid-tile-container');
+    const btn = tile && Array.from(tile.querySelectorAll('button')).find(b => (b.innerHTML || '').includes('more_vert'));
+    if (!btn) return false;
+    btn.click();
+    return true;
+  }, key);
+  if (!opened) {
+    await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2, { button: 'right' });
+  }
+  await sleep(1200);
+  const hit = await page.evaluate((pattern) => {
+    const scope = document.querySelector('.cdk-overlay-container') || document;
+    const re = new RegExp(pattern, 'i');
+    const it = Array.from(scope.querySelectorAll('button,[role="menuitem"],[role="option"]'))
+      .find(e => re.test((e.textContent || '').replace(/\s+/g, ' ')));
+    if (!it) return false;
+    it.click();
+    return true;
+  }, rx);
+  if (!hit) await closePicker(page);
+  return hit;
+}
+
+// Renames a tile and proves it by reading the label back.
+async function renameTile(page, key, name) {
+  if ((await tileLabel(page, key)) === name) return true;
+  if (!(await tileMenuClick(page, key, 'rename'))) { log(`No Rename item for ${key.slice(0, 8)}.`); return false; }
+  await sleep(1200);
+
+  const input = await findElement(page, () => {
+    const scope = document.querySelector('.cdk-overlay-container') || document;
+    return scope.querySelector('input[type="text"], input:not([type]), textarea')
+        || Array.from(scope.querySelectorAll('[contenteditable="true"]'))[0] || null;
+  });
+  if (!input) { log(`Rename dialog for ${key.slice(0, 8)} had no input.`); await closePicker(page); return false; }
+  // The field arrives pre-filled with the old name and Cmd/Ctrl+A does NOT
+  // select it here — the app swallows the shortcut, so a plain Backspace then
+  // ate a single character and the new name was typed INTO the old one
+  // ("Replace chswap_char_tricep_flexracter in image"). Triple-click selects the
+  // line, and the value is blanked directly as a belt-and-braces measure.
+  await input.click({ clickCount: 3 });
+  await sleep(200);
+  await page.evaluate((el) => {
+    if ('value' in el) {
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      el.textContent = '';
+    }
+  }, input);
+  await sleep(200);
+  await page.keyboard.type(name, { delay: 15 });
+  await input.dispose();
+  await sleep(400);
+
+  // Enter usually commits; a dialog with an explicit button needs the click.
+  await page.keyboard.press('Enter');
+  await sleep(900);
+  const stillOpen = await page.evaluate(() => {
+    const scope = document.querySelector('.cdk-overlay-container');
+    return !!(scope && scope.querySelector('input[type="text"], input:not([type]), textarea'));
+  });
+  if (stillOpen) {
+    await page.evaluate(() => {
+      const scope = document.querySelector('.cdk-overlay-container') || document;
+      // Verified live: the dialog's buttons are the icon pair ["done","close"].
+      const b = Array.from(scope.querySelectorAll('button'))
+        .find(e => /^(rename|save|done|ok|confirm|check)$/i.test((e.textContent || '').replace(/\s+/g, ' ').trim()));
+      if (b) b.click();
+    });
+    await sleep(900);
+  }
+  await page.keyboard.press('Escape').catch(() => { });
+  await sleep(600);
+
+  const now = await tileLabel(page, key);
+  if (now === name) return true;
+  log(`Rename of ${key.slice(0, 8)} did not stick (label is "${now}").`);
+  return false;
+}
+
+// ── Stage 2: videos ──────────────────────────────────────────────────────────
+// Resolves each clip's images through the ledger, attaches them in manifest
+// order, then generates. A clip whose images are missing or ambiguous is
+// SKIPPED with a reason — never generated against a guessed picture, because a
+// wrong-but-plausible clip is only noticed after watching all 34.
+function clipImageRefs(clip) {
+  // "imgRef": "x.jpeg"  |  [{imageStart:…},{imageEnd:…}]  |  [{image1:…},{image2:…},…]
+  if (typeof clip.imgRef === 'string') return [{ slot: 'refference_image', file: clip.imgRef }];
+  return clip.imgRef.flatMap(o => Object.entries(o).map(([slot, file]) => ({ slot, file })));
+}
+
+// Which generated tile stands for this reference picture now. The user's manual
+// clean-up in Flow is the approval: exactly one surviving id means "this one".
+async function resolveSwap(page, st, legacy, file) {
+  const slug = file.replace(/\.[^/.]+$/, '');
+  // This project's tiles first, then any parked pre-scoping ones: every id is
+  // checked against the live project below, so a foreign id costs nothing.
+  const keys = [...new Set([...tilesOf(st, slug), ...tilesOf(legacy, slug)].map(t => t.key))];
+  if (!keys.length) return { error: `no stage-1 generation for "${slug}"` };
+
+  const alive = [];
+  for (const k of keys) if (await tileExists(page, k)) alive.push(k);
+  if (!alive.length) return { error: `every generation of "${slug}" was deleted — rerun it` };
+  if (alive.length > 1) return { error: `"${slug}" still has ${alive.length} generations in Flow — delete all but the keeper` };
+  return { key: alive[0], slug };
+}
+
+async function runPackVideos(page, pack, opts = {}) {
+  const man = loadManifest(pack);
+  const d = man.defaults;
+  const led = loadLedger(pack);
+  const pid = await projectIdOf(page);
+  const st = packState(led, pid, { url: page.url(), stage: 'videos' });
+
+  const only = opts.only ? new Set(opts.only) : null;
+  const clips = man.clips.filter(c => (only ? only.has(c.id) : !(st.videos[c.id] || {}).done));
+  // Seconds to wait between clips. `videoDelaySeconds` in the manifest's
+  // defaults overrides it; 0 turns the pacing off.
+  const gap = Number.isFinite(Number(d.videoDelaySeconds)) ? Number(d.videoDelaySeconds) : 30;
+
+  log(`\n═══ Pack "${pack}": stage 2 — ${clips.length}/${man.clips.length} clip(s) ═══`);
+  log(`Flow project: ${pid || 'unknown (URL has no /project/ id)'}`);
+  log(`Model ${d.videoModel} · x${d.videoCount} · ${d.aspect} · ${d.resolution} · ${gap}s between clips`);
+  if (!clips.length) { log('Nothing to do.'); return led; }
+
+  // The passthrough overlay (mog.jpeg) is a plain uploaded asset, never swapped,
+  // so it is attached by "@" mention like any reference picture.
+  const passthrough = new Set(d.passthrough || []);
+  let ok = 0, skipped = 0;
+
+  for (const clip of clips) {
+    if (state.stopRequested) { log('Stopped.'); break; }
+    log(`\n[${pack}] ${clip.id} — ${clip.type}, ${clip.duration}s`);
+
+    // 1. Resolve every image first. Nothing is clicked until the whole clip is
+    //    known to be satisfiable.
+    const refs = clipImageRefs(clip);
+    const plan = [];
+    let bad = null;
+    for (const r of refs) {
+      if (passthrough.has(r.file)) { plan.push({ ...r, mention: r.file.replace(/\.[^/.]+$/, '') }); continue; }
+      const res = await resolveSwap(page, st, led.legacy || { images: {} }, r.file);
+      if (res.error) { bad = res.error; break; }
+      plan.push({ ...r, key: res.key });
+    }
+    if (bad) {
+      log(`⏭️  Skipping ${clip.id}: ${bad}`);
+      skipped++; continue;
+    }
+
+    // 2. Composer: video mode, the manifest's own Frames/Ingredients switch,
+    //    model, duration, resolution, ratio and count.
+    if (!(await applyComposerSettings(page, {
+      mode: 'Video',
+      videoType: clip.type === 'frames' ? 'Frames' : 'Ingredients',
+      model: d.videoModel, count: `x${d.videoCount}`,
+      aspect: d.aspect, resolution: d.resolution, duration: `${clip.duration}s`,
+    }))) {
+      log(`⏭️  Skipping ${clip.id}: composer settings could not be applied.`);
+      skipped++; continue;
+    }
+
+    // 3. Name the swaps so the prompt can TAG them.
+    //
+    // A prompt that says "maintain this pose as it is on @refference_image"
+    // needs that token to become a real Flow mention, or the model is told to
+    // look at something that is not in the prompt — and, worse, the bare "@"
+    // opens Flow's mention picker mid-typing and swallows the rest of the
+    // sentence. Frames clips are positional (start then end) and carry no
+    // tokens, so they keep the plain attach order.
+    const wantsTag = (p) => clip.type !== 'frames' && clip.prompt.includes('@' + p.slot);
+    let renameFailed = null;
+    for (const p of plan) {
+      if (!p.key || !wantsTag(p)) continue;
+      const name = swapTileName(slugOf(p.file));
+      if (await renameTile(page, p.key, name)) p.mention = name;
+      else { renameFailed = p.file; break; }
+    }
+    if (renameFailed) {
+      log(`⏭️  Skipping ${clip.id}: could not name the swap for "${renameFailed}" so the prompt cannot tag it.`);
+      skipped++; continue;
+    }
+
+    await resetComposer(page);
+
+    // 4. Attach whatever the prompt does NOT tag, in manifest order — for
+    //    "frames" that order IS start then end, which is why imageStart must
+    //    come first. A tagged asset attaches itself when the mention is typed,
+    //    so attaching it here too would put the same picture in twice.
+    let attached = 0, failedAttach = null;
+    for (const p of plan) {
+      if (!p.key || p.mention) continue;          // tagged, or passthrough
+      if (await addTileToPrompt(page, p.key)) attached++;
+      else { failedAttach = p.file; break; }
+    }
+    if (failedAttach) {
+      log(`⏭️  Skipping ${clip.id}: could not attach "${failedAttach}".`);
+      skipped++; continue;
+    }
+
+    // 5. The prompt. Every slot the prompt names is now a real "@" mention —
+    //    a renamed swap, or a passthrough asset by its filename.
+    let prompt = clip.prompt;
+    for (const p of plan) if (p.mention) prompt = prompt.split('@' + p.slot).join(mention(p.mention));
+    // Any "@" LEFT IN THE TEXT is poison: typing it into Slate opens Flow's
+    // mention picker, which then swallows everything typed after it. Verified
+    // live — a prompt starting "just make our @image1 stare into the camera …"
+    // ended up in the composer as exactly "just make our @image1", with the
+    // rest of the sentence and the later mog mention gone. The slot names read
+    // the same to the model without the sigil, so it is stripped. Real mentions
+    // are encoded as ‹@name› and are left alone.
+    prompt = prompt.replace(/(?<!\u2039)@(?=\w)/g, '');
+    if (!(await setPromptText(page, prompt))) {
+      log(`⏭️  Skipping ${clip.id}: could not set the prompt.`);
+      skipped++; continue;
+    }
+
+    // Every asset must be in the composer before generating: a mention that
+    // silently fell back to plain text would render a clip against the wrong
+    // pictures, and that is only noticed after watching all of them.
+    const want = plan.length;
+    const have = await countComposerRefs(page);
+    if (have < want) {
+      log(`⏭️  Skipping ${clip.id}: ${have}/${want} asset(s) in the composer — a tag did not resolve.`);
+      skipped++; continue;
+    }
+
+    if (!(await fireGenerate(page))) {
+      log(`⏭️  ${clip.id}: generate did not fire.`);
+      skipped++; continue;
+    }
+    await waitForGenerationDone(page, 600000);   // video renders take far longer
+    await sleep(3000);
+
+    // Only the fact that the clip exists is recorded; a skipped clip stays
+    // absent and is simply picked up again by the next run.
+    st.videos[clip.id] = { done: true, at: new Date().toISOString(), attached, type: clip.type };
+    ok++;
+    log(`✅ ${clip.id} generated.`);
+    saveLedger(pack, led);
+
+    // Space the clips out. Firing the next one the moment the previous render
+    // reports done is what a script does, not a person, and Flow is still
+    // settling anyway. The manifest can override it per pack.
+    if (clip !== clips[clips.length - 1]) await pace(gap, 'before the next clip');
+  }
+
+  saveLedger(pack, led);
+  const doneCount = man.clips.filter(c => (st.videos[c.id] || {}).done).length;
+  log(`\n═══ Pack "${pack}" stage 2 — ${doneCount}/${man.clips.length} clip(s) generated (${ok} this run${skipped ? `, ${skipped} still to do` : ''}) ═══`);
+  return led;
+}
+
 // ── Last-resort crash guards ──────────────────────────────────────────────────
 // This one process runs image generation AND every parallel YouTube scheduler.
 // Without these, a single stray rejection/exception (e.g. a Puppeteer "detached
@@ -3051,38 +4461,21 @@ process.on('uncaughtException', (err) => {
   catch { console.error('uncaughtException', err); }
 });
 
-// Only start listening when run directly. Required as a module (by flowcheck.js,
-// the live Flow primitive check) the file just exposes its helpers, so the
-// browser automation can be exercised without booting a server on the same port.
-if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`
-Control panel running at http://localhost:${PORT}
-`);
-    socialScheduler.startSchedulerLoop();
-  });
-}
+// A failed bind is fatal and must NOT be swallowed by the uncaughtException
+// guard below: that left a process running that printed the banner, started the
+// schedulers and served nothing, while the real panel was another instance.
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`\nPort ${PORT} is already in use — another control panel is running.`);
+    console.error(`Find it with:  lsof -nP -iTCP:${PORT} -sTCP:LISTEN`);
+    console.error('Stop that one first, then start this again.\n');
+  } else {
+    console.error('\nServer could not start:', err && err.message ? err.message : err, '\n');
+  }
+  process.exit(1);
+});
 
-module.exports = {
-  state,
-  findElement,
-  clickAddIngredients,
-  clickButtonWithText,
-  findCharacterOption,
-  countCharacterChips,
-  countComposerRefs,
-  closePicker,
-  addCharacterReference,
-  addBackgroundReference,
-  uploadViaFileChooser,
-  uploadLocalRefImage,
-  uploadAllRefImages,
-  resetComposer,
-  setPromptText,
-  insertMention,
-  mention,
-  setAspectRatio,
-  renameLatestMedia,
-  waitForGenerateButton,
-  PROMPT_EDITOR_SEL,
-};
+server.listen(PORT, () => {
+  console.log(`\nControl panel running at http://localhost:${PORT}\n`);
+  socialScheduler.startSchedulerLoop();
+});
