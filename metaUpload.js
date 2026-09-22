@@ -75,16 +75,17 @@ const ledgerStore = require('./scheduleLedger');
 //
 // REELS peak in the evening / late-night entertainment windows.
 const DEFAULT_REEL_SLOTS = [
+  '08:00', // morning commute
+  '13:00', // lunch
+  '18:00', // early evening
   '19:00', // 7pm ET — evening peak
   '21:00', // 9pm
-  '18:00', // early evening
   '22:00', // 10pm
   '20:00',
   '12:00', // midday backup
   '17:00',
   '23:00',
   '15:00',
-  '13:00',
 ];
 // POSTS (image/text) do better in daytime browse/commute windows — deliberately
 // OFFSET from the reel times so the two never stack on the same clock slot.

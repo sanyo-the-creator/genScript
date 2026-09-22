@@ -234,14 +234,15 @@ async function setCustomThumbnail(page, videoPath) {
 // for Shorts: the 7–10pm evening block and around midday, plus a morning slot.
 // More entries than the default cap so you can raise --per-day without editing.
 const DEFAULT_SLOTS = [
+  '08:00', // morning commute
+  '13:00', // lunch
+  '18:00', // early evening
   '19:00', // 7pm ET — evening peak
   '12:00', // midday / lunch
   '21:00', // 9pm
   '17:00', // after work & school
-  '08:00', // morning commute
   '15:00', // afternoon
   '22:00',
-  '13:00',
   '20:00',
   '10:00',
 ];
