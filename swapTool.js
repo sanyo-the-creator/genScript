@@ -19,6 +19,18 @@ const JOB_DIR = path.join(ROOT, 'jobs');
 const OUTPUT_DIR = path.join(os.homedir(), 'Downloads');
 for (const dir of [CHAR_DIR, VIDEO_DIR, JOB_DIR]) fs.mkdirSync(dir, { recursive: true });
 
+// Default characters ship in the repo and are copied in once; a marker keeps
+// ones the user removed from coming back on the next start.
+const DEFAULT_CHAR_DIR = path.join(__dirname, 'swap_defaults', 'characters');
+const SEEDED_MARKER = path.join(ROOT, '.defaults_seeded');
+if (!fs.existsSync(SEEDED_MARKER) && fs.existsSync(DEFAULT_CHAR_DIR)) {
+  for (const file of fs.readdirSync(DEFAULT_CHAR_DIR)) {
+    const target = path.join(CHAR_DIR, file);
+    if (!fs.existsSync(target)) fs.copyFileSync(path.join(DEFAULT_CHAR_DIR, file), target);
+  }
+  fs.writeFileSync(SEEDED_MARKER, new Date().toISOString());
+}
+
 // Same as mac/PushupStudio/Sources/FlowJob.swift.
 const PROMPT = 'Generate a motion-controlled video using the uploaded image as character reference and the uploaded video as motion reference. Preserve exact identity and replicate motion, style and camera movement, no voice over';
 const SETTINGS = {
