@@ -29,6 +29,7 @@ const adbHelper = require('./adb_helper');
 const socialScheduler = require('./social_scheduler');
 const tiktokStudio = require('./tiktok_studio');
 const ledgerStore = require('./scheduleLedger');
+const swapTool = require('./swapTool');
 
 const PORT = 3000;
 const DEFAULT_FLOW_PORT = 9222;
@@ -285,6 +286,12 @@ function broadcastYt() {
 // ── Clip Combiner: live log + state broadcast (shares the SSE bus) ─────────────
 function clipsLog(line) { log(`[clips] ${line}`); }
 function broadcastClips() { broadcast('clips', clipTool.state()); }
+// ── Face Swap: same shared log + SSE bus ──────────────────────────────────────
+swapTool.init({
+  onLog: (line) => log(`[swap] ${line}`),
+  onChange: () => broadcast('swap', swapTool.state()),
+});
+
 let clipGenBusy = false; // one generation pipeline at a time (ffmpeg is heavy)
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -2033,6 +2040,60 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Clip Combiner UI (Shorts DB + upload footage + generate paired clips).
+  // Face Swap UI + API. Uploads are raw bodies with the name in X-Filename,
+  // like the Clip Combiner's.
+  if (req.method === 'GET' && url.pathname === '/swap') {
+    const html = fs.readFileSync(path.join(__dirname, 'public', 'swap.html'));
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
+    return res.end(html);
+  }
+  if (req.method === 'GET' && url.pathname === '/api/swap/state') {
+    return sendJson(res, 200, swapTool.state());
+  }
+  if (req.method === 'GET' && url.pathname === '/api/swap/character-img') {
+    const file = swapTool.characterPath(url.searchParams.get('file') || '');
+    if (!file) { res.writeHead(404); return res.end(); }
+    const ext = path.extname(file).slice(1).toLowerCase();
+    res.writeHead(200, { 'Content-Type': `image/${ext === 'jpg' ? 'jpeg' : ext}` });
+    return fs.createReadStream(file).pipe(res);
+  }
+  if (req.method === 'POST' && (url.pathname === '/api/swap/character' || url.pathname === '/api/swap/video')) {
+    const chunks = [];
+    let size = 0;
+    const MAX = 500 * 1024 * 1024;
+    req.on('data', c => { size += c.length; if (size <= MAX) chunks.push(c); });
+    req.on('end', () => {
+      if (size > MAX) return sendJson(res, 413, { error: 'File too large (max 500 MB).' });
+      if (!chunks.length) return sendJson(res, 400, { error: 'Empty upload.' });
+      try {
+        const name = decodeURIComponent(req.headers['x-filename'] || 'file');
+        const buffer = Buffer.concat(chunks);
+        const id = url.pathname.endsWith('/character')
+          ? swapTool.addCharacter(buffer, name)
+          : swapTool.addVideo(buffer, name, {
+              duration: req.headers['x-duration'],
+              port: req.headers['x-port'],
+            });
+        sendJson(res, 200, { ok: true, id });
+      } catch (e) { sendJson(res, 400, { error: e.message || String(e) }); }
+    });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/swap/character/remove') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let file; try { file = JSON.parse(body).file; } catch { return sendJson(res, 400, { error: 'Bad payload' }); }
+      swapTool.removeCharacter(file);
+      sendJson(res, 200, { ok: true });
+    });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/swap/stop') {
+    swapTool.stop();
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (req.method === 'GET' && url.pathname === '/clips') {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'clips.html'));
     // no-store: the page is read fresh from disk on every request, so a cached
@@ -2548,6 +2609,7 @@ const server = http.createServer(async (req, res) => {
     res.write(sseFrame('state', { running: state.running, current: currentSummary(), currents: { ...state.currents }, queue: queueView() }));
     res.write(sseFrame('yt', ytSnapshot()));
     res.write(sseFrame('clips', clipTool.state()));
+    res.write(sseFrame('swap', swapTool.state()));
     req.on('close', () => { sseClients = sseClients.filter(c => c !== res); });
     return;
   }
