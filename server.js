@@ -2073,6 +2073,7 @@ const server = http.createServer(async (req, res) => {
           : swapTool.addVideo(buffer, name, {
               duration: req.headers['x-duration'],
               port: req.headers['x-port'],
+              chosen: JSON.parse(decodeURIComponent(req.headers['x-characters'] || '%5B%5D')),
             });
         sendJson(res, 200, { ok: true, id });
       } catch (e) { sendJson(res, 400, { error: e.message || String(e) }); }
