@@ -84,11 +84,13 @@ function characterPath(file) {
   return fs.existsSync(target) ? target : null;
 }
 
-/// Saves the video and queues it against every character saved right now.
-function addVideo(buffer, originalName, { duration, port }) {
+/// Saves the video and queues it against the chosen characters.
+function addVideo(buffer, originalName, { duration, port, chosen }) {
   if (!VIDEO_EXT.test(originalName)) throw new Error('Videos must be .mp4, .mov, .webm or .m4v');
-  const chars = characters();
-  if (!chars.length) throw new Error('Add at least one character first.');
+  // Only the characters ticked on the page; none sent means none chosen.
+  const wanted = new Set(chosen || []);
+  const chars = characters().filter((c) => wanted.has(c.file));
+  if (!chars.length) throw new Error('Choose at least one character first.');
   const ext = path.extname(originalName).toLowerCase();
   const base = safeName(path.basename(originalName, ext)).slice(0, 30);
   const id = uniqueStem();
