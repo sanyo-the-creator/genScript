@@ -29,3 +29,7 @@ generated_clips/
 public/media_library/
 public/slideshow_uploads/
 
+.claude/worktrees/
+
+# Face Swap: saved characters, uploaded videos, job files
+swap_data/
