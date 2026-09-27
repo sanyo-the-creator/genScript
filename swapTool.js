@@ -16,14 +16,17 @@ const ROOT = path.join(__dirname, 'swap_data');
 const CHAR_DIR = path.join(ROOT, 'characters');
 const VIDEO_DIR = path.join(ROOT, 'videos');
 const JOB_DIR = path.join(ROOT, 'jobs');
+const FRAME_DIR = path.join(ROOT, 'frames');
 const OUTPUT_DIR = path.join(os.homedir(), 'Downloads');
-for (const dir of [CHAR_DIR, VIDEO_DIR, JOB_DIR]) fs.mkdirSync(dir, { recursive: true });
+for (const dir of [CHAR_DIR, VIDEO_DIR, JOB_DIR, FRAME_DIR]) fs.mkdirSync(dir, { recursive: true });
 
 // Default characters ship in the repo and are copied in once; a marker keeps
 // ones the user removed from coming back on the next start.
 const DEFAULT_CHAR_DIR = path.join(__dirname, 'swap_defaults', 'characters');
 const SEEDED_MARKER = path.join(ROOT, '.defaults_seeded');
-if (!fs.existsSync(SEEDED_MARKER) && fs.existsSync(DEFAULT_CHAR_DIR)) {
+// Skipped when characters already exist, so a set added by hand isn't doubled.
+const hasCharacters = fs.readdirSync(CHAR_DIR).some((f) => /\.(png|jpe?g|webp)$/i.test(f));
+if (!fs.existsSync(SEEDED_MARKER) && !hasCharacters && fs.existsSync(DEFAULT_CHAR_DIR)) {
   for (const file of fs.readdirSync(DEFAULT_CHAR_DIR)) {
     const target = path.join(CHAR_DIR, file);
     if (!fs.existsSync(target)) fs.copyFileSync(path.join(DEFAULT_CHAR_DIR, file), target);
@@ -31,8 +34,30 @@ if (!fs.existsSync(SEEDED_MARKER) && fs.existsSync(DEFAULT_CHAR_DIR)) {
   fs.writeFileSync(SEEDED_MARKER, new Date().toISOString());
 }
 
-// Same as mac/PushupStudio/Sources/FlowJob.swift.
-const PROMPT = 'Generate a motion-controlled video using the uploaded image as character reference and the uploaded video as motion reference. Preserve exact identity and replicate motion, style and camera movement, no voice over';
+// Two steps, because given the character and the whole video at once the
+// video model kept the video's own person. First the character is swapped onto
+// the video's opening frame as a still (Nano Banana), then the video is made
+// from that still with the original as motion reference. The still is
+// attached first, then the character, so "first"/"second" below mean that.
+const FRAME_PROMPT = [
+  'Recreate the first image exactly: same pose, arm and hand position, camera angle, framing and crop, background, lighting, clothing and facial expression.',
+  'Only replace the person in it with the person from the second image.',
+  'Their face must come entirely from the second image: head and face shape, forehead, cheekbones, jaw and chin, eye shape and spacing, eyebrow shape and thickness, nose, lips, ears, skin tone, facial hair, hairstyle, hair length, hair color and hair texture, so it is clearly the same person.',
+  "Nothing of the original person's face may remain. Photorealistic, same image quality and grain as the first image, no text.",
+].join(' ');
+const FRAME_SETTINGS = {
+  mode: 'Image',
+  model: 'Nano Banana 2',
+  aspect: '9:16',
+  outputsPerPrompt: 'x1',
+};
+// The still is uploaded second, so it is the image ingredient here.
+const PROMPT = [
+  'The attached image is the exact first frame of the output video. Animate the person in that image, using the attached video only as motion reference.',
+  'Replicate the body pose, arm and hand movement, head movement, facial expression, timing, framing and camera movement of the video.',
+  'The person must stay exactly the person from the image in every frame: same face, facial structure, skin, hairstyle and hair. Do not use the face or identity of the person in the video.',
+  'Photorealistic phone footage, no morphing, no voice over, no text.',
+].join(' ');
 const SETTINGS = {
   ingredients: true,
   aspect: '9:16',
@@ -156,6 +181,8 @@ function runNext() {
     prompt: PROMPT,
     settings: { ...SETTINGS, duration: job.duration },
     account: { port: job.port },
+    firstFrame: { prompt: FRAME_PROMPT, settings: FRAME_SETTINGS },
+    workFolder: FRAME_DIR,
     outputFolder: OUTPUT_DIR,
     pairs,
   }, null, 2));

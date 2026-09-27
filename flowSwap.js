@@ -210,6 +210,23 @@ async function applySettings(page, settings) {
     return false;
   }
 
+  // Image mode only has model, aspect and output count.
+  if (settings.mode === 'Image') {
+    if (!await chooseOption(page, 'Image')) {
+      console.warn('  settings: could not switch to Image');
+      await closeSettings(page);
+      return false;
+    }
+    if (!await chooseModel(page, settings.model)) {
+      console.warn(`  settings: could not select "${settings.model}"`);
+    }
+    for (const label of [settings.aspect, settings.outputsPerPrompt]) {
+      if (label && !await chooseOption(page, label)) console.warn(`  settings: could not find "${label}"`);
+    }
+    await closeSettings(page);
+    return true;
+  }
+
   // Video first — the rest of the options do not exist in image mode.
   if (!await chooseOption(page, 'Video')) {
     console.warn('  settings: could not switch to Video');
@@ -502,10 +519,12 @@ async function downloadResult(page, pair, dir) {
   await button.click();
   await button.dispose();
 
-  // Chrome writes .crdownload while the file is still arriving.
+  // Chrome writes .crdownload while the file is still arriving. Videos come
+  // back as a zip; a single image may come back as the bare file.
   const start = Date.now();
   while (Date.now() - start < 120000) {
-    const added = fs.readdirSync(dir).filter((name) => !before.has(name) && name.endsWith('.zip'));
+    const added = fs.readdirSync(dir).filter((name) => !before.has(name) &&
+      /\.(zip|png|jpe?g|webp)$/i.test(name));
     if (added.length) {
       const file = path.join(dir, added[0]);
       const size = fs.statSync(file).size;
@@ -521,20 +540,34 @@ async function downloadResult(page, pair, dir) {
 /// swapped_<character>_<NN>.mp4 in the take folder and groups by that name,
 /// so the extracted video is renamed into place.
 function extractInto(zipFile, pair, outputFolder) {
-  const staging = path.join(outputFolder, `.unzip_${Date.now()}`);
+  return extractMedia(zipFile, /\.(mp4|mov|webm)$/i, path.join(outputFolder, outputNameOf(pair)));
+}
+
+/// Copies the first file matching `pattern` out of a download (a zip, or the
+/// file itself) to `target`, then deletes the download. With keepExt the
+/// found file's extension is appended to `target`.
+function extractMedia(download, pattern, target, keepExt = false) {
+  const dest = (found) => (keepExt ? target + path.extname(found).toLowerCase() : target);
+  if (!/\.zip$/i.test(download)) {
+    try {
+      if (!pattern.test(download)) return null;
+      fs.copyFileSync(download, dest(download));
+      return dest(download);
+    } finally {
+      fs.rmSync(download, { force: true });
+    }
+  }
+  const staging = path.join(path.dirname(target), `.unzip_${Date.now()}`);
   fs.mkdirSync(staging, { recursive: true });
   try {
-    execFileSync('unzip', ['-qq', '-o', zipFile, '-d', staging]);
-    const media = fs.readdirSync(staging)
-      .filter((name) => /\.(mp4|mov|webm)$/i.test(name))
-      .sort();
+    execFileSync('unzip', ['-qq', '-o', download, '-d', staging]);
+    const media = fs.readdirSync(staging).filter((name) => pattern.test(name)).sort();
     if (!media.length) return null;
-    const target = path.join(outputFolder, outputNameOf(pair));
-    fs.copyFileSync(path.join(staging, media[0]), target);
-    return target;
+    fs.copyFileSync(path.join(staging, media[0]), dest(media[0]));
+    return dest(media[0]);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
-    fs.rmSync(zipFile, { force: true });
+    fs.rmSync(download, { force: true });
   }
 }
 
@@ -547,15 +580,22 @@ function outputNameOf(pair) {
 
 async function runPair(page, job, pair) {
   console.log(`\n${pair.takeID} · piece ${pair.index + 1} · ${pair.characterName}`);
+  // Video first: it is the larger upload and the one Flow spends time probing.
+  return generate(page, job.settings, job.prompt,
+                  [['video', pair.video], ['character image', pair.character]]);
+}
 
+/// One generation from `files` ([what, path] in upload order). The result row
+/// in the feed then sits above the last file's row, which sits above the
+/// first's, which is what locateResult() keys on ({ video: first, character: last }).
+async function generate(page, settings, prompt, files) {
   await closeMediaMenu(page);
   await clearPrompt(page);
 
-  if (!await applySettings(page, job.settings)) return false;
+  if (!await applySettings(page, settings)) return false;
 
-  // Video first: it is the larger upload and the one Flow spends time probing.
   // Each file is uploaded into the library, then picked to attach it.
-  for (const [what, file] of [['video', pair.video], ['character image', pair.character]]) {
+  for (const [what, file] of files) {
     if (!await uploadMedia(page, file)) {
       console.warn(`  could not upload the ${what} — see FLOW_SELECTORS.md`);
       return false;
@@ -568,17 +608,17 @@ async function runPair(page, job, pair) {
     console.log(`  attached ${path.basename(file)}`);
   }
 
-  if (!await setPromptText(page, job.prompt)) {
+  if (!await setPromptText(page, prompt)) {
     console.warn('  could not find the prompt box');
     return false;
   }
 
   // The generate button enables with the prompt alone, so it says nothing
   // about whether the references are there. Refuse to spend a generation
-  // unless both are attached.
+  // unless all of them are attached.
   const attached = await countIngredients(page);
-  if (attached !== 2) {
-    console.warn(`  expected 2 references attached, found ${attached} — not generating`);
+  if (attached !== files.length) {
+    console.warn(`  expected ${files.length} references attached, found ${attached} — not generating`);
     await clearPrompt(page);
     return false;
   }
@@ -592,6 +632,76 @@ async function runPair(page, job, pair) {
   await create.dispose();
   console.log('  generating…');
   return true;
+}
+
+// --- first frame ------------------------------------------------------------
+
+// Given the character image and the whole video at once, the video model keeps
+// the video's own person. So with job.firstFrame set, the character is first
+// swapped onto the video's opening frame as a still, and the video is then
+// generated from that still: frame 1 already shows the right person, so there
+// is nothing left for the model to choose between.
+
+const uniqueStem = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+/// The video's opening frame as a jpg, one per distinct video.
+function extractFirstFrames(pairs, workFolder) {
+  const frames = new Map();
+  for (const pair of pairs) {
+    if (frames.has(pair.video)) continue;
+    const frame = path.join(workFolder, `fr_${uniqueStem()}.jpg`);
+    try {
+      execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', pair.video,
+                              '-frames:v', '1', '-q:v', '2', frame]);
+    } catch (error) {
+      console.warn(`  ffmpeg could not read the first frame of ${path.basename(pair.video)}`);
+      continue;
+    }
+    frames.set(pair.video, frame);
+  }
+  return frames;
+}
+
+/// Queues every still swap, then waits for each and downloads it. Returns the
+/// pairs whose still came back, each with `character` swapped for that still.
+async function swapFirstFrames(page, job, pairs, staging) {
+  const { prompt, settings } = job.firstFrame;
+  const workFolder = job.workFolder || path.join(job.outputFolder, '.swap_frames');
+  fs.mkdirSync(workFolder, { recursive: true });
+  const frames = extractFirstFrames(pairs, workFolder);
+
+  console.log(`\nFirst frames: ${pairs.length} still swap(s) to queue.`);
+  const queued = [];
+  for (const pair of pairs) {
+    const frame = frames.get(pair.video);
+    if (!frame) continue;
+    console.log(`\n${pair.takeID} · first frame · ${pair.characterName}`);
+    const step = { video: frame, character: pair.character };
+    if (await generate(page, settings, prompt,
+                       [['first frame', frame], ['character image', pair.character]])) {
+      queued.push({ pair, step });
+    }
+    await sleep(4000);
+  }
+
+  console.log(`\nWaiting for ${queued.length} first frame(s)…`);
+  const ready = [];
+  for (const { pair, step } of queued) {
+    if (!await waitForResult(page, step, 10 * 60 * 1000)) {
+      console.warn(`  ${pair.characterName}: no finished first frame in Flow`);
+      continue;
+    }
+    const download = await downloadResult(page, step, staging);
+    const still = download && extractMedia(download, /\.(png|jpe?g|webp)$/i,
+                                           path.join(workFolder, `sw_${uniqueStem()}`), true);
+    if (!still) {
+      console.warn(`  ${pair.characterName}: could not download the first frame`);
+      continue;
+    }
+    console.log(`  first frame ready for ${pair.characterName}`);
+    ready.push({ ...pair, character: still });
+  }
+  return ready;
 }
 
 (async () => {
@@ -613,26 +723,8 @@ async function runPair(page, job, pair) {
   await page.bringToFront();
 
   // --collect skips queueing and only fetches results already in Flow — for
-  // when a run was interrupted after its generations went through.
-  const collectOnly = process.argv.includes('--collect');
-  const queued = [];
-  if (collectOnly) {
-    queued.push(...job.pairs);
-    console.log(`Collecting ${queued.length} result(s) already in Flow.`);
-  } else {
-    console.log(`${job.pairs.length} generation(s) to queue.`);
-    for (const pair of job.pairs) {
-      if (await runPair(page, job, pair)) queued.push(pair);
-      // Flow queues generations; this is spacing, not waiting for the result.
-      await sleep(4000);
-    }
-    console.log(`\nQueued ${queued.length} of ${job.pairs.length}.`);
-  }
-  if (!queued.length) {
-    browser.disconnect();
-    return;
-  }
-
+  // when a run was interrupted after its generations went through. Not for
+  // first-frame jobs: their results sit under stills this run never made.
   // Chrome would otherwise drop these in ~/Downloads, where the app never
   // looks. Pointing it at the take folder keeps the whole job in one place.
   const staging = path.join(job.outputFolder, '.downloads');
@@ -640,6 +732,27 @@ async function runPair(page, job, pair) {
   const cdp = await page.createCDPSession();
   await cdp.send('Browser.setDownloadBehavior',
                  { behavior: 'allow', downloadPath: staging, eventsEnabled: true });
+
+  const collectOnly = process.argv.includes('--collect');
+  const queued = [];
+  if (collectOnly) {
+    queued.push(...job.pairs);
+    console.log(`Collecting ${queued.length} result(s) already in Flow.`);
+  } else {
+    const pairs = job.firstFrame ? await swapFirstFrames(page, job, job.pairs, staging) : job.pairs;
+    console.log(`\n${pairs.length} generation(s) to queue.`);
+    for (const pair of pairs) {
+      if (await runPair(page, job, pair)) queued.push(pair);
+      // Flow queues generations; this is spacing, not waiting for the result.
+      await sleep(4000);
+    }
+    console.log(`\nQueued ${queued.length} of ${job.pairs.length}.`);
+  }
+  if (!queued.length) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    browser.disconnect();
+    return;
+  }
 
   console.log('\nWaiting for Flow to finish rendering, then downloading…');
   let saved = 0;
