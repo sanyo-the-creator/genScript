@@ -37,25 +37,30 @@ if (!fs.existsSync(SEEDED_MARKER) && !hasCharacters && fs.existsSync(DEFAULT_CHA
 // Two steps, because given the character and the whole video at once the
 // video model kept the video's own person. First the character is swapped onto
 // the video's opening frame as a still (Nano Banana), then the video is made
-// from that still with the original as motion reference. The still is
-// attached first, then the character, so "first"/"second" below mean that.
-const FRAME_PROMPT = [
-  'Recreate the first image exactly: same pose, arm and hand position, camera angle, framing and crop, background, lighting, clothing and facial expression.',
-  'Only replace the person in it with the person from the second image.',
-  'Their face must come entirely from the second image: head and face shape, forehead, cheekbones, jaw and chin, eye shape and spacing, eyebrow shape and thickness, nose, lips, ears, skin tone, facial hair, hairstyle, hair length, hair color and hair texture, so it is clearly the same person.',
-  "Nothing of the original person's face may remain. Photorealistic, same image quality and grain as the first image, no text.",
-].join(' ');
+// from that still with the original as motion reference.
+// Image models read uploads in order and swap the wrong way round when the
+// roles are vague, so the character goes first and each image is named for
+// the one job it does (the pattern Nano Banana swap guides recommend).
+// The wording of genScript's Flow Generator ref swap (server.js isRefSwap).
+// Short on purpose: long, feature-by-feature prompts came back either pasted-on
+// or drifting back to the video's person, and server.js found the same.
+// @ref (the video's first frame) and @character are typed as Flow "@"
+// mentions by flowSwap.js, as server.js does, so the model knows by name
+// which picture is which.
+const FRAME_PROMPT = "swap character on @ref with our @character. the person must be our character: use the exact face, face shape, head shape, hairstyle and hair of our character, not of the person on the reference image. keep the outfit, pose, facial expression, enviroment, light and angle EXACTLY as it is on the reference image. ensure our character smoothly blends into the reference image so it looks completely natural matching the exact lighting, shadows, and environment. dont add any accessories like glasses, airpods, or headphones.";
 const FRAME_SETTINGS = {
   mode: 'Image',
-  model: 'Nano Banana 2',
+  model: 'Nano Banana Pro',
   aspect: '9:16',
   outputsPerPrompt: 'x1',
 };
-// The still is uploaded second, so it is the image ingredient here.
+// Built on Google's own Omni character-swap example ("Apply the pose and
+// motion from input video to provided character from this image"). The image
+// is the swapped still, so it already shows the right person in frame 1.
 const PROMPT = [
-  'The attached image is the exact first frame of the output video. Animate the person in that image, using the attached video only as motion reference.',
-  'Replicate the body pose, arm and hand movement, head movement, facial expression, timing, framing and camera movement of the video.',
-  'The person must stay exactly the person from the image in every frame: same face, facial structure, skin, hairstyle and hair. Do not use the face or identity of the person in the video.',
+  'Apply the pose and motion from the input video to the provided character from this image.',
+  'The image is the first frame of the output video. Keep the character exactly as in the image in every frame: same head shape, face, hair and skin. Do not use the face, head or hair of the person in the input video.',
+  'From the input video take only the body pose, arm and hand movement, head movement, facial expression, timing and camera movement. Keep everything else identical to the image.',
   'Photorealistic phone footage, no morphing, no voice over, no text.',
 ].join(' ');
 const SETTINGS = {
