@@ -131,6 +131,133 @@ async function setPromptText(page, text) {
   return true;
 }
 
+// --- "@" mentions (ported from server.js setPromptText/insertMention) -------
+//
+// A prompt may name its references as @ref / @character. The first time each
+// appears it is typed as a real Flow "@" mention of the uploaded file, which
+// both attaches the asset and tells the model by name which picture is which,
+// instead of relying on "first image"/"second image". Later occurrences are
+// written as the plain name.
+
+const EDITOR_SEL = '[data-slate-editor="true"], .ProseMirror[contenteditable="true"], [contenteditable="true"]';
+
+/// Inserts text as one edit; per-key typing races ProseMirror's re-render.
+async function insertTextAtomic(page, text) {
+  if (!text) return;
+  const session = await page.createCDPSession();
+  try {
+    await session.send('Input.insertText', { text });
+  } finally {
+    await session.detach().catch(() => {});
+  }
+  await sleep(200);
+}
+
+/// Caret to the end through real input; setting the Selection by hand
+/// desyncs ProseMirror and the next keystroke wipes the content.
+async function caretToEnd(page) {
+  const editor = await findElement(page, (sel) => document.querySelector(sel), EDITOR_SEL);
+  if (!editor) return;
+  await editor.click();
+  await editor.dispose();
+  await page.keyboard.down('Control');
+  await page.keyboard.press('End');
+  await page.keyboard.up('Control');
+  await sleep(250);
+}
+
+function countMentionChips(page) {
+  return page.evaluate((sel) => {
+    const editor = document.querySelector(sel);
+    return editor ? editor.querySelectorAll('.mention-chip').length : 0;
+  }, EDITOR_SEL);
+}
+
+/// Types "@name", picks the matching row in Flow's dropdown with the
+/// keyboard, and returns true only once a mention chip has appeared.
+async function insertMention(page, name, tries = 3) {
+  for (let attempt = 1; attempt <= tries; attempt += 1) {
+    const before = await countMentionChips(page);
+    await caretToEnd(page);
+    await sleep(attempt === 1 ? 600 : 1800);
+    await page.keyboard.type('@', { delay: 0 });
+    await sleep(attempt === 1 ? 700 : 1400);
+    await page.keyboard.type(name, { delay: 20 });
+
+    // Rows carry the asset type glued to the label ("clip.jpgImage").
+    let steps = null;   // rows to move from the highlighted one, null = no match
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline && steps === null) {
+      steps = await page.evaluate((n) => {
+        const strip = (t) => (t || '').trim().replace(/(Image|Character|Video|Scene)$/, '').trim()
+          .replace(/\.(jpg|jpeg|png|webp|mp4|mov|webm|m4v)$/i, '');
+        const opts = Array.from(document.querySelectorAll('[role="option"]'));
+        const at = opts.findIndex((el) => strip(el.textContent) === n);
+        if (at < 0) return null;
+        const active = Math.max(0, opts.findIndex((o) => o.classList.contains('asset-item-active')));
+        return at - active;
+      }, name);
+      if (steps === null) await sleep(250);
+    }
+    if (steps !== null) {
+      for (let s = 0; s < Math.abs(steps); s += 1) {
+        await page.keyboard.press(steps > 0 ? 'ArrowDown' : 'ArrowUp');
+        await sleep(80);
+      }
+      await page.keyboard.press('Enter');
+      const chipDeadline = Date.now() + 3000;
+      while (Date.now() < chipDeadline) {
+        if (await countMentionChips(page) > before) return true;
+        await sleep(300);
+      }
+    }
+    console.warn(`  mention "@${name}" did not resolve (try ${attempt}/${tries})`);
+    // Wipe the typed "@name" before the retry.
+    await page.keyboard.press('Escape').catch(() => {});
+    await sleep(300);
+    await caretToEnd(page);
+    const typed = await page.evaluate((sel) => {
+      const editor = document.querySelector(sel);
+      return editor ? editor.textContent || '' : '';
+    }, EDITOR_SEL);
+    if (typed.includes('@' + name)) {
+      for (let i = 0; i < name.length + 1; i += 1) await page.keyboard.press('Backspace');
+    }
+  }
+  return false;
+}
+
+/// Types `template`, turning the first @token of each name in `names`
+/// ({ ref: fileStem, ... }) into a mention. Returns false if any mention
+/// never resolved, so the caller does not generate without its references.
+async function typeMentionPrompt(page, template, names) {
+  const editor = await findElement(page, (sel) => document.querySelector(sel), EDITOR_SEL);
+  if (!editor) return false;
+  await editor.click();
+  await editor.dispose();
+
+  const token = new RegExp(`@(${Object.keys(names).join('|')})\\b`);
+  const seen = new Set();
+  let rest = template;
+  for (let m = token.exec(rest); m; m = token.exec(rest)) {
+    await caretToEnd(page);
+    await insertTextAtomic(page, rest.slice(0, m.index));
+    const name = names[m[1]];
+    if (seen.has(m[1])) {
+      await caretToEnd(page);
+      await insertTextAtomic(page, name);
+    } else {
+      if (!await insertMention(page, name)) return false;
+      seen.add(m[1]);
+    }
+    rest = rest.slice(m.index + m[0].length);
+  }
+  await caretToEnd(page);
+  await insertTextAtomic(page, rest);
+  await sleep(500);
+  return true;
+}
+
 async function waitForCreate(page, timeoutMs = 15000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -589,10 +716,52 @@ async function runPair(page, job, pair) {
 /// in the feed then sits above the last file's row, which sits above the
 /// first's, which is what locateResult() keys on ({ video: first, character: last }).
 async function generate(page, settings, prompt, files) {
+  // An open tile viewer or a scrolled grid hides the prompt bar's controls.
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => {
+    const el = document.querySelector('.cdk-virtual-scrollable.page-container') || document.scrollingElement;
+    if (el) el.scrollTop = 0;
+  });
+  await sleep(800);
   await closeMediaMenu(page);
   await clearPrompt(page);
 
   if (!await applySettings(page, settings)) return false;
+
+  // Files given a token ([what, file, 'ref']) are attached by "@" mention in
+  // the prompt instead of through the picker.
+  const tokens = files.filter(([, , t]) => t && prompt.includes('@' + t));
+  if (tokens.length === files.length) {
+    for (const [what, file] of files) {
+      if (!await uploadMedia(page, file)) {
+        console.warn(`  could not upload the ${what} — see FLOW_SELECTORS.md`);
+        return false;
+      }
+      console.log(`  uploaded ${path.basename(file)}`);
+    }
+    await closeMediaMenu(page);
+    const names = Object.fromEntries(files.map(([, file, t]) => [t, stemOf(file)]));
+    if (!await typeMentionPrompt(page, prompt, names)) {
+      console.warn('  a reference mention did not resolve — not generating');
+      await clearPrompt(page);
+      return false;
+    }
+    const chips = await countMentionChips(page);
+    if (chips < files.length) {
+      console.warn(`  expected ${files.length} mentioned references, found ${chips} — not generating`);
+      await clearPrompt(page);
+      return false;
+    }
+    const create = await waitForCreate(page);
+    if (!create) {
+      console.warn('  Create never became enabled');
+      return false;
+    }
+    await create.click();
+    await create.dispose();
+    console.log('  generating…');
+    return true;
+  }
 
   // Each file is uploaded into the library, then picked to attach it.
   for (const [what, file] of files) {
@@ -662,43 +831,91 @@ function extractFirstFrames(pairs, workFolder) {
   return frames;
 }
 
-/// Queues every still swap, then waits for each and downloads it. Returns the
-/// pairs whose still came back, each with `character` swapped for that still.
-async function swapFirstFrames(page, job, pairs, staging) {
+// Generated images land in the media grid, not in the batch rows the video
+// lookup reads, so a still is found as a grid tile whose asset id was not
+// there when Create was clicked (same approach as server.js mediaTiles).
+function gridTiles(page) {
+  return page.evaluate(() => Array.from(document.querySelectorAll('img'))
+    .filter((i) => { const r = i.getBoundingClientRect(); return r.width > 120 && r.top > 60; })
+    .map((i) => {
+      const src = i.currentSrc || i.src || '';
+      const m = src.match(/\/(?:image|asb)\/([^/?#]+)/);
+      return { key: (i.dataset && i.dataset.mediaId) || (m && m[1]) || null, src };
+    })
+    .filter((t) => t.key));
+}
+
+async function waitForNewTile(page, before, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const fresh = (await gridTiles(page)).find((t) => !before.has(t.key));
+    if (fresh) {
+      await sleep(4000);   // let the tile swap its placeholder for the image
+      return (await gridTiles(page)).find((t) => t.key === fresh.key) || fresh;
+    }
+    await sleep(5000);
+  }
+  return null;
+}
+
+/// Fetches the tile's image from inside the page, where Flow's session applies.
+async function saveTile(page, tile, targetNoExt) {
+  const data = await page.evaluate(async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const type = res.headers.get('content-type') || '';
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return { type, b64: btoa(bin) };
+  }, tile.src).catch(() => null);
+  if (!data) return null;
+  const ext = /png/.test(data.type) ? '.png' : /webp/.test(data.type) ? '.webp' : '.jpg';
+  const file = targetNoExt + ext;
+  fs.writeFileSync(file, Buffer.from(data.b64, 'base64'));
+  return file;
+}
+
+/// Makes each still in turn (generate, wait, save). Returns the pairs whose
+/// still came back, each with `character` swapped for that still.
+async function swapFirstFrames(page, job, pairs) {
   const { prompt, settings } = job.firstFrame;
   const workFolder = job.workFolder || path.join(job.outputFolder, '.swap_frames');
   fs.mkdirSync(workFolder, { recursive: true });
   const frames = extractFirstFrames(pairs, workFolder);
 
-  console.log(`\nFirst frames: ${pairs.length} still swap(s) to queue.`);
-  const queued = [];
+  console.log(`\nFirst frames: ${pairs.length} still swap(s).`);
+  const ready = [];
   for (const pair of pairs) {
     const frame = frames.get(pair.video);
     if (!frame) continue;
     console.log(`\n${pair.takeID} · first frame · ${pair.characterName}`);
-    const step = { video: frame, character: pair.character };
-    if (await generate(page, settings, prompt,
-                       [['first frame', frame], ['character image', pair.character]])) {
-      queued.push({ pair, step });
+    // Identity source first: the image model reads uploads in order, and the
+    // prompt calls the character "Image 1" and the frame "Image 2".
+    const ok = await generate(page, settings, prompt,
+                              [['character image', pair.character, 'character'], ['first frame', frame, 'ref']]);
+    if (!ok) continue;
+    // Uploads are already in the grid by now, so the only new tile is the still.
+    const before = new Set((await gridTiles(page)).map((t) => t.key));
+    const tile = await waitForNewTile(page, before, 10 * 60 * 1000);
+    let still = tile && await saveTile(page, tile, path.join(workFolder, `sw_${uniqueStem()}`));
+    // Optional second pass on the still alone: the swap keeps identity best
+    // but looks composited, and a pass with no other person in it can only
+    // make it look real, not drift back to the video's person.
+    if (still && job.firstFrame.polishPrompt) {
+      console.log(`  polishing ${path.basename(still)}`);
+      const polished = await generate(page, settings, job.firstFrame.polishPrompt, [['swapped still', still]]);
+      const seen = polished && new Set((await gridTiles(page)).map((t) => t.key));
+      const tile2 = seen && await waitForNewTile(page, seen, 10 * 60 * 1000);
+      const saved = tile2 && await saveTile(page, tile2, path.join(workFolder, `sp_${uniqueStem()}`));
+      if (saved) still = saved;
+      else console.warn('  polish pass failed, keeping the unpolished still');
     }
-    await sleep(4000);
-  }
-
-  console.log(`\nWaiting for ${queued.length} first frame(s)…`);
-  const ready = [];
-  for (const { pair, step } of queued) {
-    if (!await waitForResult(page, step, 10 * 60 * 1000)) {
-      console.warn(`  ${pair.characterName}: no finished first frame in Flow`);
-      continue;
-    }
-    const download = await downloadResult(page, step, staging);
-    const still = download && extractMedia(download, /\.(png|jpe?g|webp)$/i,
-                                           path.join(workFolder, `sw_${uniqueStem()}`), true);
     if (!still) {
-      console.warn(`  ${pair.characterName}: could not download the first frame`);
+      console.warn(`  ${pair.characterName}: no first frame came back from Flow`);
       continue;
     }
-    console.log(`  first frame ready for ${pair.characterName}`);
+    console.log(`  first frame ready for ${pair.characterName}: ${still}`);
     ready.push({ ...pair, character: still });
   }
   return ready;
@@ -739,7 +956,15 @@ async function swapFirstFrames(page, job, pairs, staging) {
     queued.push(...job.pairs);
     console.log(`Collecting ${queued.length} result(s) already in Flow.`);
   } else {
-    const pairs = job.firstFrame ? await swapFirstFrames(page, job, job.pairs, staging) : job.pairs;
+    const pairs = job.firstFrame ? await swapFirstFrames(page, job, job.pairs) : job.pairs;
+    // --frames-only: stop after the stills, for checking them before any
+    // video credits are spent.
+    if (job.firstFrame && process.argv.includes('--frames-only')) {
+      for (const pair of pairs) console.log(`  still: ${pair.character}`);
+      fs.rmSync(staging, { recursive: true, force: true });
+      browser.disconnect();
+      return;
+    }
     console.log(`\n${pairs.length} generation(s) to queue.`);
     for (const pair of pairs) {
       if (await runPair(page, job, pair)) queued.push(pair);
