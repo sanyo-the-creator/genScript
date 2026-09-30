@@ -687,7 +687,14 @@ function extractMedia(download, pattern, target, keepExt = false) {
   const staging = path.join(path.dirname(target), `.unzip_${Date.now()}`);
   fs.mkdirSync(staging, { recursive: true });
   try {
-    execFileSync('unzip', ['-qq', '-o', download, '-d', staging]);
+    // `unzip` only exists inside Git Bash; Windows 10+ ships bsdtar, which
+    // reads zips, and macOS has both.
+    if (process.platform === 'win32') {
+      execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'),
+                   ['-xf', download, '-C', staging]);
+    } else {
+      execFileSync('unzip', ['-qq', '-o', download, '-d', staging]);
+    }
     const media = fs.readdirSync(staging).filter((name) => pattern.test(name)).sort();
     if (!media.length) return null;
     fs.copyFileSync(path.join(staging, media[0]), dest(media[0]));
@@ -716,8 +723,13 @@ async function runPair(page, job, pair) {
 /// in the feed then sits above the last file's row, which sits above the
 /// first's, which is what locateResult() keys on ({ video: first, character: last }).
 async function generate(page, settings, prompt, files) {
-  // An open tile viewer or a scrolled grid hides the prompt bar's controls.
-  await page.keyboard.press('Escape');
+  // An open tile viewer, asset detail or picker (e.g. left by an interrupted
+  // run) or a scrolled grid hides the prompt bar's controls.
+  await closeMediaMenu(page);
+  for (let i = 0; i < 3; i += 1) {
+    await page.keyboard.press('Escape');
+    await sleep(400);
+  }
   await page.evaluate(() => {
     const el = document.querySelector('.cdk-virtual-scrollable.page-container') || document.scrollingElement;
     if (el) el.scrollTop = 0;
@@ -813,6 +825,21 @@ async function generate(page, settings, prompt, files) {
 
 const uniqueStem = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+const SWAP_SIMILARITY_MAX = 0.95;
+
+/// SSIM of two images at the same small size (1 = identical), or null when
+/// ffmpeg cannot compare them.
+function similarity(a, b) {
+  try {
+    const out = require('child_process').spawnSync('ffmpeg', ['-i', a, '-i', b, '-filter_complex',
+      '[0]scale=384:683[x];[1]scale=384:683[y];[x][y]ssim', '-f', 'null', '-'], { encoding: 'utf8' });
+    const m = (out.stderr || '').match(/All:([0-9.]+)/);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 /// The video's opening frame as a jpg, one per distinct video.
 function extractFirstFrames(pairs, workFolder) {
   const frames = new Map();
@@ -834,21 +861,71 @@ function extractFirstFrames(pairs, workFolder) {
 // Generated images land in the media grid, not in the batch rows the video
 // lookup reads, so a still is found as a grid tile whose asset id was not
 // there when Create was clicked (same approach as server.js mediaTiles).
+// A generated video is a flow-video-tile showing only an <img alt="Generated
+// video thumbnail">; its <video> (src .../video/<id>) is created on hover.
 function gridTiles(page) {
   return page.evaluate(() => Array.from(document.querySelectorAll('img'))
     .filter((i) => { const r = i.getBoundingClientRect(); return r.width > 120 && r.top > 60; })
     .map((i) => {
       const src = i.currentSrc || i.src || '';
       const m = src.match(/\/(?:image|asb)\/([^/?#]+)/);
-      return { key: (i.dataset && i.dataset.mediaId) || (m && m[1]) || null, src };
+      // In the feed layout every tile sits in a row whose details read
+      // "Uploaded image"/"Uploaded video" or name the model that made it; an
+      // upload that renders late must not pass for a result.
+      let row = i.closest('flow-tile-container');
+      while (row && row.parentElement && !/Created/.test(row.textContent || '')
+             && row.parentElement.querySelectorAll('flow-tile-container').length === 1) {
+        row = row.parentElement;
+      }
+      const uploaded = /Created/.test((row && row.textContent) || '') && /Uploaded/.test(row.textContent);
+      const kind = uploaded ? 'upload'
+        : i.closest('flow-video-tile')
+          ? (i.alt === 'Generated video thumbnail' ? 'video' : 'upload')
+          : 'image';
+      return { key: (i.dataset && i.dataset.mediaId) || (m && m[1]) || null, src, kind };
     })
     .filter((t) => t.key));
 }
 
-async function waitForNewTile(page, before, timeoutMs) {
+/// Hovers a video tile until its <video> exists, and returns that video's src.
+async function videoSrcOf(page, tile) {
+  // The thumbnail's /image/<id> and the video's /video/<id> share the id; the
+  // video URL has to be the signed one the page loads. Once hovered, the tile
+  // swaps its thumbnail for the <video>, so look for that first.
+  const loaded = () => page.evaluate((key) => {
+    const video = Array.from(document.querySelectorAll('video'))
+      .find((v) => (v.currentSrc || v.src || '').includes('/video/' + key));
+    return video ? video.currentSrc || video.src : null;
+  }, tile.key);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const already = await loaded();
+    if (already) return already;
+    const box = await page.evaluate((key) => {
+      const img = Array.from(document.querySelectorAll('img')).find((i) => (i.currentSrc || i.src || '').includes(key));
+      if (!img) return null;
+      img.scrollIntoView({ block: 'center' });
+      const r = img.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, tile.key);
+    if (!box) {
+      await sleep(1500);
+      continue;
+    }
+    await page.mouse.move(box.x, box.y);
+    await sleep(2000);
+    const src = await loaded();
+    if (src) {
+      await page.mouse.move(5, 5);
+      return src;
+    }
+  }
+  return null;
+}
+
+async function waitForNewTile(page, before, timeoutMs, kind = null) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const fresh = (await gridTiles(page)).find((t) => !before.has(t.key));
+    const fresh = (await gridTiles(page)).find((t) => !before.has(t.key) && (!kind || t.kind === kind));
     if (fresh) {
       await sleep(4000);   // let the tile swap its placeholder for the image
       return (await gridTiles(page)).find((t) => t.key === fresh.key) || fresh;
@@ -870,8 +947,9 @@ async function saveTile(page, tile, targetNoExt) {
     return { type, b64: btoa(bin) };
   }, tile.src).catch(() => null);
   if (!data) return null;
+  // A target that already has an extension (a video's outputName) is used as is.
   const ext = /png/.test(data.type) ? '.png' : /webp/.test(data.type) ? '.webp' : '.jpg';
-  const file = targetNoExt + ext;
+  const file = path.extname(targetNoExt) ? targetNoExt : targetNoExt + ext;
   fs.writeFileSync(file, Buffer.from(data.b64, 'base64'));
   return file;
 }
@@ -895,10 +973,25 @@ async function swapFirstFrames(page, job, pairs) {
     const ok = await generate(page, settings, prompt,
                               [['character image', pair.character, 'character'], ['first frame', frame, 'ref']]);
     if (!ok) continue;
-    // Uploads are already in the grid by now, so the only new tile is the still.
-    const before = new Set((await gridTiles(page)).map((t) => t.key));
-    const tile = await waitForNewTile(page, before, 10 * 60 * 1000);
-    let still = tile && await saveTile(page, tile, path.join(workFolder, `sw_${uniqueStem()}`));
+    // Nano Banana sometimes hands the frame back barely changed. Such a still
+    // is near-identical to the frame (SSIM ~0.97 vs ~0.92 for a real swap in
+    // testing), so it is made again, up to 3 tries, keeping the most changed.
+    let still = null;
+    let best = Infinity;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (attempt > 1 && !await generate(page, settings, prompt,
+          [['character image', pair.character, 'character'], ['first frame', frame, 'ref']])) break;
+      // Uploads are already in the grid by now, so the only new tile is the still.
+      const before = new Set((await gridTiles(page)).map((t) => t.key));
+      const tile = await waitForNewTile(page, before, 10 * 60 * 1000, 'image');
+      const saved = tile && await saveTile(page, tile, path.join(workFolder, `sw_${uniqueStem()}`));
+      if (!saved) break;
+      const same = similarity(frame, saved);
+      console.log(`  still ${attempt}: similarity to the frame ${same === null ? '?' : same.toFixed(3)}`);
+      if (same === null || same < best) { best = same === null ? best : same; still = saved; }
+      if (same === null || same <= SWAP_SIMILARITY_MAX) break;
+      console.warn('  the still barely changed from the frame, trying again');
+    }
     // Optional second pass on the still alone: the swap keeps identity best
     // but looks composited, and a pass with no other person in it can only
     // make it look real, not drift back to the video's person.
@@ -906,7 +999,7 @@ async function swapFirstFrames(page, job, pairs) {
       console.log(`  polishing ${path.basename(still)}`);
       const polished = await generate(page, settings, job.firstFrame.polishPrompt, [['swapped still', still]]);
       const seen = polished && new Set((await gridTiles(page)).map((t) => t.key));
-      const tile2 = seen && await waitForNewTile(page, seen, 10 * 60 * 1000);
+      const tile2 = seen && await waitForNewTile(page, seen, 10 * 60 * 1000, 'image');
       const saved = tile2 && await saveTile(page, tile2, path.join(workFolder, `sp_${uniqueStem()}`));
       if (saved) still = saved;
       else console.warn('  polish pass failed, keeping the unpolished still');
@@ -938,6 +1031,13 @@ async function swapFirstFrames(page, job, pairs) {
   }
   const page = await findFlowPage(browser);
   await page.bringToFront();
+  // Start from the project's plain grid: an interrupted run can leave an
+  // asset detail, the picker or a stuck upload open, and then nothing uploads.
+  const project = page.url().match(/^(.*\/project\/[^/?#]+)/);
+  if (project) {
+    await page.goto(project[1], { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+    await sleep(3000);
+  }
 
   // --collect skips queueing and only fetches results already in Flow — for
   // when a run was interrupted after its generations went through. Not for
@@ -966,6 +1066,35 @@ async function swapFirstFrames(page, job, pairs) {
       return;
     }
     console.log(`\n${pairs.length} generation(s) to queue.`);
+
+    // Projects shown as a media grid have no batch rows for locateResult()
+    // to read, so each video is generated, found as a new grid tile and saved
+    // before the next one starts; tiles carry nothing tying them to a pair.
+    // Used for the feed layout too: there locateResult() called results ready
+    // ~40s after queueing, i.e. it matched the wrong row. A new "Generated
+    // video" tile is unambiguous in both layouts.
+    const gridView = true;
+    if (gridView) {
+      let saved = 0;
+      for (const pair of pairs) {
+        const before = new Set((await gridTiles(page)).map((t) => t.key));
+        if (!await runPair(page, job, pair)) continue;
+        const tile = await waitForNewTile(page, before, 30 * 60 * 1000, 'video');
+        const src = tile && await videoSrcOf(page, tile);
+        const target = path.join(job.outputFolder, outputNameOf(pair));
+        if (src && await saveTile(page, { ...tile, src }, target)) {
+          console.log(`  saved ${path.basename(target)}`);
+          saved += 1;
+        } else {
+          console.warn(`  ${outputNameOf(pair)}: no finished video in Flow`);
+        }
+      }
+      console.log(`\nSaved ${saved} of ${job.pairs.length} into ${job.outputFolder}.`);
+      fs.rmSync(staging, { recursive: true, force: true });
+      browser.disconnect();
+      return;
+    }
+
     for (const pair of pairs) {
       if (await runPair(page, job, pair)) queued.push(pair);
       // Flow queues generations; this is spacing, not waiting for the result.

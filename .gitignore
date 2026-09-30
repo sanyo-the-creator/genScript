@@ -33,3 +33,5 @@ public/slideshow_uploads/
 
 # Face Swap: saved characters, uploaded videos, job files
 swap_data/
+server.log
+server.err.log
