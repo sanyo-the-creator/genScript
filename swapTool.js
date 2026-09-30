@@ -10,15 +10,18 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, 'swap_data');
 const CHAR_DIR = path.join(ROOT, 'characters');
 const VIDEO_DIR = path.join(ROOT, 'videos');
 const JOB_DIR = path.join(ROOT, 'jobs');
 const FRAME_DIR = path.join(ROOT, 'frames');
+// Packages: each subfolder is a named set of reference videos, run in one go
+// against the chosen characters.
+const PACKAGE_DIR = path.join(ROOT, 'packages');
 const OUTPUT_DIR = path.join(os.homedir(), 'Downloads');
-for (const dir of [CHAR_DIR, VIDEO_DIR, JOB_DIR, FRAME_DIR]) fs.mkdirSync(dir, { recursive: true });
+for (const dir of [CHAR_DIR, VIDEO_DIR, JOB_DIR, FRAME_DIR, PACKAGE_DIR]) fs.mkdirSync(dir, { recursive: true });
 
 // Default characters ship in the repo and are copied in once; a marker keeps
 // ones the user removed from coming back on the next start.
@@ -154,6 +157,53 @@ function addVideo(buffer, originalName, { duration, port, chosen }) {
   return id;
 }
 
+function packages() {
+  return fs.readdirSync(PACKAGE_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => ({
+      name: d.name,
+      videos: fs.readdirSync(path.join(PACKAGE_DIR, d.name)).filter((f) => VIDEO_EXT.test(f)).sort(),
+    }))
+    .filter((p) => p.videos.length)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Shortest Flow duration covering the clip, as the page does for a dropped video.
+function durationOf(file) {
+  try {
+    const secs = parseFloat(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+                                                     '-of', 'csv=p=0', file]).toString());
+    return DURATIONS.find((d) => secs <= parseInt(d, 10) + 0.05) || '10s';
+  } catch { return SETTINGS.duration; }
+}
+
+/// Queues every video of a package against the chosen characters. Package
+/// videos are used in place; names are <package>_<video> so outputs and
+/// Flow uploads stay distinct.
+function runPackage(name, { port, chosen }) {
+  const pkg = packages().find((p) => p.name === path.basename(name || ''));
+  if (!pkg) throw new Error('No such package.');
+  const wanted = new Set(chosen || []);
+  const chars = characters().filter((c) => wanted.has(c.file));
+  if (!chars.length) throw new Error('Choose at least one character first.');
+  for (const video of pkg.videos) {
+    const src = path.join(PACKAGE_DIR, pkg.name, video);
+    const ext = path.extname(video).toLowerCase();
+    const base = safeName(`${pkg.name}_${path.basename(video, ext)}`).slice(0, 30);
+    const id = uniqueStem();
+    // Copied under a unique stem, since flowSwap finds uploads by file name.
+    const file = path.join(VIDEO_DIR, `${base}__${id}${ext}`);
+    fs.copyFileSync(src, file);
+    jobs.push({
+      id, video: file, videoName: base, duration: durationOf(src),
+      port: Number(port) || 9222, status: 'queued', characters: chars.map((c) => c.file),
+    });
+  }
+  onLog(`Queued package ${pkg.name}: ${pkg.videos.length} video(s) x ${chars.length} character(s)`);
+  onChange();
+  runNext();
+}
+
 function runNext() {
   if (running) return;
   const job = jobs.find((j) => j.status === 'queued');
@@ -231,7 +281,8 @@ function stop() {
 function state() {
   return {
     characters: characters(),
-    jobs: jobs.slice(-20).reverse().map((j) => ({
+    packages: packages(),
+    jobs: jobs.slice(-60).reverse().map((j) => ({
       id: j.id, videoName: j.videoName, duration: j.duration, port: j.port,
       status: j.status, count: j.characters.length,
     })),
@@ -246,5 +297,5 @@ function init(hooks) {
 }
 
 module.exports = {
-  init, state, addCharacter, removeCharacter, characterPath, addVideo, stop,
+  init, state, addCharacter, removeCharacter, characterPath, addVideo, runPackage, stop,
 };

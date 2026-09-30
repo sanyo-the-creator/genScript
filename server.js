@@ -2350,6 +2350,18 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/clips') {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'clips.html'));
+  if (req.method === 'POST' && url.pathname === '/api/swap/package') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      try {
+        const { name, port, chosen } = JSON.parse(body);
+        swapTool.runPackage(name, { port, chosen });
+        sendJson(res, 200, { ok: true });
+      } catch (e) { sendJson(res, 400, { error: e.message || String(e) }); }
+    });
+    return;
+  }
     // no-store: the page is read fresh from disk on every request, so a cached
     // copy in the browser would silently keep showing an old build of the UI.
     res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });

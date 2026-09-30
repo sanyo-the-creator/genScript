@@ -68,6 +68,12 @@
       </div>
 
       <div class="card">
+        <h2>Packages</h2>
+        <p class="muted" style="margin:-6px 0 10px">Reference video sets in <code>swap_data/packages/&lt;name&gt;/</code>. Run queues every video against the chosen characters.</p>
+        <div id="pkgs" class="muted">No packages.</div>
+      </div>
+
+      <div class="card">
         <h2>Video</h2>
         <div class="warn" id="lenWarn">Recommended: videos up to <b>10 seconds</b>. Flow generates at most 10s per clip, and anything longer has to be split into several generations that don't come out looking the same.</div>
         <div class="row">
@@ -130,6 +136,10 @@ function render() {
       <div class="ft"><span title="${esc(c.name)}">${esc(c.name)}</span>
         <button class="small" data-rm="${esc(c.file)}">✕</button></div>
     </div>`).join('');
+  $('pkgs').innerHTML = (st.packages || []).length ? st.packages.map((p) => `
+    <div class="job"><div><b>${esc(p.name)}</b><div class="muted">${p.videos.length} video(s) · ${p.videos.length * chosen.size} generation(s)</div></div>
+      <div><button class="small" data-pkg="${esc(p.name)}">Run</button></div></div>`).join('')
+    : 'No packages.';
   $('jobs').innerHTML = st.jobs.length ? st.jobs.map((j) => `
     <div class="job"><div><b>${esc(j.videoName)}</b><div class="muted">${j.count} character(s) · ${j.duration} · port ${j.port}</div></div>
       <div><span class="st ${j.status}">${j.status}</span></div></div>`).join('')
@@ -213,6 +223,16 @@ wireDrop($('vidDrop'), $('vidInput'), async (files) => {
     'X-Characters': encodeURIComponent(JSON.stringify([...chosen])),
   });
   $('vidDrop').innerHTML = '⬆️ Click or drop a video<br><span class="muted">It is generated once per chosen character with the Pushup Studio prompt, and every result is saved to <code>~/Downloads</code> automatically.</span>';
+});
+
+$('pkgs').addEventListener('click', async (e) => {
+  const name = e.target.dataset.pkg;
+  if (!name) return;
+  if (!chosen.size) { alert('Choose at least one character first.'); return; }
+  const r = await fetch('/api/swap/package', { method: 'POST',
+    body: JSON.stringify({ name, port: $('account').value, chosen: [...chosen] }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || 'Failed');
 });
 
 $('stopBtn').addEventListener('click', () => fetch('/api/swap/stop', { method: 'POST' }));
