@@ -78,13 +78,29 @@ const SETTINGS = {
 };
 const DURATIONS = ['4s', '6s', '8s', '10s'];
 
+// Packages named *chopped* / *buffed* swap in that version of the character, so
+// the still is made from it rather than from the plain picture. Each version is
+// made once per character (Nano Banana) and cached in VARIANT_DIR.
+// Chopped is server.js's "Chopped character creation" prompt word for word;
+// server.js has no buffed prompt, so that one mirrors it.
+const VARIANT_DIR = path.join(ROOT, 'variants');
+fs.mkdirSync(VARIANT_DIR, { recursive: true });
+const VARIANT_PROMPTS = {
+  chopped: 'update our @character so he has 35% bodyfat, acne, greasy messy hair, bloated puffy face.',
+  buffed: 'update our @character so he has 10% bodyfat, lean muscular athletic build with defined muscles, clear skin, clean styled hair, sharp defined jawline.',
+};
+function variantOf(packageName) {
+  return Object.keys(VARIANT_PROMPTS).find((v) => (packageName || '').toLowerCase().includes(v)) || null;
+}
+
 const IMAGE_EXT = /\.(png|jpe?g|webp)$/i;
 const VIDEO_EXT = /\.(mp4|mov|webm|m4v)$/i;
 
 let onChange = () => {};
 let onLog = () => {};
 const jobs = [];       // { id, video, videoName, duration, port, status, characters }
-let running = null;    // the child process of the job in progress
+// One job at a time per account (debug Chrome port), accounts in parallel.
+const running = new Map();   // port -> child process of its job in progress
 
 // Flow's asset picker is searched by file name, and flowSwap matches results by
 // the file stems too, so every stored file gets a name no other upload shares.
@@ -197,6 +213,7 @@ function runPackage(name, { port, chosen }) {
     jobs.push({
       id, video: file, videoName: base, duration: durationOf(src),
       port: Number(port) || 9222, status: 'queued', characters: chars.map((c) => c.file),
+      variant: variantOf(pkg.name),
     });
   }
   onLog(`Queued package ${pkg.name}: ${pkg.videos.length} video(s) x ${chars.length} character(s)`);
@@ -205,8 +222,7 @@ function runPackage(name, { port, chosen }) {
 }
 
 function runNext() {
-  if (running) return;
-  const job = jobs.find((j) => j.status === 'queued');
+  const job = jobs.find((j) => j.status === 'queued' && !running.has(j.port));
   if (!job) return;
 
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
@@ -222,6 +238,14 @@ function runNext() {
         character,
         characterName,
         outputName: `${job.videoName}_${characterName}_${stamp}.mp4`,
+        // Cache path without extension; flowSwap adds the one Flow returns.
+        ...(job.variant && {
+          variant: {
+            name: job.variant,
+            prompt: VARIANT_PROMPTS[job.variant],
+            file: path.join(VARIANT_DIR, `${path.basename(character, path.extname(character))}_${job.variant}`),
+          },
+        }),
       };
     });
   if (!pairs.length) {
@@ -243,12 +267,13 @@ function runNext() {
   }, null, 2));
 
   job.status = 'running';
+  setImmediate(runNext);
   onChange();
   onLog(`Starting ${job.videoName}: ${pairs.length} generation(s), ${job.duration}, results to ~/Downloads`);
 
   const child = spawn(process.execPath, [path.join(__dirname, 'flowSwap.js'), jobFile],
                       { cwd: __dirname });
-  running = child;
+  running.set(job.port, child);
   const pipe = (stream) => {
     let buf = '';
     stream.on('data', (chunk) => {
@@ -261,7 +286,7 @@ function runNext() {
   pipe(child.stdout);
   pipe(child.stderr);
   child.on('close', (code) => {
-    running = null;
+    running.delete(job.port);
     job.status = code === 0 ? 'done' : 'failed';
     onLog(`${job.videoName}: ${job.status}${code ? ` (exit ${code})` : ''}`);
     onChange();
@@ -271,8 +296,8 @@ function runNext() {
 
 function stop() {
   for (const job of jobs) if (job.status === 'queued') job.status = 'cancelled';
-  if (running) {
-    running.kill();
+  if (running.size) {
+    for (const child of running.values()) child.kill();
     onLog('Stopped. Generations already sent to Flow keep rendering there.');
   }
   onChange();
@@ -286,7 +311,7 @@ function state() {
       id: j.id, videoName: j.videoName, duration: j.duration, port: j.port,
       status: j.status, count: j.characters.length,
     })),
-    busy: !!running,
+    busy: running.size > 0,
     outputFolder: OUTPUT_DIR,
   };
 }
