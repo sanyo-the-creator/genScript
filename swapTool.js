@@ -64,7 +64,8 @@ const PROMPT = [
   'Apply the pose and motion from the input video to the provided character from this image.',
   'The image is the first frame of the output video. Keep the character exactly as in the image in every frame: same head shape, face, hair and skin. Do not use the face, head or hair of the person in the input video.',
   'From the input video take only the body pose, arm and hand movement, head movement, facial expression, timing and camera movement. Keep everything else identical to the image.',
-  'Photorealistic phone footage, no morphing, no voice over, no text.',
+  'The person in the image stays the same in every frame until the very end, with the same face, also when he turns his head or moves or the camera moves. Never change into the person from the input video at any point.',
+  'Photorealistic phone footage, no morphing.',
 ].join(' ');
 const SETTINGS = {
   ingredients: true,
@@ -184,6 +185,13 @@ function packages() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/// Copies a video without its audio track (video stream copied, not re-encoded).
+function silentCopy(src, dest) {
+  try {
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', src, '-an', '-c:v', 'copy', dest]);
+  } catch { fs.copyFileSync(src, dest); }
+}
+
 // Shortest Flow duration covering the clip, as the page does for a dropped video.
 function durationOf(file) {
   try {
@@ -197,8 +205,15 @@ function durationOf(file) {
 /// videos are used in place; names are <package>_<video> so outputs and
 /// Flow uploads stay distinct.
 function runPackage(name, { port, chosen }) {
-  const pkg = packages().find((p) => p.name === path.basename(name || ''));
-  if (!pkg) throw new Error('No such package.');
+  // "clip_chopped:01,03" runs only those clips of the package.
+  const [pkgName, only] = String(name || '').split(':');
+  const found = packages().find((p) => p.name === path.basename(pkgName));
+  if (!found) throw new Error('No such package.');
+  const picked = only ? only.split(',').map((x) => x.trim()) : null;
+  const pkg = picked
+    ? { ...found, videos: found.videos.filter((v) => picked.includes(path.basename(v, path.extname(v)))) }
+    : found;
+  if (!pkg.videos.length) throw new Error('No such clips in the package.');
   const wanted = new Set(chosen || []);
   const chars = characters().filter((c) => wanted.has(c.file));
   if (!chars.length) throw new Error('Choose at least one character first.');
@@ -209,7 +224,8 @@ function runPackage(name, { port, chosen }) {
     const id = uniqueStem();
     // Copied under a unique stem, since flowSwap finds uploads by file name.
     const file = path.join(VIDEO_DIR, `${base}__${id}${ext}`);
-    fs.copyFileSync(src, file);
+    // Silent copy: Flow refused clips with speech ("Unable to edit the speech").
+    silentCopy(src, file);
     jobs.push({
       id, video: file, videoName: base, duration: durationOf(src),
       port: Number(port) || 9222, status: 'queued', characters: chars.map((c) => c.file),

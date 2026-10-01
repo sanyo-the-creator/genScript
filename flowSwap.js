@@ -182,12 +182,21 @@ async function insertMention(page, name, tries = 3) {
     await sleep(attempt === 1 ? 600 : 1800);
     await page.keyboard.type('@', { delay: 0 });
     await sleep(attempt === 1 ? 700 : 1400);
-    await page.keyboard.type(name, { delay: 20 });
+    // Flow's name search does not index a fresh upload right away (typing the
+    // name listed nothing while the bare "@" list showed it first), so the
+    // recent list is tried before anything is typed.
+    let typedName = false;
 
     // Rows carry the asset type glued to the label ("clip.jpgImage").
     let steps = null;   // rows to move from the highlighted one, null = no match
-    const deadline = Date.now() + 6000;
-    while (Date.now() < deadline && steps === null) {
+    let deadline = Date.now() + 2500;
+    for (let phase = 0; phase < 2 && steps === null; phase += 1) {
+     if (phase === 1) {
+       await page.keyboard.type(name, { delay: 20 });
+       typedName = true;
+       deadline = Date.now() + 6000;
+     }
+     while (Date.now() < deadline && steps === null) {
       steps = await page.evaluate((n) => {
         const strip = (t) => (t || '').trim().replace(/(Image|Character|Video|Scene)$/, '').trim()
           .replace(/\.(jpg|jpeg|png|webp|mp4|mov|webm|m4v)$/i, '');
@@ -198,6 +207,7 @@ async function insertMention(page, name, tries = 3) {
         return at - active;
       }, name);
       if (steps === null) await sleep(250);
+     }
     }
     if (steps !== null) {
       for (let s = 0; s < Math.abs(steps); s += 1) {
@@ -220,8 +230,9 @@ async function insertMention(page, name, tries = 3) {
       const editor = document.querySelector(sel);
       return editor ? editor.textContent || '' : '';
     }, EDITOR_SEL);
-    if (typed.includes('@' + name)) {
-      for (let i = 0; i < name.length + 1; i += 1) await page.keyboard.press('Backspace');
+    const stray = '@' + (typedName ? name : '');
+    if (typed.includes(stray)) {
+      for (let i = 0; i < stray.length; i += 1) await page.keyboard.press('Backspace');
     }
   }
   return false;
@@ -282,15 +293,22 @@ async function waitForCreate(page, timeoutMs = 15000) {
 // on. Resolution, duration and Ingredients only appear once Video is picked.
 async function openSettings(page) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    // Only the mode radios prove the panel is open; other radios on the page
+    // (left over from a tile or the previous step) passed the old check.
     const open = await page.$$eval('[role="radio"]', (els) =>
       els.some((el) => {
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
+        return r.width > 0 && r.height > 0 && /Video|Image/.test(el.textContent || '');
       })).catch(() => false);
     if (open) return true;
-    const trigger = await page.$('button[aria-label="Settings trigger"]');
-    if (!trigger) return false;
-    await trigger.click();
+    // A DOM click: a mouse click on the chip stopped opening the panel
+    // (2026-10-01), while el.click() opens it every time.
+    const clicked = await page.evaluate(() => {
+      const trigger = document.querySelector('button[aria-label="Settings trigger"]');
+      if (trigger) trigger.click();
+      return !!trigger;
+    });
+    if (!clicked) return false;
     await sleep(1200);
   }
   return false;
@@ -331,7 +349,23 @@ async function chooseModel(page, model) {
   return picked;
 }
 
+// Right after a still is saved Flow is sometimes not ready to switch modes
+// ("could not switch to Video" and the video was skipped), so a failed attempt
+// is retried with the panel closed and reopened.
 async function applySettings(page, settings) {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    if (await applySettingsOnce(page, settings)) return true;
+    if (attempt < 4) {
+      console.warn(`  settings: retrying (${attempt + 1}/4)`);
+      for (let i = 0; i < 3; i += 1) { await page.keyboard.press('Escape'); await sleep(400); }
+      await page.mouse.move(5, 5);
+      await sleep(3000);
+    }
+  }
+  return false;
+}
+
+async function applySettingsOnce(page, settings) {
   if (!await openSettings(page)) {
     console.warn('  settings: could not open the settings panel');
     return false;
@@ -567,6 +601,24 @@ async function clearPrompt(page) {
   return true;
 }
 
+/// clearPrompt() does nothing when there is no prompt text yet, so references
+/// attached before a failed step stayed in the box and went into the next
+/// generation (the burger still in the next clip's video, 2026-10-01). This
+/// checks the box is really empty and reloads the project when it is not.
+async function ensureEmptyPrompt(page) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await clearPrompt(page);
+    if (await countIngredients(page) === 0) return true;
+    if (attempt === 0) {
+      const project = page.url().match(/^(.*\/project\/[^/?#]+)/);
+      console.warn('  old references left in the prompt box, reloading the project');
+      await page.goto(project ? project[1] : page.url(), { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+      await sleep(4000);
+    }
+  }
+  return await countIngredients(page) === 0;
+}
+
 // --- collecting the results ------------------------------------------------
 
 // Each piece leaves three rows in the feed, newest first: the generated
@@ -715,6 +767,8 @@ function outputNameOf(pair) {
 async function runPair(page, job, pair) {
   console.log(`\n${pair.takeID} · piece ${pair.index + 1} · ${pair.characterName}`);
   // Video first: it is the larger upload and the one Flow spends time probing.
+  // Two references only: with a third (the character picture) Flow refused the
+  // generation as "harmful content related to minors" (2026-10-01).
   return generate(page, job.settings, job.prompt,
                   [['video', pair.video], ['character image', pair.character]]);
 }
@@ -722,7 +776,24 @@ async function runPair(page, job, pair) {
 /// One generation from `files` ([what, path] in upload order). The result row
 /// in the feed then sits above the last file's row, which sits above the
 /// first's, which is what locateResult() keys on ({ video: first, character: last }).
-async function generate(page, settings, prompt, files) {
+// Files already uploaded to this Flow project, so a retry or the next pair
+// mentions the existing asset instead of uploading a duplicate. Kept per
+// project URL across runs; a mention that no longer resolves falls back to
+// uploading again.
+const UPLOADS_LEDGER = path.join(__dirname, 'swap_data', 'flow_uploads.json');
+function uploadedSet(page) {
+  let all = {};
+  try { all = JSON.parse(fs.readFileSync(UPLOADS_LEDGER, 'utf8')); } catch {}
+  const project = (page.url().match(/\/project\/([^/?#]+)/) || [])[1] || 'unknown';
+  const set = new Set(all[project] || []);
+  set.save = () => {
+    all[project] = [...set];
+    try { fs.writeFileSync(UPLOADS_LEDGER, JSON.stringify(all, null, 2)); } catch {}
+  };
+  return set;
+}
+
+async function generate(page, settings, prompt, files, forceUpload = false) {
   // An open tile viewer, asset detail or picker (e.g. left by an interrupted
   // run) or a scrolled grid hides the prompt bar's controls.
   await closeMediaMenu(page);
@@ -736,7 +807,10 @@ async function generate(page, settings, prompt, files) {
   });
   await sleep(800);
   await closeMediaMenu(page);
-  await clearPrompt(page);
+  if (!await ensureEmptyPrompt(page)) {
+    console.warn('  the prompt box still holds old references, not generating');
+    return false;
+  }
 
   if (!await applySettings(page, settings)) return false;
 
@@ -744,21 +818,33 @@ async function generate(page, settings, prompt, files) {
   // the prompt instead of through the picker.
   const tokens = files.filter(([, , t]) => t && prompt.includes('@' + t));
   if (tokens.length === files.length) {
+    const uploaded = uploadedSet(page);
+    let reused = 0;
     for (const [what, file] of files) {
+      if (!forceUpload && uploaded.has(stemOf(file))) { reused += 1; continue; }
       if (!await uploadMedia(page, file)) {
         console.warn(`  could not upload the ${what} — see FLOW_SELECTORS.md`);
         return false;
       }
+      uploaded.add(stemOf(file));
+      uploaded.save();
       console.log(`  uploaded ${path.basename(file)}`);
     }
+    if (reused) console.log(`  reusing ${reused} file(s) already in Flow`);
     await closeMediaMenu(page);
     const names = Object.fromEntries(files.map(([, file, t]) => [t, stemOf(file)]));
-    if (!await typeMentionPrompt(page, prompt, names)) {
+    const resolved = await typeMentionPrompt(page, prompt, names);
+    const chips = resolved ? await countMentionChips(page) : 0;
+    if ((!resolved || chips < files.length) && reused) {
+      console.warn('  an existing file did not resolve, uploading again');
+      await clearPrompt(page);
+      return generate(page, settings, prompt, files, true);
+    }
+    if (!resolved) {
       console.warn('  a reference mention did not resolve — not generating');
       await clearPrompt(page);
       return false;
     }
-    const chips = await countMentionChips(page);
     if (chips < files.length) {
       console.warn(`  expected ${files.length} mentioned references, found ${chips} — not generating`);
       await clearPrompt(page);
@@ -769,6 +855,9 @@ async function generate(page, settings, prompt, files) {
       console.warn('  Create never became enabled');
       return false;
     }
+    // Grid as it is just before Create: the uploads are in it, the new
+    // result's placeholder tile is not yet.
+    generate.lastBefore = new Set((await gridTiles(page)).map((t) => t.key));
     await create.click();
     await create.dispose();
     console.log('  generating…');
@@ -809,6 +898,9 @@ async function generate(page, settings, prompt, files) {
     console.warn('  Create never became enabled');
     return false;
   }
+  // Grid as it is just before Create: the uploads are in it, the new
+  // result's placeholder tile is not yet.
+  generate.lastBefore = new Set((await gridTiles(page)).map((t) => t.key));
   await create.click();
   await create.dispose();
   console.log('  generating…');
@@ -922,9 +1014,24 @@ async function videoSrcOf(page, tile) {
   return null;
 }
 
+// A refused generation shows as a flow-error-tile ("Failed ... You have not
+// been charged") with no asset id, so it never becomes a tile; counted so the
+// wait stops instead of running out its 30 minutes.
+const failedCards = (page) => page.evaluate(() => document.querySelectorAll('flow-error-tile').length)
+  .catch(() => 0);
+
 async function waitForNewTile(page, before, timeoutMs, kind = null) {
   const start = Date.now();
+  const failedBefore = await failedCards(page);
   while (Date.now() - start < timeoutMs) {
+    if (await failedCards(page) > failedBefore) {
+      const reason = await page.evaluate(() => {
+        const tile = document.querySelector('flow-error-tile .error-subtitle');
+        return tile ? tile.textContent.trim().replace(/\s+/g, ' ') : '';
+      }).catch(() => '');
+      console.warn(`  Flow refused this generation${reason ? ': ' + reason : ''}`);
+      return null;
+    }
     const fresh = (await gridTiles(page)).find((t) => !before.has(t.key) && (!kind || t.kind === kind));
     if (fresh) {
       await sleep(4000);   // let the tile swap its placeholder for the image
@@ -1047,7 +1154,8 @@ async function swapFirstFrames(page, job, pairs) {
       continue;
     }
     console.log(`  first frame ready for ${pair.characterName}: ${still}`);
-    ready.push({ ...pair, character: still });
+    // identity keeps the character picture itself for the video step.
+    ready.push({ ...pair, identity: pair.character, character: still });
   }
   return ready;
 }
@@ -1117,12 +1225,29 @@ async function swapFirstFrames(page, job, pairs) {
     if (gridView) {
       let saved = 0;
       for (const pair of pairs) {
-        const before = new Set((await gridTiles(page)).map((t) => t.key));
+        // generate() snapshots the grid right before Create (see lastBefore).
         if (!await runPair(page, job, pair)) continue;
-        const tile = await waitForNewTile(page, before, 30 * 60 * 1000, 'video');
-        const src = tile && await videoSrcOf(page, tile);
+        const before = generate.lastBefore;
         const target = path.join(job.outputFolder, outputNameOf(pair));
-        if (src && await saveTile(page, { ...tile, src }, target)) {
+        let ok = false;
+        for (let look = 0; look < 3 && !ok; look += 1) {
+          const tile = await waitForNewTile(page, before, 30 * 60 * 1000, 'video');
+          if (!tile) break;
+          before.add(tile.key);
+          const src = await videoSrcOf(page, tile);
+          if (!src || !await saveTile(page, { ...tile, src }, target)) continue;
+          // Last resort if the source clip's upload tile still gets through: it
+          // is a re-encode of the same clip, ~0.99+ similar. A real swap of a
+          // mostly static clip is lower (0.95 to 0.98 seen).
+          const same = similarity(pair.video, target);
+          if (same !== null && same > 0.99) {
+            console.warn(`  that tile is the source clip (similarity ${same.toFixed(3)}), still waiting`);
+            fs.rmSync(target, { force: true });
+            continue;
+          }
+          ok = true;
+        }
+        if (ok) {
           console.log(`  saved ${path.basename(target)}`);
           saved += 1;
         } else {
