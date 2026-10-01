@@ -954,6 +954,44 @@ async function saveTile(page, tile, targetNoExt) {
   return file;
 }
 
+/// For pairs with a `variant` (chopped/buffed packages), swaps `character` for
+/// that version of the character: reused from its cache file when made before,
+/// otherwise generated from the character picture once and cached. Pairs whose
+/// version could not be made are dropped, since the plain look would be wrong.
+async function makeVariants(page, settings, pairs) {
+  const made = new Map();
+  const ready = [];
+  for (const pair of pairs) {
+    if (!pair.variant) { ready.push(pair); continue; }
+    const { name, prompt, file } = pair.variant;
+    let image = made.get(file);
+    if (!image) {
+      const dir = path.dirname(file);
+      const cached = fs.existsSync(dir) && fs.readdirSync(dir)
+        .find((f) => path.basename(f, path.extname(f)) === path.basename(file));
+      if (cached) {
+        image = path.join(dir, cached);
+      } else {
+        console.log(`\n${pair.characterName} · making ${name} version`);
+        fs.mkdirSync(dir, { recursive: true });
+        if (await generate(page, settings, prompt, [['character image', pair.character, 'character']])) {
+          const before = new Set((await gridTiles(page)).map((t) => t.key));
+          const tile = await waitForNewTile(page, before, 10 * 60 * 1000, 'image');
+          image = tile && await saveTile(page, tile, file);
+        }
+      }
+      if (image) made.set(file, image);
+    }
+    if (!image) {
+      console.warn(`  ${pair.characterName}: no ${name} version came back, skipped`);
+      continue;
+    }
+    console.log(`  ${name} ${pair.characterName}: ${image}`);
+    ready.push({ ...pair, character: image });
+  }
+  return ready;
+}
+
 /// Makes each still in turn (generate, wait, save). Returns the pairs whose
 /// still came back, each with `character` swapped for that still.
 async function swapFirstFrames(page, job, pairs) {
@@ -1056,7 +1094,9 @@ async function swapFirstFrames(page, job, pairs) {
     queued.push(...job.pairs);
     console.log(`Collecting ${queued.length} result(s) already in Flow.`);
   } else {
-    const pairs = job.firstFrame ? await swapFirstFrames(page, job, job.pairs) : job.pairs;
+    const pairs = job.firstFrame
+      ? await swapFirstFrames(page, job, await makeVariants(page, job.firstFrame.settings, job.pairs))
+      : job.pairs;
     // --frames-only: stop after the stills, for checking them before any
     // video credits are spent.
     if (job.firstFrame && process.argv.includes('--frames-only')) {
