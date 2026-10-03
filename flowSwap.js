@@ -1056,7 +1056,9 @@ async function saveTile(page, tile, targetNoExt) {
   if (!data) return null;
   // A target that already has an extension (a video's outputName) is used as is.
   const ext = /png/.test(data.type) ? '.png' : /webp/.test(data.type) ? '.webp' : '.jpg';
-  const file = path.extname(targetNoExt) ? targetNoExt : targetNoExt + ext;
+  // Only a real media extension counts: a character called "image_1.webp_2026__x"
+  // has a "dot suffix" that is part of its name.
+  const file = /\.(jpe?g|png|webp|mp4|mov|webm|m4v)$/i.test(targetNoExt) ? targetNoExt : targetNoExt + ext;
   fs.writeFileSync(file, Buffer.from(data.b64, 'base64'));
   return file;
 }
