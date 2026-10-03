@@ -1030,6 +1030,12 @@ async function waitForNewTile(page, before, timeoutMs, kind = null) {
         return tile ? tile.textContent.trim().replace(/\s+/g, ' ') : '';
       }).catch(() => '');
       console.warn(`  Flow refused this generation${reason ? ': ' + reason : ''}`);
+      // A usage cap or empty balance fails every later generation too, so the
+      // job stops here (exit 2) instead of marching on and reporting "done".
+      if (/usage limit|out of credits|not enough credits|insufficient credits|quota/i.test(reason)) {
+        console.error('  The account hit its Flow limit. Stopping this job; run it again once the limit lifts or on another account.');
+        process.exit(2);
+      }
       return null;
     }
     const fresh = (await gridTiles(page)).find((t) => !before.has(t.key) && (!kind || t.kind === kind));
@@ -1256,9 +1262,11 @@ async function swapFirstFrames(page, job, pairs) {
           console.warn(`  ${outputNameOf(pair)}: no finished video in Flow`);
         }
       }
-      console.log(`\nSaved ${saved} of ${job.pairs.length} into ${job.outputFolder}.`);
+      console.log(`\nSaved ${saved} of ${pairs.length} into ${job.outputFolder}.`);
       fs.rmSync(staging, { recursive: true, force: true });
       browser.disconnect();
+      // Anything short of every video is a failed job, not a done one.
+      if (saved < job.pairs.length) process.exitCode = 1;
       return;
     }
 

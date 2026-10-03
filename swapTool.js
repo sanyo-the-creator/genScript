@@ -305,6 +305,13 @@ function runNext() {
     running.delete(job.port);
     job.status = code === 0 ? 'done' : 'failed';
     onLog(`${job.videoName}: ${job.status}${code ? ` (exit ${code})` : ''}`);
+    // Exit 2 = the account hit its Flow usage limit: later jobs on it would
+    // only fail the same way, so they are dropped instead of burning through.
+    if (code === 2) {
+      let dropped = 0;
+      for (const j of jobs) if (j.status === 'queued' && j.port === job.port) { j.status = 'cancelled'; dropped += 1; }
+      if (dropped) onLog(`Port ${job.port} hit its Flow limit: cancelled ${dropped} queued job(s) on it.`);
+    }
     onChange();
     runNext();
   });
