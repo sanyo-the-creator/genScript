@@ -23,6 +23,15 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const puppeteer = require('puppeteer-core');
 
+// click() asks an IntersectionObserver whether the target is on screen, and
+// that only answers when Chrome paints a frame. With the screen off or the
+// window fully covered no frame comes, the call hangs for puppeteer's 3 minute
+// protocol timeout and the job dies. Scroll the element into view directly
+// (no observer involved) and let click() go on to the point.
+puppeteer.ElementHandle.prototype.scrollIntoViewIfNeeded = async function () {
+  await this.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }));
+};
+
 const DEFAULT_PORT = 9222;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -1184,6 +1193,16 @@ async function swapFirstFrames(page, job, pairs) {
     process.exit(1);
   }
   const page = await findFlowPage(browser);
+  // A minimized window is throttled to "hidden": every element call then
+  // hangs until puppeteer's protocol timeout and the job dies. Restore it.
+  try {
+    const win = await page.createCDPSession();
+    const { windowId, bounds } = await win.send('Browser.getWindowForTarget');
+    if (bounds.windowState === 'minimized') {
+      await win.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+    }
+    await win.detach().catch(() => {});
+  } catch {}
   await page.bringToFront();
   // Start from the project's plain grid: an interrupted run can leave an
   // asset detail, the picker or a stuck upload open, and then nothing uploads.
