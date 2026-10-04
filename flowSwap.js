@@ -1052,6 +1052,7 @@ async function waitForNewTile(page, before, timeoutMs, kind = null) {
         return tile ? tile.textContent.trim().replace(/\s+/g, ' ') : '';
       }).catch(() => '');
       console.warn(`  Flow refused this generation${reason ? ': ' + reason : ''}`);
+      waitForNewTile.lastRefusal = reason || 'refused';
       // A usage cap or empty balance fails every later generation too, so the
       // job stops here (exit 2) instead of marching on and reporting "done".
       if (/usage limit|out of credits|not enough credits|insufficient credits|quota/i.test(reason)) {
@@ -1362,10 +1363,15 @@ ${got} of ${wanted} version(s) picked.`);
       let saved = 0;
       for (const pair of pairs) {
         // generate() snapshots the grid right before Create (see lastBefore).
-        if (!await runPair(page, job, pair)) continue;
-        const before = generate.lastBefore;
-        const target = path.join(job.outputFolder, outputNameOf(pair));
+        // Flow's minors-policy check refuses the same pair one time and passes
+        // it the next (not charged), so a refused video is sent again, twice.
         let ok = false;
+        const target = path.join(job.outputFolder, outputNameOf(pair));
+        for (let send = 1; send <= 3 && !ok; send += 1) {
+        if (send > 1) console.log(`  sending it again (${send}/3)`);
+        waitForNewTile.lastRefusal = null;
+        if (!await runPair(page, job, pair)) break;
+        const before = generate.lastBefore;
         for (let look = 0; look < 3 && !ok; look += 1) {
           const tile = await waitForNewTile(page, before, 30 * 60 * 1000, 'video');
           if (!tile) break;
@@ -1382,6 +1388,8 @@ ${got} of ${wanted} version(s) picked.`);
             continue;
           }
           ok = true;
+        }
+        if (!waitForNewTile.lastRefusal || /usage limit/i.test(waitForNewTile.lastRefusal)) break;
         }
         if (ok) {
           console.log(`  saved ${path.basename(target)}`);
