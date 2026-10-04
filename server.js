@@ -2358,6 +2358,17 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': `image/${ext === 'jpg' ? 'jpeg' : ext}`, 'Cache-Control': 'no-store' });
     return fs.createReadStream(file).pipe(res);
   }
+  if (req.method === 'POST' && url.pathname === '/api/swap/versions') {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      try {
+        swapTool.prepareVersions(JSON.parse(body || '{}'));
+        sendJson(res, 200, { ok: true });
+      } catch (e) { sendJson(res, 400, { error: e.message || String(e) }); }
+    });
+    return;
+  }
   if (req.method === 'POST' && ['/api/swap/pick', '/api/swap/pick/retry', '/api/swap/version/redo'].includes(url.pathname)) {
     let body = '';
     req.on('data', c => (body += c));

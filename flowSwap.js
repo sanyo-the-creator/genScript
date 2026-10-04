@@ -43,6 +43,7 @@ function loadJob(file) {
   const job = JSON.parse(fs.readFileSync(file, 'utf8'));
   for (const pair of job.pairs) {
     for (const key of ['character', 'video']) {
+      if (key === 'video' && job.versionsOnly) continue;
       if (!fs.existsSync(pair[key])) {
         console.error(`Missing ${key}: ${pair[key]}`);
         process.exit(1);
@@ -1091,86 +1092,120 @@ async function saveTile(page, tile, targetNoExt) {
 }
 
 // A new chopped/buffed version is made twice, and the job waits until one of
-// the two is picked on the Face Swap page (or both are thrown away and two
-// new ones made). The page talks to this through swap_data/variant_picks/
-// <key>/state.json: status "waiting" -> "chosen" (with choice) or "retry".
+// the options is picked on the Face Swap page (or they are thrown away and two
+// new ones made). All of a job's options are made first, then it waits for
+// the picks, so they can be chosen in one sitting. The page talks to this
+// through swap_data/variant_picks/<key>/state.json: status "waiting" ->
+// "chosen" (with choice) or "retry".
 const PICK_DIR = path.join(__dirname, 'swap_data', 'variant_picks');
 const PICK_OPTIONS = 2;
 
-async function pickVariant(page, settings, pair, port) {
-  const { name, prompt, file } = pair.variant;
-  const key = path.basename(file);
-  const dir = path.join(PICK_DIR, key);
-  const statePath = path.join(dir, 'state.json');
-  const readState = () => { try { return JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch { return null; } };
-  for (;;) {
+const pickDir = (pair) => path.join(PICK_DIR, path.basename(pair.variant.file));
+
+/// Makes the options for one version and marks it waiting. `current` (the
+/// version saved before, when redoing) is offered as an extra option.
+async function makeOptions(page, settings, pair, port, current = null) {
+  const { name, prompt } = pair.variant;
+  const dir = pickDir(pair);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const candidates = [];
+  if (current && fs.existsSync(current)) {
+    const kept = path.join(dir, `current_${uniqueStem()}${path.extname(current)}`);
+    fs.copyFileSync(current, kept);
+    candidates.push(kept);
+  }
+  for (let i = 1; i <= PICK_OPTIONS; i += 1) {
+    console.log(`
+${pair.characterName} · making ${name} version, option ${i} of ${PICK_OPTIONS}`);
+    if (!await generate(page, settings, prompt, [['character image', pair.character, 'character']])) continue;
+    const before = new Set((await gridTiles(page)).map((t) => t.key));
+    const tile = await waitForNewTile(page, before, 10 * 60 * 1000, 'image');
+    const saved = tile && await saveTile(page, tile, path.join(dir, `option${i}_${uniqueStem()}`));
+    if (saved) candidates.push(saved);
+  }
+  if (!candidates.length) {
     fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
-    const candidates = [];
-    for (let i = 1; i <= PICK_OPTIONS; i += 1) {
-      console.log(`\n${pair.characterName} · making ${name} version, option ${i} of ${PICK_OPTIONS}`);
-      if (!await generate(page, settings, prompt, [['character image', pair.character, 'character']])) continue;
-      const before = new Set((await gridTiles(page)).map((t) => t.key));
-      const tile = await waitForNewTile(page, before, 10 * 60 * 1000, 'image');
-      const saved = tile && await saveTile(page, tile, path.join(dir, `option${i}_${uniqueStem()}`));
-      if (saved) candidates.push(saved);
-    }
-    if (!candidates.length) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return null;
-    }
-    fs.writeFileSync(statePath, JSON.stringify({
-      key, port, variant: name, character: pair.characterName, characterFile: pair.character,
-      candidates, status: 'waiting', since: new Date().toISOString(),
-    }, null, 2));
-    console.log(`  ${pair.characterName}: ${candidates.length} ${name} option(s) ready, pick one on the Face Swap page (port ${port})`);
-    for (;;) {
-      await sleep(3000);
-      const state = readState();
-      if (!state) continue;
-      if (state.status === 'chosen' && state.choice && fs.existsSync(state.choice)) {
-        const target = file + path.extname(state.choice);
-        fs.copyFileSync(state.choice, target);
-        fs.rmSync(dir, { recursive: true, force: true });
-        console.log(`  ${pair.characterName}: using the picked ${name} version`);
-        return target;
+    return false;
+  }
+  fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({
+    key: path.basename(pair.variant.file), port, variant: name, character: pair.characterName,
+    characterFile: pair.character, candidates, status: 'waiting', since: new Date().toISOString(),
+  }, null, 2));
+  console.log(`  ${pair.characterName}: ${name} options ready, pick one on the Face Swap page (port ${port})`);
+  return true;
+}
+
+/// Waits for the pick of one version; "retry" makes new options and waits
+/// again. Returns the saved version, or null if no option could be made.
+async function awaitPick(page, settings, pair, port) {
+  const { name, file } = pair.variant;
+  const statePath = path.join(pickDir(pair), 'state.json');
+  for (;;) {
+    let state = null;
+    try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch {}
+    if (!state) return null;
+    if (state.status === 'chosen' && state.choice && fs.existsSync(state.choice)) {
+      // The old saved version (any extension) makes way for the pick.
+      for (const f of fs.readdirSync(path.dirname(file))) {
+        if (path.basename(f, path.extname(f)) === path.basename(file)) fs.rmSync(path.join(path.dirname(file), f));
       }
-      if (state.status === 'retry') {
-        console.log(`  ${pair.characterName}: making ${PICK_OPTIONS} new ${name} options`);
-        break;
-      }
+      const target = file + path.extname(state.choice);
+      fs.copyFileSync(state.choice, target);
+      fs.rmSync(pickDir(pair), { recursive: true, force: true });
+      console.log(`  ${pair.characterName}: using the picked ${name} version`);
+      return target;
     }
+    if (state.status === 'retry') {
+      console.log(`  ${pair.characterName}: making ${PICK_OPTIONS} new ${name} options`);
+      if (!await makeOptions(page, settings, pair, port)) return null;
+      continue;
+    }
+    await sleep(3000);
   }
 }
 
+function savedVersion(file) {
+  const dir = path.dirname(file);
+  const hit = fs.existsSync(dir) && fs.readdirSync(dir)
+    .find((f) => path.basename(f, path.extname(f)) === path.basename(file));
+  return hit ? path.join(dir, hit) : null;
+}
+
 /// For pairs with a `variant` (chopped/buffed packages), swaps `character` for
-/// that version of the character: reused from its cache file when made before,
-/// otherwise picked from new options (pickVariant) and cached. Pairs whose
-/// version could not be made are dropped, since the plain look would be wrong.
-async function makeVariants(page, settings, pairs, port) {
+/// that version of the character: the saved one when there is one, otherwise
+/// picked from new options and saved. With `redo` every version gets new
+/// options (the saved one offered alongside). Pairs whose version could not be
+/// made are dropped, since the plain look would be wrong.
+async function makeVariants(page, settings, pairs, port, redo = false) {
   const made = new Map();
+  const todo = new Map();   // version file -> a pair needing it
+  for (const pair of pairs) {
+    if (!pair.variant || made.has(pair.variant.file) || todo.has(pair.variant.file)) continue;
+    const saved = savedVersion(pair.variant.file);
+    if (saved && !redo) made.set(pair.variant.file, saved);
+    else todo.set(pair.variant.file, pair);
+  }
+  const waiting = [];
+  for (const pair of todo.values()) {
+    fs.mkdirSync(path.dirname(pair.variant.file), { recursive: true });
+    if (await makeOptions(page, settings, pair, port, redo ? savedVersion(pair.variant.file) : null)) waiting.push(pair);
+  }
+  if (waiting.length) console.log(`
+Waiting for ${waiting.length} pick(s) on the Face Swap page (port ${port}).`);
+  for (const pair of waiting) {
+    const image = await awaitPick(page, settings, pair, port);
+    if (image) made.set(pair.variant.file, image);
+  }
   const ready = [];
   for (const pair of pairs) {
     if (!pair.variant) { ready.push(pair); continue; }
-    const { name, prompt, file } = pair.variant;
-    let image = made.get(file);
+    const image = made.get(pair.variant.file);
     if (!image) {
-      const dir = path.dirname(file);
-      const cached = fs.existsSync(dir) && fs.readdirSync(dir)
-        .find((f) => path.basename(f, path.extname(f)) === path.basename(file));
-      if (cached) {
-        image = path.join(dir, cached);
-      } else {
-        fs.mkdirSync(dir, { recursive: true });
-        image = await pickVariant(page, settings, pair, port);
-      }
-      if (image) made.set(file, image);
-    }
-    if (!image) {
-      console.warn(`  ${pair.characterName}: no ${name} version came back, skipped`);
+      console.warn(`  ${pair.characterName}: no ${pair.variant.name} version came back, skipped`);
       continue;
     }
-    console.log(`  ${name} ${pair.characterName}: ${image}`);
+    console.log(`  ${pair.variant.name} ${pair.characterName}: ${image}`);
     ready.push({ ...pair, character: image });
   }
   return ready;
@@ -1282,6 +1317,20 @@ async function swapFirstFrames(page, job, pairs) {
   const cdp = await page.createCDPSession();
   await cdp.send('Browser.setDownloadBehavior',
                  { behavior: 'allow', downloadPath: staging, eventsEnabled: true });
+
+  // A versions job only makes (and waits for picks of) chopped/buffed
+  // versions, so they are all chosen before any video is queued.
+  if (job.versionsOnly) {
+    const ready = await makeVariants(page, job.firstFrame.settings, job.pairs, port, !!job.redo);
+    const wanted = new Set(job.pairs.map((p) => p.variant.file)).size;
+    const got = new Set(ready.map((p) => p.variant.file)).size;
+    console.log(`
+${got} of ${wanted} version(s) picked.`);
+    fs.rmSync(staging, { recursive: true, force: true });
+    browser.disconnect();
+    if (got < wanted) process.exitCode = 1;
+    return;
+  }
 
   const collectOnly = process.argv.includes('--collect');
   const queued = [];

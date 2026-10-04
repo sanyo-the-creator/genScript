@@ -93,6 +93,8 @@
       <div class="card">
         <h2>Saved chopped / buffed versions</h2>
         <p class="muted" style="margin:-6px 0 10px">Redo throws a version away; it is made again, with a pick, the next time a package needs it.</p>
+        <p style="margin:0 0 10px"><button class="small" id="newVersBtn">New versions for chosen characters (pick)</button>
+          <span class="muted">Two new chopped + buffed options each on the account below, current one offered too. That account's videos wait until all are picked.</span></p>
         <div class="vers" id="vers"></div>
       </div>
 
@@ -288,6 +290,11 @@ $('vers').addEventListener('click', (e) => {
   if (file && confirm('Throw this version away? It is made again, with a pick, the next time a package needs it. Videos already made with it stay as they are.')) post('/api/swap/version/redo', { file });
 });
 
+$('newVersBtn').addEventListener('click', () => {
+  if (!chosen.size) { alert('Choose at least one character first.'); return; }
+  if (confirm(`Make new chopped + buffed options for ${chosen.size} character(s) on port ${$('account').value}?`))
+    post('/api/swap/versions', { port: $('account').value, chosen: [...chosen], redo: true });
+});
 $('stopBtn').addEventListener('click', () => fetch('/api/swap/stop', { method: 'POST' }));
 
 fetch('/api/accounts').then((r) => r.json()).then(({ accounts }) => {

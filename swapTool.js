@@ -237,6 +237,37 @@ function runPackage(name, { port, chosen }) {
   runNext();
 }
 
+/// Queues a versions job: new chopped/buffed options for each chosen
+/// character, made up front and picked on the page before any video job of
+/// that account starts (jobs on one port run in order). With `redo` the saved
+/// versions are offered again alongside new options instead of being reused.
+function prepareVersions({ port, chosen, variants, redo }) {
+  const wanted = new Set(chosen || []);
+  const chars = characters().filter((c) => wanted.has(c.file));
+  if (!chars.length) throw new Error('Choose at least one character first.');
+  const kinds = (variants && variants.length ? variants : Object.keys(VARIANT_PROMPTS)).filter((v) => VARIANT_PROMPTS[v]);
+  const job = {
+    id: uniqueStem(), kind: 'versions', videoName: `versions (${kinds.join(' + ')})`, duration: '-',
+    port: Number(port) || 9222, status: 'queued', characters: chars.map((c) => c.file), variants: kinds, redo: !!redo,
+  };
+  // Ahead of this account's queued video jobs, so they use the picks.
+  const at = jobs.findIndex((j) => j.status === 'queued' && j.port === job.port);
+  if (at < 0) jobs.push(job); else jobs.splice(at, 0, job);
+  onLog(`Queued ${chars.length * kinds.length} version pick(s) on port ${job.port}`);
+  onChange();
+  runNext();
+}
+
+function versionPairs(job) {
+  return job.characters.map((file) => characterPath(file)).filter(Boolean).flatMap((character) =>
+    job.variants.map((variant) => ({
+      takeID: job.videoName, index: 0, character,
+      characterName: safeName(displayName(path.basename(character))),
+      variant: { name: variant, prompt: VARIANT_PROMPTS[variant],
+                 file: path.join(VARIANT_DIR, `${path.basename(character, path.extname(character))}_${variant}`) },
+    })));
+}
+
 // A finished video is saved as <videoName>_<characterName>_<12-digit stamp>.mp4,
 // so a pair whose video is already in the output folder is not made again.
 function alreadyMade(videoName, characterName) {
@@ -249,7 +280,7 @@ function runNext() {
   if (!job) return;
 
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
-  const pairs = job.characters
+  const pairs = job.kind === 'versions' ? versionPairs(job) : job.characters
     .map((file) => characterPath(file))
     .filter(Boolean)
     .filter((character) => !alreadyMade(job.videoName, safeName(displayName(path.basename(character)))))
@@ -290,6 +321,7 @@ function runNext() {
     workFolder: FRAME_DIR,
     outputFolder: OUTPUT_DIR,
     pairs,
+    ...(job.kind === 'versions' && { versionsOnly: true, redo: job.redo }),
   }, null, 2));
 
   job.status = 'running';
@@ -422,5 +454,5 @@ function init(hooks) {
 
 module.exports = {
   init, state, addCharacter, removeCharacter, characterPath, addVideo, runPackage, stop,
-  choosePick, retryPick, pickImagePath, versionPath, redoVersion,
+  prepareVersions, choosePick, retryPick, pickImagePath, versionPath, redoVersion,
 };
