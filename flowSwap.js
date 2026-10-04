@@ -1053,6 +1053,12 @@ async function waitForNewTile(page, before, timeoutMs, kind = null) {
       }).catch(() => '');
       console.warn(`  Flow refused this generation${reason ? ': ' + reason : ''}`);
       waitForNewTile.lastRefusal = reason || 'refused';
+      // Google's automation check. Sending again right away only keeps it
+      // tripped, so the job cools down first.
+      if (/unusual activity/i.test(reason)) {
+        console.warn('  cooling down 10 minutes after "unusual activity"');
+        await sleep(10 * 60 * 1000);
+      }
       // A usage cap or empty balance fails every later generation too, so the
       // job stops here (exit 2) instead of marching on and reporting "done".
       if (/usage limit|out of credits|not enough credits|insufficient credits|quota/i.test(reason)) {
@@ -1369,6 +1375,9 @@ ${got} of ${wanted} version(s) picked.`);
         const target = path.join(job.outputFolder, outputNameOf(pair));
         for (let send = 1; send <= 3 && !ok; send += 1) {
         if (send > 1) console.log(`  sending it again (${send}/3)`);
+        // Spacing between sends; back-to-back generations tripped Google's
+        // "unusual activity" check.
+        await sleep(20000);
         waitForNewTile.lastRefusal = null;
         if (!await runPair(page, job, pair)) break;
         const before = generate.lastBefore;

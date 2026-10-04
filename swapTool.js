@@ -340,7 +340,7 @@ function runNext() {
       buf = lines.pop();
       for (const line of lines) {
         if (!line.trim()) continue;
-        onLog(line.trimEnd());
+        onLog(`[${job.port}] ${line.trimEnd()}`);
         // A version waiting for (or done with) a pick changes the page.
         if (/pick one on the Face Swap page|using the picked|new (chopped|buffed) options/.test(line)) onChange();
       }
