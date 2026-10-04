@@ -44,6 +44,18 @@
   .st.done { background: #133b2c; color: var(--good); }
   .st.failed, .st.cancelled { background: #3a1f22; color: var(--bad); }
   .console { background: #07090c; border: 1px solid var(--line); border-radius: 8px; height: 380px; overflow-y: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; color: #b9c6d3; }
+  .pickport { margin-bottom: 14px; }
+  .pickport h3 { font-size: 12px; color: var(--accent); margin: 0 0 8px; }
+  .pick { background: var(--panel2); border: 1px solid var(--warn); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+  .pick .opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 8px 0; }
+  .pick .opt { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #0a0c0f; }
+  .pick .opt img { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; cursor: zoom-in; }
+  .pick .opt button { width: 100%; border-radius: 0; border: 0; border-top: 1px solid var(--line); background: var(--accent2); color: #fff; }
+  .vers { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+  .ver { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 11px; }
+  .ver img { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; cursor: zoom-in; }
+  .ver .ft { padding: 4px 6px; display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+  .ver .ft span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   code { background: #0a0c0f; padding: 1px 5px; border-radius: 4px; color: #c8d3df; }
 </style>
 </head>
@@ -56,6 +68,11 @@
 
   <div class="wrap">
     <div>
+      <div class="card" id="pickCard" style="display:none">
+        <h2>Pick a version</h2>
+        <p class="muted" style="margin:-6px 0 10px">A new chopped/buffed version is made twice. That account's queue waits here until you pick one, or throw both away and make two new ones.</p>
+        <div id="picks"></div>
+      </div>
       <div class="card">
         <h2 style="display:flex;justify-content:space-between;align-items:center;">
           <span>Characters <span id="charCount" class="muted"></span></span>
@@ -71,6 +88,12 @@
         <h2>Packages</h2>
         <p class="muted" style="margin:-6px 0 10px">Reference video sets in <code>swap_data/packages/&lt;name&gt;/</code>. Run queues every video against the chosen characters.</p>
         <div id="pkgs" class="muted">No packages.</div>
+      </div>
+
+      <div class="card">
+        <h2>Saved chopped / buffed versions</h2>
+        <p class="muted" style="margin:-6px 0 10px">Redo throws a version away; it is made again, with a pick, the next time a package needs it.</p>
+        <div class="vers" id="vers"></div>
       </div>
 
       <div class="card">
@@ -140,6 +163,20 @@ function render() {
     <div class="job"><div><b>${esc(p.name)}</b><div class="muted">${p.videos.length} video(s) · ${p.videos.length * chosen.size} generation(s)</div></div>
       <div><button class="small" data-pkg="${esc(p.name)}">Run</button></div></div>`).join('')
     : 'No packages.';
+  const picks = st.picks || [];
+  $('pickCard').style.display = picks.length ? '' : 'none';
+  const ports = [...new Set(picks.map((p) => p.port))].sort();
+  $('picks').innerHTML = ports.map((port) => `
+    <div class="pickport"><h3>Port ${esc(port)}</h3>${picks.filter((p) => p.port === port).map((p) => `
+      <div class="pick"><b>${esc(p.character)}</b> <span class="muted">· ${esc(p.variant)}</span>
+        <div class="opts">${p.options.map((o, i) => `
+          <div class="opt"><a href="/api/swap/pick-img?key=${encodeURIComponent(p.key)}&option=${encodeURIComponent(o)}" target="_blank"><img src="/api/swap/pick-img?key=${encodeURIComponent(p.key)}&option=${encodeURIComponent(o)}" alt="option ${i + 1}" /></a>
+            <button data-choose="${esc(p.key)}" data-option="${esc(o)}">Use option ${i + 1}</button></div>`).join('')}</div>
+        <button class="small danger" data-retry="${esc(p.key)}">Both bad, make 2 new</button></div>`).join('')}</div>`).join('');
+  $('vers').innerHTML = (st.versions || []).map((v) => `
+    <div class="ver"><a href="/api/swap/version-img?file=${encodeURIComponent(v.file)}" target="_blank"><img src="/api/swap/version-img?file=${encodeURIComponent(v.file)}" alt="${esc(v.character)}" loading="lazy" /></a>
+      <div class="ft"><span title="${esc(v.character)} · ${esc(v.variant)}">${esc(v.variant)} · ${esc(v.character)}</span>
+        <button class="small" data-redo="${esc(v.file)}">Redo</button></div></div>`).join('') || '<span class="muted">None yet.</span>';
   $('jobs').innerHTML = st.jobs.length ? st.jobs.map((j) => `
     <div class="job"><div><b>${esc(j.videoName)}</b><div class="muted">${j.count} character(s) · ${j.duration} · port ${j.port}</div></div>
       <div><span class="st ${j.status}">${j.status}</span></div></div>`).join('')
@@ -233,6 +270,22 @@ $('pkgs').addEventListener('click', async (e) => {
     body: JSON.stringify({ name, port: $('account').value, chosen: [...chosen] }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) alert(j.error || 'Failed');
+});
+
+async function post(url, body) {
+  const r = await fetch(url, { method: 'POST', body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || 'Failed');
+  fetch('/api/swap/state').then((r) => r.json()).then((s) => { st = s; render(); });
+}
+$('picks').addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.dataset.choose) post('/api/swap/pick', { key: t.dataset.choose, option: t.dataset.option });
+  else if (t.dataset.retry && confirm('Throw both options away and make two new ones?')) post('/api/swap/pick/retry', { key: t.dataset.retry });
+});
+$('vers').addEventListener('click', (e) => {
+  const file = e.target.dataset.redo;
+  if (file && confirm('Throw this version away? It is made again, with a pick, the next time a package needs it. Videos already made with it stay as they are.')) post('/api/swap/version/redo', { file });
 });
 
 $('stopBtn').addEventListener('click', () => fetch('/api/swap/stop', { method: 'POST' }));

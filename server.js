@@ -2348,6 +2348,31 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { ok: true });
   }
 
+  // Chopped/buffed versions: options waiting for a pick, and saved versions.
+  if (req.method === 'GET' && (url.pathname === '/api/swap/pick-img' || url.pathname === '/api/swap/version-img')) {
+    const file = url.pathname.endsWith('/pick-img')
+      ? swapTool.pickImagePath(url.searchParams.get('key') || '', url.searchParams.get('option') || '')
+      : swapTool.versionPath(url.searchParams.get('file') || '');
+    if (!file) { res.writeHead(404); return res.end(); }
+    const ext = path.extname(file).slice(1).toLowerCase();
+    res.writeHead(200, { 'Content-Type': `image/${ext === 'jpg' ? 'jpeg' : ext}`, 'Cache-Control': 'no-store' });
+    return fs.createReadStream(file).pipe(res);
+  }
+  if (req.method === 'POST' && ['/api/swap/pick', '/api/swap/pick/retry', '/api/swap/version/redo'].includes(url.pathname)) {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      try {
+        const { key, option, file } = JSON.parse(body || '{}');
+        if (url.pathname === '/api/swap/pick') swapTool.choosePick(key, option);
+        else if (url.pathname === '/api/swap/pick/retry') swapTool.retryPick(key);
+        else swapTool.redoVersion(file);
+        sendJson(res, 200, { ok: true });
+      } catch (e) { sendJson(res, 400, { error: e.message || String(e) }); }
+    });
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/clips') {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'clips.html'));
   if (req.method === 'POST' && url.pathname === '/api/swap/package') {

@@ -237,6 +237,13 @@ function runPackage(name, { port, chosen }) {
   runNext();
 }
 
+// A finished video is saved as <videoName>_<characterName>_<12-digit stamp>.mp4,
+// so a pair whose video is already in the output folder is not made again.
+function alreadyMade(videoName, characterName) {
+  const prefix = `${videoName}_${characterName}_`;
+  return fs.readdirSync(OUTPUT_DIR).some((f) => f.startsWith(prefix) && /^\d{12}\.mp4$/.test(f.slice(prefix.length)));
+}
+
 function runNext() {
   const job = jobs.find((j) => j.status === 'queued' && !running.has(j.port));
   if (!job) return;
@@ -245,6 +252,7 @@ function runNext() {
   const pairs = job.characters
     .map((file) => characterPath(file))
     .filter(Boolean)
+    .filter((character) => !alreadyMade(job.videoName, safeName(displayName(path.basename(character)))))
     .map((character, index) => {
       const characterName = safeName(displayName(path.basename(character)));
       return {
@@ -265,8 +273,10 @@ function runNext() {
       };
     });
   if (!pairs.length) {
-    job.status = 'failed';
-    onLog(`${job.videoName}: its characters were all removed, nothing to generate`);
+    const made = job.characters.some((file) => characterPath(file));
+    job.status = made ? 'done' : 'failed';
+    onLog(made ? `${job.videoName}: every video is already in ${OUTPUT_DIR}, skipped`
+               : `${job.videoName}: its characters were all removed, nothing to generate`);
     onChange();
     return runNext();
   }
@@ -296,7 +306,12 @@ function runNext() {
       buf += chunk.toString();
       const lines = buf.split('\n');
       buf = lines.pop();
-      for (const line of lines) if (line.trim()) onLog(line.trimEnd());
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        onLog(line.trimEnd());
+        // A version waiting for (or done with) a pick changes the page.
+        if (/pick one on the Face Swap page|using the picked|new (chopped|buffed) options/.test(line)) onChange();
+      }
     });
   };
   pipe(child.stdout);
@@ -326,6 +341,65 @@ function stop() {
   onChange();
 }
 
+// --- picking chopped/buffed versions (see pickVariant in flowSwap.js) -------
+const PICK_DIR = path.join(ROOT, 'variant_picks');
+
+function readPick(key) {
+  try { return JSON.parse(fs.readFileSync(path.join(PICK_DIR, path.basename(key), 'state.json'), 'utf8')); } catch { return null; }
+}
+function writePick(key, state) {
+  fs.writeFileSync(path.join(PICK_DIR, path.basename(key), 'state.json'), JSON.stringify(state, null, 2));
+}
+function picks() {
+  if (!fs.existsSync(PICK_DIR)) return [];
+  return fs.readdirSync(PICK_DIR).map(readPick).filter((p) => p && p.status === 'waiting')
+    .map((p) => ({ key: p.key, port: p.port, variant: p.variant, character: p.character,
+                   options: p.candidates.map((c) => path.basename(c)) }));
+}
+function choosePick(key, option) {
+  const state = readPick(key);
+  if (!state || state.status !== 'waiting') throw new Error('Nothing to pick for that character.');
+  const choice = state.candidates.find((c) => path.basename(c) === path.basename(option || ''));
+  if (!choice) throw new Error('No such option.');
+  writePick(key, { ...state, status: 'chosen', choice });
+  onLog(`Picked ${path.basename(choice)} for ${state.character} (${state.variant})`);
+  onChange();
+}
+function retryPick(key) {
+  const state = readPick(key);
+  if (!state || state.status !== 'waiting') throw new Error('Nothing to retry for that character.');
+  writePick(key, { ...state, status: 'retry' });
+  onLog(`Making new ${state.variant} options for ${state.character}`);
+  onChange();
+}
+function pickImagePath(key, option) {
+  const state = readPick(key);
+  const hit = state && state.candidates.find((c) => path.basename(c) === path.basename(option || ''));
+  return hit && fs.existsSync(hit) ? hit : null;
+}
+
+// Saved versions, so a bad one can be thrown away and made again (with a pick)
+// the next time a package needs it. Old ones are kept in variants/old.
+function versions() {
+  return fs.readdirSync(VARIANT_DIR).filter((f) => IMAGE_EXT.test(f)).sort().map((file) => {
+    const m = file.match(/^(.*)_(chopped|buffed)\.[a-z]+$/i);
+    return m && { file, character: displayName(m[1] + '.x'), variant: m[2] };
+  }).filter(Boolean);
+}
+function versionPath(file) {
+  const target = path.join(VARIANT_DIR, path.basename(file || ''));
+  return IMAGE_EXT.test(target) && fs.existsSync(target) ? target : null;
+}
+function redoVersion(file) {
+  const target = versionPath(file);
+  if (!target) throw new Error('No such version.');
+  const old = path.join(VARIANT_DIR, 'old');
+  fs.mkdirSync(old, { recursive: true });
+  fs.renameSync(target, path.join(old, `${uniqueStem()}_${path.basename(target)}`));
+  onLog(`Threw away ${path.basename(target)}; it is made again (with a pick) the next time it is needed`);
+  onChange();
+}
+
 function state() {
   return {
     characters: characters(),
@@ -335,6 +409,8 @@ function state() {
       status: j.status, count: j.characters.length,
     })),
     busy: running.size > 0,
+    picks: picks(),
+    versions: versions(),
     outputFolder: OUTPUT_DIR,
   };
 }
@@ -346,4 +422,5 @@ function init(hooks) {
 
 module.exports = {
   init, state, addCharacter, removeCharacter, characterPath, addVideo, runPackage, stop,
+  choosePick, retryPick, pickImagePath, versionPath, redoVersion,
 };

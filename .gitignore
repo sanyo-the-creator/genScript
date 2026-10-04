@@ -35,3 +35,4 @@ public/slideshow_uploads/
 swap_data/
 server.log
 server.err.log
+logs/

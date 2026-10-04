@@ -375,6 +375,18 @@ async function applySettings(page, settings) {
 }
 
 async function applySettingsOnce(page, settings) {
+  // Agent mode (on by default in a fresh project) rewrites the prompt and the
+  // settings panel will not open while it is on, so it goes off first, for
+  // image steps too.
+  const agentWasOn = await page.evaluate(() => {
+    const chip = document.querySelector('button.agent-mode-chip[aria-pressed="true"]');
+    if (chip) chip.click();
+    return !!chip;
+  }).catch(() => false);
+  if (agentWasOn) {
+    console.log('  turned Agent mode off');
+    await sleep(1000);
+  }
   if (!await openSettings(page)) {
     console.warn('  settings: could not open the settings panel');
     return false;
@@ -1078,11 +1090,64 @@ async function saveTile(page, tile, targetNoExt) {
   return file;
 }
 
+// A new chopped/buffed version is made twice, and the job waits until one of
+// the two is picked on the Face Swap page (or both are thrown away and two
+// new ones made). The page talks to this through swap_data/variant_picks/
+// <key>/state.json: status "waiting" -> "chosen" (with choice) or "retry".
+const PICK_DIR = path.join(__dirname, 'swap_data', 'variant_picks');
+const PICK_OPTIONS = 2;
+
+async function pickVariant(page, settings, pair, port) {
+  const { name, prompt, file } = pair.variant;
+  const key = path.basename(file);
+  const dir = path.join(PICK_DIR, key);
+  const statePath = path.join(dir, 'state.json');
+  const readState = () => { try { return JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch { return null; } };
+  for (;;) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const candidates = [];
+    for (let i = 1; i <= PICK_OPTIONS; i += 1) {
+      console.log(`\n${pair.characterName} · making ${name} version, option ${i} of ${PICK_OPTIONS}`);
+      if (!await generate(page, settings, prompt, [['character image', pair.character, 'character']])) continue;
+      const before = new Set((await gridTiles(page)).map((t) => t.key));
+      const tile = await waitForNewTile(page, before, 10 * 60 * 1000, 'image');
+      const saved = tile && await saveTile(page, tile, path.join(dir, `option${i}_${uniqueStem()}`));
+      if (saved) candidates.push(saved);
+    }
+    if (!candidates.length) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return null;
+    }
+    fs.writeFileSync(statePath, JSON.stringify({
+      key, port, variant: name, character: pair.characterName, characterFile: pair.character,
+      candidates, status: 'waiting', since: new Date().toISOString(),
+    }, null, 2));
+    console.log(`  ${pair.characterName}: ${candidates.length} ${name} option(s) ready, pick one on the Face Swap page (port ${port})`);
+    for (;;) {
+      await sleep(3000);
+      const state = readState();
+      if (!state) continue;
+      if (state.status === 'chosen' && state.choice && fs.existsSync(state.choice)) {
+        const target = file + path.extname(state.choice);
+        fs.copyFileSync(state.choice, target);
+        fs.rmSync(dir, { recursive: true, force: true });
+        console.log(`  ${pair.characterName}: using the picked ${name} version`);
+        return target;
+      }
+      if (state.status === 'retry') {
+        console.log(`  ${pair.characterName}: making ${PICK_OPTIONS} new ${name} options`);
+        break;
+      }
+    }
+  }
+}
+
 /// For pairs with a `variant` (chopped/buffed packages), swaps `character` for
 /// that version of the character: reused from its cache file when made before,
-/// otherwise generated from the character picture once and cached. Pairs whose
+/// otherwise picked from new options (pickVariant) and cached. Pairs whose
 /// version could not be made are dropped, since the plain look would be wrong.
-async function makeVariants(page, settings, pairs) {
+async function makeVariants(page, settings, pairs, port) {
   const made = new Map();
   const ready = [];
   for (const pair of pairs) {
@@ -1096,13 +1161,8 @@ async function makeVariants(page, settings, pairs) {
       if (cached) {
         image = path.join(dir, cached);
       } else {
-        console.log(`\n${pair.characterName} · making ${name} version`);
         fs.mkdirSync(dir, { recursive: true });
-        if (await generate(page, settings, prompt, [['character image', pair.character, 'character']])) {
-          const before = new Set((await gridTiles(page)).map((t) => t.key));
-          const tile = await waitForNewTile(page, before, 10 * 60 * 1000, 'image');
-          image = tile && await saveTile(page, tile, file);
-        }
+        image = await pickVariant(page, settings, pair, port);
       }
       if (image) made.set(file, image);
     }
@@ -1230,7 +1290,7 @@ async function swapFirstFrames(page, job, pairs) {
     console.log(`Collecting ${queued.length} result(s) already in Flow.`);
   } else {
     const pairs = job.firstFrame
-      ? await swapFirstFrames(page, job, await makeVariants(page, job.firstFrame.settings, job.pairs))
+      ? await swapFirstFrames(page, job, await makeVariants(page, job.firstFrame.settings, job.pairs, port))
       : job.pairs;
     // --frames-only: stop after the stills, for checking them before any
     // video credits are spent.
