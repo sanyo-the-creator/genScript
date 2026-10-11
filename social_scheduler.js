@@ -4,6 +4,7 @@ const { execSync } = require('child_process');
 const puppeteer = require('puppeteer-core');
 const adbHelper = require('./adb_helper');
 const tiktokStudio = require('./tiktok_studio');
+const phoneLock = require('./phone_lock');
 
 // Natural sort so slideshow pages order 1,2,...,9,10 instead of 1,10,2,...
 const natSort = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
@@ -193,7 +194,13 @@ async function processItemImmediately(taskId) {
   await executeTask(item, schedule, profiles);
 }
 
+// Posting drives the phone, so it holds the phone lock: a running warm-up
+// session sees the queued post and finishes early instead of colliding.
 async function executeTask(item, schedule, profiles) {
+  return phoneLock.run('post', () => executeTaskInner(item, schedule, profiles));
+}
+
+async function executeTaskInner(item, schedule, profiles) {
   const profile = profiles.find(p => p.id === item.profileId);
   if (!profile) {
     console.error(`✗ GrapheneOS Profile "${item.profileId}" not found in config.`);

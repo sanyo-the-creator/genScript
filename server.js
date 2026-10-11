@@ -28,6 +28,7 @@ const clipTool = require('./clipTool');
 const adbHelper = require('./adb_helper');
 const socialScheduler = require('./social_scheduler');
 const tiktokStudio = require('./tiktok_studio');
+const grapheneWarmup = require('./graphene_warmup');
 const ledgerStore = require('./scheduleLedger');
 const swapTool = require('./swapTool');
 
@@ -2570,6 +2571,33 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // --- GrapheneOS warm-up (scrolling / activity sessions, graphene_warmup.js) ---
+  if (req.method === 'GET' && url.pathname === '/api/graphene/warmup') {
+    return sendJson(res, 200, grapheneWarmup.status());
+  }
+  if (req.method === 'POST' && url.pathname.startsWith('/api/graphene/warmup/')) {
+    const op = url.pathname.split('/').pop();
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => {
+      let data; try { data = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error: 'Invalid JSON' }); }
+      try {
+        if (op === 'target') return sendJson(res, 200, { ok: true, target: grapheneWarmup.upsertTarget(data) });
+        if (op === 'enabled') { grapheneWarmup.setEnabled(data.enabled); return sendJson(res, 200, { ok: true }); }
+        if (op === 'resume') { grapheneWarmup.resumeTarget(data.id); return sendJson(res, 200, { ok: true }); }
+        if (op === 'delete') { grapheneWarmup.deleteTarget(data.id); return sendJson(res, 200, { ok: true }); }
+        if (op === 'stop') { grapheneWarmup.requestStop(); return sendJson(res, 200, { ok: true }); }
+        if (op === 'run') {
+          grapheneWarmup.runNow(data.id, { forceSearch: !!data.search }).catch(err => console.error('[warmup] run failed:', err.message));
+          return sendJson(res, 200, { ok: true });
+        }
+        return sendJson(res, 404, { error: 'Unknown warm-up action' });
+      } catch (e) {
+        return sendJson(res, 400, { error: e.message });
+      }
+    });
+    return;
+  }
   // ── Vids packs ─────────────────────────────────────────────────────────────
   // GET  /api/packs?port=N          → every pack's progress IN THAT ACCOUNT'S
   //                                    current Flow project
@@ -4589,4 +4617,5 @@ server.on('error', (err) => {
 server.listen(PORT, () => {
   console.log(`\nControl panel running at http://localhost:${PORT}\n`);
   socialScheduler.startSchedulerLoop();
+  grapheneWarmup.startWarmupLoop();
 });

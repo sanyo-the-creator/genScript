@@ -36,3 +36,4 @@ swap_data/
 server.log
 server.err.log
 logs/
+graphene_warmup.json

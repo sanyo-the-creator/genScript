@@ -129,6 +129,14 @@
     font-size: 11.5px; white-space: pre-wrap; color: #b9c6d3; }
 
   .empty { text-align: center; color: var(--faint); padding: 26px 10px; font-size: 13px; }
+  .wu-row { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 9px; background: var(--panel2); }
+  .wu-top { display: flex; align-items: center; gap: 8px; }
+  .wu-top .name { font-size: 13px; font-weight: 600; flex: 1; min-width: 0; }
+  .wu-badge { font-size: 10px; padding: 2px 7px; border-radius: 5px; background: var(--chip); color: var(--dim); white-space: nowrap; }
+  .wu-badge.run { background: #1f3a2e; color: var(--good); }
+  .wu-badge.pause { background: #3a1f22; color: #ffb4b4; }
+  .wu-row input[type=text], .wu-row select { padding: 6px 8px; font-size: 12px; margin-top: 7px; }
+  .wu-meta { font-size: 11.5px; color: var(--faint); margin-top: 6px; line-height: 1.45; }
 </style>
 </head>
 <body>
@@ -215,6 +223,18 @@
         <div id="queueList"><div class="empty">Loading…</div></div>
       </div>
 
+      <div class="card" id="warmupCard">
+        <h2>🔥 Warm-up &amp; activity
+          <label style="margin:0 0 0 auto; display:inline-flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; font-size:12px;">
+            <input type="checkbox" id="wuEnabled" style="width:auto" onchange="wuSetEnabled(this.checked)" /> Auto
+          </label>
+          <button class="tiny" style="background:#3a1f22; border-color:#6b2b30; color:#ffb4b4;" onclick="wuStop(this)">⏹ Stop</button>
+        </h2>
+        <div id="wuRunning" class="muted" style="margin-bottom:10px"></div>
+        <div id="wuList"><div class="empty">Loading…</div></div>
+        <div class="hint">Scrolling sessions in the TikTok / Instagram app of each GrapheneOS profile (the account logged in there): watching, occasional likes, saves, follows, comment browsing and keyword searches, spread over the day in phone time, with a ramp-up for new accounts. Runs only when the phone is free; a post always goes first.</div>
+      </div>
+
       <details class="card" id="logsCard">
         <summary>🖥️ ADB connection logs <span class="chev">›</span></summary>
         <div class="body"><div class="console" id="logConsole"></div></div>
@@ -254,6 +274,7 @@
         savedProfiles = data.savedProfiles || [];
         renderOrganizer();
         populateProfileDropdowns();
+        wuRender();
       } catch (e) { console.error(e); }
 
       loadQueue();
@@ -674,7 +695,89 @@
       }
     }
 
+    // ── Warm-up ────────────────────────────────────────────────────────────
+    let wuState = null, wuTimer = null;
+    const WU_PLATS = [['tiktok', 'TikTok'], ['instagram', 'Instagram']];
+    async function wuLoad() {
+      try {
+        const r = await fetch('/api/graphene/warmup');
+        wuState = await r.json();
+        wuRender();
+      } catch (e) { console.error(e); }
+      clearTimeout(wuTimer);
+      wuTimer = setTimeout(wuLoad, wuState && wuState.running ? 4000 : 20000);
+    }
+    function wuRender() {
+      if (!wuState) return;
+      // Don't rebuild while the user is typing keywords.
+      if (document.activeElement && document.activeElement.classList.contains('wu-kw')) return;
+      $('wuEnabled').checked = !!wuState.settings.enabled;
+      const run = wuState.running;
+      $('wuRunning').innerHTML = run
+        ? `<span style="color:var(--good)">● Running:</span> ${escapeHtml(run.label)} · ${escapeHtml(run.phase)} · ${run.videos} watched`
+        : (wuState.phoneBusy ? `Phone busy (${escapeHtml(wuState.phoneBusy)})` : (wuState.settings.enabled ? 'Idle. The next session runs at its planned time.' : 'Auto is off: sessions only run with "Run now".'));
+      const byId = {}; (wuState.targets || []).forEach(t => byId[t.id] = t);
+      const rows = [];
+      (savedProfiles || []).forEach(p => WU_PLATS.forEach(([plat, name]) => {
+        const id = `${p.id}:${plat}`;
+        rows.push(wuRow(p, plat, name, id, byId[id]));
+      }));
+      $('wuList').innerHTML = rows.join('') || '<div class="empty">No profiles yet. Scan profiles in Accounts &amp; device setup.</div>';
+    }
+    function wuRow(p, plat, name, id, t) {
+      const on = t && t.enabled;
+      const stageTxt = !t ? 'not set up' : t.stage === 'maintenance' ? 'maintenance' : `warm-up day ${t.accountDay}`;
+      let badges = `<span class="wu-badge">${escapeHtml(stageTxt)}</span>`;
+      if (t && t.paused) badges += `<span class="wu-badge pause" title="${escapeHtml(t.pauseReason || '')}">paused</span>`;
+      if (wuState.running && wuState.running.targetId === id) badges += '<span class="wu-badge run">running</span>';
+      let meta = '';
+      if (t) {
+        const u = t.unlock;
+        if (t.stage !== 'maintenance') meta += `Warm after: ${u.have.hours}/${u.need.hours}h, ${u.have.sessions}/${u.need.sessions} sessions, ${u.have.watched}/${u.need.watched} videos, ${u.have.activeDays}/${u.need.activeDays} days<br>`;
+        if (t.planText && t.planText.length) meta += `Today: ${t.planText.map(escapeHtml).join(' · ')}<br>`;
+        if (t.day) meta += `Today so far: ${t.day.watched} videos, ${t.day.likes} likes, ${t.day.saves} saves, ${t.day.follows} follows<br>`;
+        const last = (t.log || [])[0];
+        if (last) meta += `Last: ${new Date(last.at).toLocaleString()} · ${escapeHtml(last.result)}${last.error && last.result !== 'stopped' ? ' (' + escapeHtml(last.error) + ')' : ''} · ${last.watched} watched, ${last.likes} likes${last.keyword ? ', searched "' + escapeHtml(last.keyword) + '"' : ''}<br>`;
+        if (t.paused) meta += `<span style="color:#ffb4b4">Paused until ${new Date(t.pausedUntil).toLocaleString()}: ${escapeHtml(t.pauseReason || '')}</span> <button class="tiny" onclick="wuResume('${id}')">Resume</button>`;
+      }
+      const kw = t && t.keywords ? t.keywords.join(', ') : '';
+      const mode = t && t.mode === 'maintenance' ? 'maintenance' : 'warmup';
+      return `<div class="wu-row">
+        <div class="wu-top">
+          <input type="checkbox" style="width:auto" ${on ? 'checked' : ''} title="Include in the automatic schedule" onchange="wuSave('${p.id}','${plat}',{enabled:this.checked})" />
+          <span class="name">${escapeHtml(p.name)} <span class="muted">· ${name} · user ${p.grapheneUserId}</span></span>
+          ${badges}
+          <button class="tiny" onclick="wuRun('${id}','${p.id}','${plat}',this)">Run now</button>
+        </div>
+        <div class="row2">
+          <input type="text" class="wu-kw" placeholder="Niche keywords, comma separated" value="${escapeHtml(kw)}" onchange="wuSave('${p.id}','${plat}',{keywords:this.value})" />
+          <select onchange="wuSave('${p.id}','${plat}',{mode:this.value})">
+            <option value="warmup" ${mode === 'warmup' ? 'selected' : ''}>New account (ramp-up)</option>
+            <option value="maintenance" ${mode === 'maintenance' ? 'selected' : ''}>Already warm (1-2/day)</option>
+          </select>
+        </div>
+        ${meta ? `<div class="wu-meta">${meta}</div>` : ''}
+      </div>`;
+    }
+    async function wuPost(op, body) {
+      const r = await fetch('/api/graphene/warmup/' + op, { method: 'POST', body: JSON.stringify(body || {}) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.error) alert(d.error || 'Request failed');
+      return d;
+    }
+    async function wuSave(profileId, platform, patch) { await wuPost('target', { profileId, platform, ...patch }); wuLoad(); }
+    async function wuSetEnabled(on) { await wuPost('enabled', { enabled: on }); wuLoad(); }
+    async function wuResume(id) { await wuPost('resume', { id }); wuLoad(); }
+    async function wuStop(btn) { btn.disabled = true; await wuPost('stop'); setTimeout(() => { btn.disabled = false; wuLoad(); }, 1500); }
+    async function wuRun(id, profileId, platform, btn) {
+      if (!(wuState.targets || []).some(x => x.id === id)) await wuPost('target', { profileId, platform });
+      btn.disabled = true;
+      await wuPost('run', { id });
+      setTimeout(() => { btn.disabled = false; wuLoad(); }, 1500);
+    }
+
     loadStatus();
+    wuLoad();
   </script>
 </body>
 </html>
