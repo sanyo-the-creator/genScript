@@ -12,7 +12,14 @@
         "passthrough": [
             "mog.jpeg"
         ],
-        "tagEveryMention": true
+        "tagEveryMention": true,
+        "girl": {
+            "name": "buffed_gf",
+            "ref": "buffed_gf_ref.png",
+            "model": "Nano Banana 2.1",
+            "aspect": "16:9",
+            "prompt": "Create a brand new woman, a different person from @ref, but with the same kind of facial features: long dark brown hair, light blue eyes, thick dark defined brows, freckles across the nose and cheeks, full natural lips, sharp cheekbones. Adult woman, 19 years old. 16:9 character sheet focused on facial details only, on a plain light grey studio background, soft even natural light, real skin texture with visible pores, no makeup look, no retouching. Panels from left to right: front view of the face, three-quarter view, side profile, and an extreme close-up of both eyes showing iris color, lashes and brows. Same woman in every panel, neutral relaxed expression, hair down, bare shoulders, no jewelry, no text, no labels."
+        }
     },
     "clips": [
         {
@@ -209,6 +216,155 @@
             "prompt": "flex his right arm by his side of the body. no camera movement!",
             "imgRef": "char_bath_mirror.jpeg",
             "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_subway_low",
+            "prompt": "Front-camera phone selfie from below in a subway station, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair in a black polo shirt with a white wireless earbud, no glasses, neutral, calm, cold expression. He starts looking down into the camera exactly like the start image. Then he slightly turns his head to the side, just enough to show a little more of his cheek. Then his eyes and head move to look straight ahead past the camera, off into the distance. Then he looks back down into the camera. At the very end a faint, gentle breath of air lightly moves a few strands of his hair. No smile at any point, mouth closed, no expression change, blinks naturally. Calm, effortless, real-time movement, nothing exaggerated. Camera stays this close with only slight natural handheld sway. Old subway ceiling and fluorescent lights behind him, phone camera grain. Exact same face as the start image in every frame. No glasses, no mirror, no reflection, no visible phone, no cuts.",
+            "imgRef": "char_subway_low.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_room_corner",
+            "prompt": "Front-camera phone selfie in the corner of a room, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair and small silver hoops, in a faded black t-shirt, no glasses, relaxed soft expression. He looks into the camera and blinks naturally a few times. He slowly turns his head a little to the side, then back to the camera. Then he lifts one hand and casually brushes his fingers back through his hair, lets it fall, and keeps looking into the lens. Calm, effortless, natural real-time movement, nothing exaggerated, no winking, no big expressions. Camera has slight natural handheld sway and stays this close. Same high contrast, cool teal-tinted filter look, phone camera grain. Exact same face as the start image in every frame. No glasses, no mirror, no reflection, no visible phone, no cuts.",
+            "imgRef": "char_room_corner.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_gf_summer_cap",
+            "prompt": "Close-up handheld phone selfie on a sunny summer day, the camera itself is the phone, one continuous take, exactly matching the start image. Young woman with dark hair leaning over a young man with messy black hair in a cream cap and silver oval sunglasses, shirtless, hand at his chin. She holds her pouty kiss face and slowly tilts her head slightly to the side. He keeps his hand at his chin and slowly slides his fingers a little along his jawline, eyes locked on the camera with a calm, cold stare, mouth closed, no expression change. Both faces otherwise still. A light summer breeze moves her hair. Real-time speed. Camera stays this close with slight natural handheld sway. Bright blue sky and green leaves behind them, phone camera grain. Exact same faces as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_gf_summer_cap.jpeg",
+            "type": "ingredients",
+            "duration": 4,
+            "swapPrompt": "Recreate the exact scene, pose, clothing, and background from @ref. Replace the boy with @character and replace the girl with @girl. Keep both of their outfits, poses, facial expressions, the environment, lighting and camera angle exactly as on @ref."
+        },
+        {
+            "id": "char_fence_polo",
+            "prompt": "Close-up handheld phone shot at night, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair in a black textured knit quarter-zip polo with silver and gold chains, face at a slight three-quarter angle, eyes looking into the camera with a calm, cold stare. He slowly lifts his chin a little, a small movement, so his jawline and neck get sharper, eyes stay locked on the camera. Head stays at the same angle, mouth closed and relaxed, no lip or jaw movement, no expression change. The face stays identical to the start image in every frame: same facial structure, same shadows, same skin texture, no smoothing. Camera stays this close with only very slight handheld sway. Real-time speed. White fence and dark night sky behind him, phone camera grain. Exact same face as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_fence_polo.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_couch_hood",
+            "prompt": "Close-up handheld phone shot from above, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair in a black hoodie with the hood up, lying back on a light cream couch, calm, cold stare into the camera. He very slightly lifts his chin, a tiny movement, so his jawline gets a bit sharper, eyes stay locked on the camera. Head otherwise still, mouth closed and relaxed, no lip or jaw movement, no expression change. The face stays identical to the start image in every frame: same facial structure, same shadows, same skin texture, same lighting on the face, no smoothing, no beautifying. Camera stays this close with only very slight handheld sway. Real-time speed. Dim evening room, soft neutral light, phone camera grain. Exact same face as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_couch_hood.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_porsche_hood",
+            "prompt": "Close-up handheld phone shot inside a dark car at night, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair in a black hoodie with the hood up and white wired earphones, sitting in the driver's seat, looking into the camera with a calm, cold, relaxed stare. His eyes lazily drift just a little to the side, a small subtle glance, not to the corner of the eyes, then calmly return to the camera and stay there. Bored, unbothered look. Head stays still, brows relaxed, eyelids relaxed, mouth closed, no expression change. Camera stays this close with slight natural handheld sway. Real-time speed, no acting. Dark car interior, faint cold light from the window, phone camera grain. Exact same face as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_porsche_hood.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_porsche_shirt",
+            "prompt": "Close-up handheld shot at night from above, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair in an open black shirt and silver chain, standing in front of a black Porsche 911 Turbo S, looking up into the camera with a calm, cold stare. Only his eyes move: he slowly glances to the side, then back up into the camera. Head stays completely still, mouth stays closed and relaxed the whole time, no lip or jaw movement, no expression change. Camera stays this close with slight natural handheld sway. Real-time speed, no acting. Dim overhead light, glossy reflections on the car, phone camera grain. Exact same face as the start image. No mirror, no reflection of the phone, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_porsche_shirt.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_night_jaw",
+            "prompt": "Close-up handheld shot at night, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair in a black t-shirt and silver chain, head turned three-quarters, chin raised, calm and cold. Only his eyes move: he slowly glances up and slightly to the side, then back down into the camera. Head stays completely still, mouth stays closed and relaxed the whole time, no lip or jaw movement, no expression change. Camera stays this close with slight natural handheld sway. Real-time speed, no acting. Dark night, faint streetlight, phone camera grain. Exact same face as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_night_jaw.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_station_cream",
+            "prompt": "Close-up handheld phone shot by a big glass window in daylight, one continuous take, exactly matching the start image. Young man with messy black hair in a cream hoodie with white wired earphones, face turned slightly to the side, eyes looking off to the side. His eyes slowly slide over and lock onto the camera with a calm, cold stare, head barely moves, lips closed, no expression change. The camera has slight natural handheld sway. Real-time speed, no acting. Soft daylight, blurred people and glass behind him, phone camera grain. Exact same face as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_station_cream.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_gas_station",
+            "prompt": "Close-up handheld phone shot at a gas station at night, one continuous take, exactly matching the start image. Young man with messy black hair in a dark grey hoodie, head tilted, looking straight into the camera with a calm, cold stare. He slowly straightens his head a little and his eyes lock harder on the camera, lips closed, no expression change. A light night breeze moves a few strands of hair. The camera has slight natural handheld sway. Real-time speed, no acting. Gas station canopy lights softly blurred behind him, phone camera grain. Exact same face as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_gas_station.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_profile_jaw",
+            "prompt": "Close-up handheld shot filmed from just below his chin, the camera itself is the phone, one continuous take, exactly matching the start image. Young man with messy black hair in a black open-knit polo shirt, side profile, chin raised, eyes looking off to the side. He slowly lifts his chin a little higher and tightens his jaw, the jawline and neck getting sharper, lips closed, calm and cold. The camera gently sways and moves a little closer to his jaw. Real-time speed, no acting, no head turn. Soft natural daylight, plain grey wall, phone camera grain. Exact same face as the start image. No mirror, no reflection, no phone or arm visible in the frame, no cuts.",
+            "imgRef": "char_profile_jaw.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_marble_green",
+            "prompt": "Front-camera phone selfie in a dark marble bathroom, one continuous take, exactly matching the start image. Young man with messy black hair in a dark green hoodie, in three-quarter side profile with lowered eyes. His head stays almost still in the same profile, he only slightly lowers his chin, calm and cold, lips relaxed. The phone does the movement: it smoothly drifts a bit lower and slightly further away, revealing more of his jawline and neck under the harsh overhead light, with natural handheld sway and a slight rotation. Effortless, real-time speed, no acting, no head turn, no eye contact. Harsh overhead light, deep shadows along the jawline, phone camera grain. Exact same face as the start image. No visible arm or phone, no cuts.",
+            "imgRef": "char_marble_green.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_hood_hallway",
+            "prompt": "Front-camera phone selfie in a dim room in the evening, one continuous take, exactly matching the start image. Young man in a charcoal grey hoodie with the hood up and white wired earphones. He keeps his head almost completely still, chin slightly lowered, calm cold stare straight into the lens. He blinks once slowly, his eyes stay locked on the lens. Only the phone moves with subtle natural handheld sway, drifting very slightly closer. Real-time speed, no acting, no head movement, no expression change. Soft dim warm light, phone camera grain. Exact same face as the start image. No visible arm or phone, no cuts.",
+            "imgRef": "char_hood_hallway.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_dark_couch_phone",
+            "prompt": "Front-camera phone selfie at night, one continuous take, exactly matching the start image. The phone is held low near his chest at a strong tilt, filming his face from below and from the side. Young man with messy black hair, black t-shirt and white wired earphones leaning on a dark sofa. He looks into the lens with a calm, cold, heavy stare. Then the phone moves slightly closer to his face, the face gets a little bigger in the frame and slightly brighter from the screen glow. Then he slowly and lazily lowers his chin a little and his eyes drift down and away from the lens, his jawline and cheekbone catching the soft light. The camera keeps gently rotating with the natural motion of his hand. Slow, effortless, sleepy, real-time speed, no acting, only small movements. Very dim soft light, dark background, phone camera grain. Exact same face as the start image. No visible arm or phone, no cuts.",
+            "imgRef": "char_dark_couch_phone.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_porsche_gf",
+            "prompt": "Phone footage from a camera mounted on the dashboard of a car driving fast on a highway at night, one continuous take, exactly matching the start image. The camera stays fixed to the car, the car drives perfectly straight and steady, no swaying, no side to side movement. Highway lights rush past quickly outside the windows and sweep across their faces and the dark cabin in fast rhythmic streaks, conveying high speed. The young man in the black suit drives calmly in side profile, eyes on the road, head still, cold relaxed expression. The woman in the black satin dress looks ahead at the road at first, then calmly says something short to him with small natural lip movements and briefly glances toward him with a neutral expression, no big smile. In the middle of the video the car goes over a small bump, a single short gentle jolt shakes the cabin slightly, then it is smooth again. Right as she finishes speaking, he turns his head slightly toward her, just a small calm movement, and holds it. Natural real-time speed, subtle and understated. No interior lights, only outside light, phone camera grain. Exact same faces as the start image. No cuts.",
+            "imgRef": "char_porsche_gf.jpeg",
+            "type": "ingredients",
+            "duration": 4,
+            "swapPrompt": "Recreate the exact scene, pose, clothing, and background from @ref. Replace the boy with @character and replace the girl with @girl. Keep both of their outfits, poses, facial expressions, the environment, lighting and camera angle exactly as on @ref."
+        },
+        {
+            "id": "char_gala",
+            "prompt": "Handheld phone footage at a night gala on a rooftop terrace, one continuous take, starting exactly on the start image and ending exactly on the end image. The camera stays still with only tiny natural hand jitter, no zoom, no pan. Camera flashes from photographers keep firing the whole time, bright white flashes popping again and again and briefly lighting up the faces. The young man in the black suit in the foreground is already mid-sentence from the very first frame and keeps talking continuously and smoothly through the whole video without pauses, speaking quietly and calmly in side profile, small relaxed lip movements, low energy, relaxed confident body language, no gestures, no exaggerated expressions. His head stays almost still with only a very slight natural movement. The chubby man with glasses in the navy jacket keeps a neutral, expressionless face, no smile, looks at him for a moment, then calmly turns and walks out of the frame to the left, until only the man in the white shirt at the left edge remains. Natural real-time speed, subtle and understated. Warm wall lights, dark night sky, phone camera grain. Exact same faces as the start image. No cuts.",
+            "imgRef": [
+                {
+                    "imageStart": "char_gala_start.jpeg"
+                },
+                {
+                    "imageEnd": "char_gala_end.jpeg"
+                }
+            ],
+            "type": "frames",
+            "duration": 4
+        },
+        {
+            "id": "char_sky_shirtless",
+            "prompt": "Front-camera phone selfie outdoors, one continuous take, exactly matching the start image. Shirtless young man with messy black hair leaning over the phone, camera looking up at his face against a clear blue sky, sun backlighting his hair. He keeps his head almost still, cold heavy-lidded stare down into the lens, lips slightly parted. He blinks once slowly and his head sways very slightly with natural breathing. A light breeze moves a few strands of hair. Only subtle natural handheld phone sway. Real-time speed, no acting, no head movements. Bright natural daylight, phone camera grain. Exact same face as the start image. No visible arm or phone, no cuts.",
+            "imgRef": "char_sky_shirtless.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_plane_hood",
+            "prompt": "Phone mirror selfie in an airplane lavatory, one continuous take, exactly matching the start image. Young man in a black hoodie with the hood up and white wired earphones, holding a black phone at the right edge of the frame. He keeps his head completely still in the same three-quarter pose, cold heavy-lidded stare to the side, lips closed, jaw relaxed. He blinks once and his eyes shift slightly toward the mirror. Only subtle natural handheld phone sway, tiny airplane vibration. Real-time speed, no acting, no head movement. Dim warm lighting, phone camera grain. Exact same face as the start image. No cuts.",
+            "imgRef": "char_plane_hood.jpeg",
+            "type": "ingredients",
+            "duration": 4
+        },
+        {
+            "id": "char_night_street",
+            "prompt": "Handheld front-camera selfie at night, one continuous take, starting exactly on the start image and ending exactly on the end image. Shirtless young man with wet black hair and white wired earphones walking slowly down an empty street under an orange street lamp, phone held in front of him. First he keeps looking straight into the lens with a heavy-lidded cold stare for the whole first half of the video, without looking away. Then his eyes leave the lens and he looks straight ahead past the camera, in the direction he is walking. Finally, only at the very end, he calmly turns his head to his right into a side profile, chin slightly up, lips closed, his sharp jawline lit by the street lamp, and holds that profile until the end. Each change is smooth and natural, never back and forth. Subtle walking bounce and handheld sway. Phone camera grain, dim warm lighting. Exact same face as the start image. No visible arm or phone, no cuts.",
+            "imgRef": [
+                {
+                    "imageStart": "char_night_street_start.jpeg"
+                },
+                {
+                    "imageEnd": "char_night_street_end.jpeg"
+                }
+            ],
+            "type": "frames",
             "duration": 4
         }
     ]

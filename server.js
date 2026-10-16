@@ -3895,12 +3895,12 @@ function mediaTiles(page) {
 // written as plain text, because each extra mention costs another trip through
 // Flow's picker (~2s) and reads exactly the same to the model once the asset has
 // been named once. This is the same rule the classic ref-swap prompt uses.
-function fillPackPrompt(template, refSlug, charName, tagEvery = false) {
+function fillPackPrompt(template, refSlug, charName, tagEvery = false, girlName = null) {
   let out = '';
   let rest = String(template);
-  const seen = { '@ref': false, '@character': false };
-  const value = { '@ref': refSlug, '@character': charName };
-  const TOKEN = /@(ref|character)\b/;
+  const seen = { '@ref': false, '@character': false, '@girl': false };
+  const value = { '@ref': refSlug, '@character': charName, '@girl': girlName };
+  const TOKEN = /@(ref|character|girl)\b/;
   for (let m = TOKEN.exec(rest); m; m = TOKEN.exec(rest)) {
     const tok = '@' + m[1];
     const asMention = tagEvery || !seen[tok];
@@ -3909,6 +3909,55 @@ function fillPackPrompt(template, refSlug, charName, tagEvery = false) {
     rest = rest.slice(m.index + tok.length);
   }
   return out + rest;
+}
+
+// ── Pack girl ────────────────────────────────────────────────────────────────
+// Clips that also swap the girl carry their own `swapPrompt` with an "@girl"
+// token. "@girl" is one generated face sheet per pack family (defaults.girl:
+// buffed_gf, chopped_gf), renamed in Flow so it can be "@"-mentioned by name
+// and reused by every pack in the project. Ref templates live in
+// swap_defaults/girls.
+const GIRL_DIR = 'swap_defaults/girls';
+
+// The clip each pack picture belongs to, so a picture can use its clip's prompt.
+function clipByImage(man) {
+  const out = {};
+  for (const c of man.clips || []) for (const r of clipImageRefs(c)) out[r.file] = c;
+  return out;
+}
+
+// Makes sure the pack's girl sheet exists in this project. Returns its name,
+// or null when it could not be made.
+async function ensurePackGirl(page, d) {
+  const g = d.girl;
+  if (!g || !g.name) return null;
+  if ((await resolveMentionable(page, [g.name])).has(g.name)) {
+    log(`Girl sheet "${g.name}" is already in the project.`);
+    return g.name;
+  }
+
+  log(`\nGirl sheet "${g.name}" not found, generating it.`);
+  const refSlug = g.ref ? slugOf(g.ref) : null;
+  if (g.ref) await uploadAllRefImages(page, GIRL_DIR, [g.ref]);
+  if (!(await applyComposerSettings(page, {
+    mode: 'Image', model: g.model || d.imageModel, count: 'x1', aspect: g.aspect || '16:9',
+  }))) return null;
+
+  const prompt = String(g.prompt).replace(/@ref\b/g, refSlug ? mention(refSlug) : 'the reference picture');
+  const before = (await mediaTiles(page)).map(t => t.key);
+  await resetComposer(page);
+  if (!(await setPromptText(page, prompt))) { log('Could not set the girl sheet prompt.'); return null; }
+  if (!(await fireGenerate(page))) { log('Girl sheet generate did not fire.'); return null; }
+  await waitForGenerationDone(page);
+  await sleep(6000);
+
+  const fresh = (await mediaTiles(page)).filter(t => !before.includes(t.key));
+  if (!fresh.length) { log('No girl sheet tile appeared.'); return null; }
+  if (!(await renameTile(page, fresh[0].key, g.name))) return null;
+  // The asset list the "@" dropdown reads catches up a little after a rename.
+  await sleep(4000);
+  log(`✅ Girl sheet generated and renamed to "${g.name}".`);
+  return g.name;
 }
 
 // ── Stage 1: face swaps ──────────────────────────────────────────────────────
@@ -3937,6 +3986,16 @@ async function runPackSwaps(page, pack, opts = {}) {
   const everything = fs.readdirSync(packDir(pack)).filter(f => IMG_RE.test(f));
   await uploadAllRefImages(page, path.join('vids', pack), everything);
 
+  // Pictures whose clip swaps the girl too need the pack's girl sheet first.
+  const clipOf = clipByImage(man);
+  const templateOf = (f) => (clipOf[f] && clipOf[f].swapPrompt) || d.swapPrompt;
+  const needsGirl = (f) => /@girl\b/.test(templateOf(f));
+  let girlName = null;
+  if (todo.some(needsGirl)) {
+    girlName = await ensurePackGirl(page, d);
+    if (!girlName) log('⚠️  No girl sheet, so the girl clips are left for the next run.');
+  }
+
   if (!(await applyComposerSettings(page, {
     mode: 'Image', model: d.imageModel, count: `x${d.imageCount}`, aspect: d.aspect,
   }))) return led;
@@ -3948,12 +4007,14 @@ async function runPackSwaps(page, pack, opts = {}) {
     if (state.stopRequested) { log('Stopped.'); break; }
     const slug = slugOf(file);
     log(`\n[${pack}] ${slug}`);
+    if (needsGirl(file) && !girlName) { missed++; continue; }
 
     const before = (await mediaTiles(page)).map(t => t.key);
 
     // Both assets are tagged by a real Flow "@" mention, so the prompt itself
     // attaches them — same path the chopped pack already uses.
-    const prompt = fillPackPrompt(d.swapPrompt, slug, charName, !!d.tagEveryMention);
+    const prompt = fillPackPrompt(templateOf(file), slug, charName, !!d.tagEveryMention, girlName);
+    const wantChips = ['ref', 'character', 'girl'].filter(t => new RegExp(`@${t}\\b`).test(templateOf(file))).length;
 
     // Build the prompt until BOTH assets are really chipped. A mention that
     // quietly fell back to plain text would generate without its reference
@@ -3967,7 +4028,7 @@ async function runPackSwaps(page, pack, opts = {}) {
       if (t > 1) await sleep(4000);        // let Flow's asset list settle
       if (!(await setPromptText(page, prompt))) { log('Could not set the prompt.'); continue; }
       chips = await countComposerRefs(page);
-      if (chips >= 2) { promptOk = true; break; }
+      if (chips >= wantChips) { promptOk = true; break; }
       log(`⚠️  Only ${chips} chip(s) attached — retrying the prompt (${t}/3).`);
     }
     // Nothing about a miss is written down: the ledger records generations, not
